@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Life Zoid Launcher</title>
+<meta name="description" content="Download the Project Life Zoid launcher and get on the server.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;700&family=Barlow+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #0d1017;
+    --panel: #151a23;
+    --line: #222a36;
+    --text: #e1e6ea;
+    --muted: rgba(255, 255, 255, 0.7);
+    --dim: #768293;
+    --blue: #468af6;
+    --display: "Oswald", "Arial Narrow", sans-serif;
+    --body: "Barlow Condensed", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    margin: 0;
+}
+h1 { font-size: clamp(46px, 9vw, 88px); color: #fff; }
+h2 { font-size: clamp(28px, 4vw, 40px); margin-bottom: 18px; }
+h3 { font-size: 20px; letter-spacing: -0.01em; margin-bottom: 6px; }
+p { color: var(--muted); margin: 0 0 16px; }
+a { color: var(--blue); }
+
+.eyebrow {
+    font-family: var(--display);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--blue);
+    margin: 0 0 14px;
+}
+
+.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--line);
+}
+.brand {
+    font-family: var(--display);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #fff;
+    text-decoration: none;
+}
+.brand span { color: var(--blue); }
+
+.btn {
+    display: inline-block;
+    font-family: var(--display);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 2.2px;
+    text-transform: uppercase;
+    text-decoration: none;
+    padding: 13px 26px;
+    border: 1px solid var(--blue);
+    border-radius: 0;
+    background: var(--blue);
+    color: #fff;
+    transition: background 140ms, color 140ms;
+}
+.btn:hover { background: #2f76e0; border-color: #2f76e0; }
+.btn-ghost { background: none; color: var(--blue); }
+.btn-ghost:hover { background: var(--blue); color: #fff; }
+.btn-sm { font-size: 11px; padding: 9px 18px; }
+
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 28px; }
+.hero {
+    position: relative;
+    text-align: center;
+    padding: 92px 0 76px;
+    border-bottom: 1px solid var(--line);
+    background:
+        radial-gradient(120% 90% at 50% 0%, rgba(70, 138, 246, 0.16) 0%, rgba(70, 138, 246, 0) 62%),
+        linear-gradient(180deg, #121a29 0%, var(--bg) 100%);
+}
+.hero p { max-width: 560px; margin: 20px auto 30px; }
+.meta {
+    font-family: var(--display);
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-top: 18px;
+}
+section { padding: 68px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: 0; }
+
+.steps { display: grid; gap: 28px; grid-template-columns: repeat(3, 1fr); margin-top: 30px; }
+.step-n {
+    font-family: var(--display);
+    font-size: 40px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--blue);
+    opacity: 0.35;
+}
+.cards { display: grid; gap: 20px; grid-template-columns: repeat(2, 1fr); margin-top: 30px; }
+.card { background: var(--panel); border: 1px solid var(--line); padding: 24px; }
+.card p:last-child { margin-bottom: 0; }
+.card a {
+    font-family: var(--display);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(70, 138, 246, 0.45);
+    padding-bottom: 2px;
+}
+.card a:hover { border-bottom-color: var(--blue); }
+
+.callout { background: var(--panel); border-left: 3px solid var(--blue); padding: 22px 24px; }
+.callout p:last-child { margin-bottom: 0; }
+
+ul.plain { margin: 0; padding-left: 20px; }
+ul.plain li { color: var(--muted); margin-bottom: 8px; }
+
+.fine {
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--dim);
+    word-break: break-all;
+}
+.aside { color: var(--dim); font-size: 15px; margin-top: 10px; }
+footer { padding: 30px 0 60px; color: var(--dim); font-size: 14px; }
+
+@media (max-width: 720px) {
+    .steps, .cards { grid-template-columns: 1fr; }
+    .bar { padding: 14px 20px; }
+    .hero { padding: 64px 0 56px; }
+}
+</style>
+</head>
+<body>
+
+<div class="bar">
+    <a class="brand" href="https://projectlifezoid.com/">Project <span>Life Zoid</span></a>
+    <a class="btn btn-ghost btn-sm" href="https://projectlifezoid.com/">Back to the site</a>
+</div>
+
+<div class="hero">
+    <div class="wrap">
+        <p class="eyebrow">Download</p>
+        <h1>The Launcher</h1>
+        <p>
+            It sets up everything you need to play on Project Life Zoid, starts the game through
+            Steam, and puts your game back exactly as it was when you quit.
+        </p>
+        <a class="btn" href="/download/{{INSTALLER}}">Download for Windows</a>
+        <p class="meta">Windows 10 and 11 &nbsp;&middot;&nbsp; Version {{VERSION}} &nbsp;&middot;&nbsp; {{SIZE_MB}} MB &nbsp;&middot;&nbsp; {{BUILT}}</p>
+        <p class="aside">
+            On a Mac or Linux? <a href="#other">Get those builds below.</a>
+        </p>
+    </div>
+</div>
+
+<section>
+    <div class="wrap">
+        <p class="eyebrow">Getting on</p>
+        <h2>Three steps</h2>
+        <div class="steps">
+            <div>
+                <div class="step-n">1</div>
+                <h3>Install and open it</h3>
+                <p>You need Project Zomboid on Steam, and Steam signed in.</p>
+            </div>
+            <div>
+                <div class="step-n">2</div>
+                <h3>Add yourself on Discord</h3>
+                <p>Our Discord bot signs you up in one command. Do it before you press Play, and you only do it once.</p>
+            </div>
+            <div>
+                <div class="step-n">3</div>
+                <h3>Pick a name and play</h3>
+                <p>No password to remember. Your character name is set the first time you join.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <p class="eyebrow">Heads up</p>
+        <h2>Windows will warn you</h2>
+        <div class="callout">
+            <p>
+                You will see <strong>&ldquo;Windows protected your PC&rdquo;</strong> the first time
+                you run it. Click <strong>More info</strong>, then <strong>Run anyway</strong>.
+            </p>
+            <p>
+                Windows shows that for any program from a small team that has not paid for a
+                certificate. It is not a virus warning, and it goes away after the first run.
+                If you would rather check the file yourself first, see below.
+            </p>
+        </div>
+    </div>
+</section>
+
+<section id="other">
+    <div class="wrap">
+        <p class="eyebrow">Mac and Linux</p>
+        <h2>Other systems</h2>
+        <p>
+            Both are new and less tested than the Windows build. If something is wrong, telling us
+            on Discord is genuinely useful.
+        </p>
+        <div class="cards">
+            <div class="card">
+                <h3>macOS</h3>
+                <p>One download for both Apple Silicon and Intel Macs.</p>
+                <p>
+                    Open the .dmg and <strong>drag the app into your Applications folder</strong>,
+                    then run it from there. Opening it straight out of the disk image works right
+                    up until it tries to update itself, which a disk image cannot allow.
+                </p>
+                <p><a href="/download/{{MAC_FILE}}">Download the .dmg</a></p>
+                <p class="fine">{{MAC_SIZE_MB}} MB</p>
+            </div>
+            <div class="card">
+                <h3>Linux</h3>
+                <p>
+                    On Debian, Ubuntu or Mint, take the .deb. The AppImage runs anywhere but is
+                    much bigger, because it carries everything it needs with it.
+                </p>
+                <p>
+                    The AppImage keeps itself up to date. The .deb cannot replace itself, so with
+                    that one you come back here when there is a new version.
+                </p>
+                <p>
+                    <a href="/download/{{DEB_FILE}}">Download the .deb</a><br>
+                    <a href="/download/{{APPIMAGE_FILE}}">Download the AppImage</a>
+                </p>
+                <p class="fine">{{DEB_SIZE_MB}} MB &nbsp;&middot;&nbsp; {{APPIMAGE_SIZE_MB}} MB</p>
+            </div>
+        </div>
+
+        <h3 style="margin-top:34px">Your Mac will say the app is damaged</h3>
+        <div class="callout">
+            <p>
+                It is not. macOS marks anything downloaded from the internet, and for an app
+                without a paid Apple certificate it words that badly.
+            </p>
+            <p>
+                Drag the app to Applications, then paste this into Terminal once:
+            </p>
+            <p class="fine">xattr -dr com.apple.quarantine "/Applications/Project Life Zoid Launcher.app"</p>
+            <p>
+                That clears the download mark on this one app. It changes no system setting and
+                turns nothing off.
+            </p>
+            <p>
+                The same two steps fix an update that fails with <em>Read-only file system</em>.
+                That means the app is running from the disk image, or from the locked temporary
+                copy macOS uses while it is still marked as downloaded &mdash; and neither of
+                those can be written to, so it cannot replace itself.
+            </p>
+        </div>
+
+        <h3 style="margin-top:28px">Installing on Linux</h3>
+        <div class="callout">
+            <p class="fine">sudo apt install ./{{DEB_FILE}}</p>
+            <p>
+                Or make the AppImage executable and run it:
+            </p>
+            <p class="fine">chmod +x {{APPIMAGE_FILE}}<br>./{{APPIMAGE_FILE}}</p>
+            <p>
+                If the window opens completely white, your system is hitting a known graphics bug
+                in the Linux web view. Version {{VERSION}} works around it on its own; on anything
+                older, start it like this instead:
+            </p>
+            <p class="fine">WEBKIT_DISABLE_DMABUF_RENDERER=1 ./{{APPIMAGE_FILE}}</p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <p class="eyebrow">Is it safe</p>
+        <h2>You do not have to take our word for it</h2>
+        <p>
+            You are downloading a program from strangers on the internet. Being careful about that
+            is the right instinct, so here is everything you need to check us.
+        </p>
+        <div class="cards">
+            <div class="card">
+                <h3>The code is public</h3>
+                <p>
+                    Every line of the launcher is on GitHub. Read it, or build your own copy from
+                    it and compare.
+                </p>
+                <p><a href="https://github.com/ProjectLifeZoid/launcher">See the code</a></p>
+            </div>
+            <div class="card">
+                <h3>Nothing unsigned gets in</h3>
+                <p>
+                    Every file we send carries our signature. The launcher checks each one before
+                    it lands on your PC and refuses anything that does not match.
+                </p>
+            </div>
+            <div class="card">
+                <h3>It leaves your game alone</h3>
+                <p>
+                    It changes one file in Project Zomboid while you play and puts it back when you
+                    quit. If it ever crashes, it repairs that file the next time you open it.
+                </p>
+            </div>
+            <div class="card">
+                <h3>It stays out of everything else</h3>
+                <p>
+                    No background service, nothing at startup, no other games touched. It reads
+                    your Steam ID and where the game is installed. That is all.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <p class="eyebrow">For the curious</p>
+        <h2>Check the download</h2>
+        <p>
+            If you want to confirm the file you got is the file we published, compare this
+            fingerprint against your download. Step-by-step instructions are in the repository.
+        </p>
+        <p class="fine">{{SHA256}}</p>
+        <p>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/ProjectLifeZoid/launcher#verifying-your-download">How to check it</a>
+        </p>
+    </div>
+</section>
+
+<footer>
+    <div class="wrap">
+        Project Life Zoid Launcher {{VERSION}} &nbsp;&middot;&nbsp;
+        <a href="https://projectlifezoid.com/">projectlifezoid.com</a>
+    </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,130 @@
+﻿{
+    "releases":  [
+                     {
+                         "date":  "2026-08-29T23:32:41Z",
+                         "workshopVersion":  "1.0.9",
+                         "payloadBuild":  17,
+                         "serverTag":  17,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1788045801,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  151,
+                         "serverFiles":  61,
+                         "launcher":  {
+                                          "sha":  "5e1bbd6",
+                                          "dirty":  0
+                                      },
+                         "mods":  {
+                                      "sha":  "d6704d6",
+                                      "dirty":  4
+                                  }
+                     },
+                     {
+                         "date":  "2026-08-29T19:39:34Z",
+                         "workshopVersion":  "1.0.8",
+                         "payloadBuild":  16,
+                         "serverTag":  16,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1788031488,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  151,
+                         "serverFiles":  61,
+                         "launcher":  {
+                                          "sha":  "8c1b665",
+                                          "dirty":  0
+                                      },
+                         "mods":  {
+                                      "sha":  "a1d3497",
+                                      "dirty":  0
+                                  }
+                     },
+                     {
+                         "date":  "2026-08-29T16:17:59Z",
+                         "workshopVersion":  "1.0.6",
+                         "payloadBuild":  14,
+                         "serverTag":  14,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1788019075,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  151,
+                         "serverFiles":  61,
+                         "launcher":  {
+                                          "sha":  "76dc752",
+                                          "dirty":  3
+                                      },
+                         "mods":  {
+                                      "sha":  "cb1b928",
+                                      "dirty":  1
+                                  }
+                     },
+                     {
+                         "date":  "2026-08-29T06:30:33Z",
+                         "workshopVersion":  "1.0.5",
+                         "payloadBuild":  13,
+                         "serverTag":  13,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1787982919,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  144,
+                         "serverFiles":  60,
+                         "launcher":  {
+                                          "sha":  "8aab7b9",
+                                          "dirty":  0
+                                      },
+                         "mods":  {
+                                      "sha":  "62716e5",
+                                      "dirty":  3
+                                  }
+                     },
+                     {
+                         "date":  "2026-08-29T02:22:30Z",
+                         "workshopVersion":  "1.0.4",
+                         "payloadBuild":  12,
+                         "serverTag":  12,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1787971525,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  134,
+                         "serverFiles":  55,
+                         "launcher":  {
+                                          "sha":  "815937b",
+                                          "dirty":  2
+                                      },
+                         "mods":  {
+                                      "sha":  "5754adb",
+                                      "dirty":  3
+                                  }
+                     },
+                     {
+                         "date":  "2026-08-28T19:40:32Z",
+                         "workshopVersion":  "1.0.3",
+                         "payloadBuild":  11,
+                         "serverTag":  11,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1787943799,
+                         "builtAgainstJar":  "80e405a4bfc42f6072e75b3735f458a6514143da011d3226007ded305a442f44",
+                         "clientFiles":  130,
+                         "serverFiles":  55,
+                         "launcher":  {
+                                          "sha":  "8fe622e",
+                                          "dirty":  28
+                                      },
+                         "mods":  {
+                                      "sha":  "70d0e1c",
+                                      "dirty":  273
+                                  }
+                     }
+                 ]
+}

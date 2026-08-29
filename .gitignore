@@ -1,0 +1,15 @@
+/src-tauri/target/
+/src-tauri/gen/
+/java/dist/
+/java/test/out/
+/release/
+/dist/
+/update/
+/site/
+/tools/bootstrap-test/out/
+/tools/keys/
+node_modules/
+*.log
+Thumbs.db
+__pycache__/
+*.pyc

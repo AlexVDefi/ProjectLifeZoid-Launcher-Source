@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>ProjectLifeZoid Launcher</title>
+    <link rel="stylesheet" href="theme.css" />
+</head>
+<body>
+    <div class="app">
+        <header class="topbar">
+            <div class="brand">
+                <img class="glyph" src="logo.png" alt="" aria-hidden="true">
+                <span class="brand-name">ProjectLifeZoid</span>
+            </div>
+            <div class="topbar-right">
+                <span class="steam-session" id="chip-steam">Steam &mdash;</span>
+                <span class="build" id="chip-build">Build &mdash;</span>
+                <button class="btn btn-ghost" id="btn-details" aria-expanded="false">Details</button>
+            </div>
+        </header>
+
+        <main>
+            <section class="hero">
+                <img id="hero" src="hero.png" alt="" />
+                <div class="hero-fade" aria-hidden="true"></div>
+                <div class="pill" id="s-state">
+                    <i class="dot" aria-hidden="true"></i><span>Connecting</span>
+                </div>
+            </section>
+
+            <section class="headline">
+                <div class="headline-text">
+                    <h1 id="s-name">Project Life Zoid</h1>
+                    <p class="meta">
+                        <span id="s-map">&mdash;</span>
+                        <span class="sep" aria-hidden="true">&middot;</span>
+                        <span id="s-version">&mdash;</span>
+                        <span class="sep" aria-hidden="true">&middot;</span>
+                        <span id="s-ping" class="num">&mdash;</span>
+                    </p>
+                </div>
+
+                <div class="identity" id="identity">
+                    <div class="identity-row" id="identity-view">
+                        <span class="identity-label">Username</span>
+                        <span class="identity-name" id="identity-name">Not chosen</span>
+                        <button class="btn btn-ghost" id="btn-edit-name">Choose</button>
+                    </div>
+                    <form class="identity-row" id="identity-edit" hidden>
+                        <label class="identity-label" for="name-input">Username</label>
+                        <input id="name-input" type="text" maxlength="20" spellcheck="false"
+                               autocomplete="off" placeholder="Your username" />
+                        <button class="btn btn-secondary" type="submit">Save</button>
+                        <button class="btn btn-ghost" type="button" id="btn-cancel-name">Cancel</button>
+                    </form>
+                    <p class="identity-help" id="identity-help"></p>
+                </div>
+
+                <div class="headline-actions">
+                    <div class="stat">
+                        <div class="stat-v num"><span id="s-players">&mdash;</span><span class="stat-max" id="s-max"></span></div>
+                        <div class="stat-l">Players</div>
+                    </div>
+                    <div class="play-wrap">
+                        <button class="btn btn-primary" id="play" disabled>
+                            <span id="play-label">Play</span>
+                        </button>
+                        <p class="helper" id="play-sub">Checking your install</p>
+                        <button class="btn btn-secondary play-fix" id="btn-locate" hidden>Locate my game</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="launcher-content" aria-label="Server community">
+                <section class="mods-panel" aria-labelledby="mods-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">WORKSHOP</p>
+                            <h2 id="mods-title">Mods this server needs</h2>
+                        </div>
+                        <button class="btn btn-secondary" id="btn-preload-mods">Subscribe</button>
+                    </div>
+                    <div class="req-list" id="req-list"></div>
+                    <p class="section-copy" id="mods-copy">Checking your Workshop library.</p>
+                </section>
+
+                <section class="news-panel" aria-labelledby="news-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">FROM THE TEAM</p>
+                            <h2 id="news-title">News &amp; updates</h2>
+                        </div>
+                    </div>
+                    <div class="news-grid" id="news-grid" aria-live="polite"></div>
+                </section>
+            </section>
+
+            <section class="status">
+                <div class="checks" id="checks"></div>
+
+                <div class="progress" id="progress" hidden>
+                    <div class="bar"><span id="bar-fill"></span></div>
+                    <div class="progress-row">
+                        <span id="work-step">Starting</span>
+                        <span id="work-time" class="num">0:00</span>
+                    </div>
+                </div>
+
+                <div class="notice" id="notice" hidden></div>
+            </section>
+
+            <footer class="community-links" id="community-links" hidden aria-label="Community links"></footer>
+        </main>
+    </div>
+
+    <div class="scrim" id="drawer-backdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden aria-label="Details">
+        <div class="drawer-head">
+            <h2>Details</h2>
+            <button class="btn btn-ghost" id="btn-close">Close</button>
+        </div>
+
+        <div class="drawer-body">
+            <section>
+                <h3>Patch</h3>
+                <dl id="d-patch"></dl>
+            </section>
+            <section>
+                <h3>Install</h3>
+                <dl id="d-install"></dl>
+                <p class="hint" id="install-hint"></p>
+                <label class="field">
+                    <span>Game folder</span>
+                    <input id="install-path" type="text" spellcheck="false" autocomplete="off"
+                           placeholder="C:\Program Files (x86)\Steam\steamapps\common\ProjectZomboid" />
+                </label>
+                <div class="field-actions">
+                    <button class="btn btn-secondary" id="btn-install-browse">Browse</button>
+                    <button class="btn btn-secondary" id="btn-install-apply">Use this folder</button>
+                    <button class="btn btn-ghost" id="btn-install-clear" hidden>Find it automatically</button>
+                </div>
+                <p class="hint bad" id="install-error" hidden></p>
+                <button class="btn btn-secondary" id="btn-copy-steamid">Copy my Steam ID</button>
+                <div id="steam-account-row" hidden>
+                    <p class="hint">Playing as</p>
+                    <select id="steam-account"></select>
+                </div>
+                <p class="hint" id="debug-role-note" hidden></p>
+                <label class="toggle" id="debug-toggle-row" hidden>
+                    <input type="checkbox" id="allow-debug" />
+                    <span>Allow debug mode (server admins only)</span>
+                </label>
+            </section>
+            <section>
+                <h3>Server</h3>
+                <dl id="d-server"></dl>
+                <p class="hint bad" id="server-override-banner" hidden></p>
+                <details id="server-advanced">
+                    <summary class="hint">Advanced</summary>
+                    <p class="hint">
+                        Join a different server than the one this launcher ships with. Leave the
+                        address empty to go back to the normal server.
+                    </p>
+                    <label class="field">
+                        <span>Address</span>
+                        <input id="ov-host" type="text" placeholder="167.114.174.186" spellcheck="false" />
+                    </label>
+                    <label class="field">
+                        <span>Connect port</span>
+                        <input id="ov-connect" type="number" min="1" max="65535" placeholder="26935" />
+                    </label>
+                    <label class="field">
+                        <span>Query port</span>
+                        <input id="ov-query" type="number" min="1" max="65535" placeholder="26935" />
+                    </label>
+                    <button class="btn btn-secondary" id="btn-ov-apply">Apply</button>
+                    <button class="btn btn-secondary" id="btn-ov-clear">Use normal server</button>
+                </details>
+            </section>
+            <section class="grow">
+                <h3>Activity</h3>
+                <div id="log"></div>
+            </section>
+        </div>
+
+        <div class="drawer-foot">
+            <button class="btn btn-secondary" id="btn-refresh">Refresh</button>
+            <button class="btn btn-secondary" id="btn-restore">Restore game files</button>
+            <button class="btn btn-secondary" id="btn-update">Check for updates</button>
+            <span class="update-note" id="update-note"></span>
+        </div>
+    </aside>
+
+    <div id="toast" role="status"><div class="t"></div><div class="s"></div></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

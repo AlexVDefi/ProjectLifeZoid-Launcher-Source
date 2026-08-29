@@ -1,0 +1,37 @@
+[
+    {
+        "title": "Launcher 0.5.0",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-08-29",
+        "tag": "Update",
+        "excerpt": "The launcher now names exactly what you need from the Workshop - the mod collection and the Project Life Zoid mod - and puts a tick beside each one once it is installed. If something is missing it says how many and which mods they are, and clicking the row opens that page in Steam. Anything you skip still downloads when you join; subscribing first just means not waiting on the connect screen. The character field is now called Username, because the 20 character limit is on your account name only - the survivor you create in game can still use your full name - and it sits beside Play instead of at the bottom of the window. Before your first launch the patch line now says it downloads when you press Play, rather than looking like something is wrong, and the window sizes itself so nothing is cut off."
+    },
+    {
+        "title": "Launcher 0.4.9",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-08-28",
+        "tag": "Update",
+        "excerpt": "The launcher now works on macOS. It was looking for a Windows file that Macs do not have, so it reported that Project Zomboid was not installed no matter where the game actually was. If it still cannot find your copy on any platform, Details now has a Game folder you can point at it yourself, and a Locate my game button sits next to Play when nothing was found. On a Mac, drag the app into Applications before running it: from the disk image it cannot update itself, and it now says so plainly instead of showing a file-system error. News, community links and the Workshop pre-load button work on Mac and Linux too."
+    },
+    {
+        "title": "Launcher 0.4.3",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-08-27",
+        "tag": "Update",
+        "excerpt": "The launcher now checks your Workshop mods before it starts the game. If Steam has an update it has not applied yet, you are told which mod and why it matters up front, instead of being disconnected in the middle of joining. The launch steps also say how many mods are ready and how many are still downloading."
+    },
+    {
+        "title": "Launcher 0.4.0",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-08-27",
+        "tag": "Update",
+        "excerpt": "The launcher now asks the server what your role is allowed to do instead of guessing. If your role may connect with debug mode on, the warning about it disappears by itself after your next join, and the manual override goes with it."
+    },
+    {
+        "title": "Launcher 0.2.0",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-08-27",
+        "tag": "Update",
+        "excerpt": "The launcher now updates itself from launcher.projectlifezoid.com instead of being re-sent by hand. Patch build 9 is live. Every file the launcher installs is checked against a signed manifest before it is written, and the launcher now refuses an older payload even when it carries a valid signature."
+    }
+]
