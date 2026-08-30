@@ -316,10 +316,11 @@ footer { padding: 30px 0 60px; color: var(--dim); font-size: 14px; }
             <div class="card">
                 <h3>The code is public</h3>
                 <p>
-                    Every line of the launcher is on GitHub. Read it, or build your own copy from
-                    it and compare.
+                    The launcher and the Java it installs are on GitHub in full. Read it, build it
+                    yourself, or rebuild the patch and check it matches what we signed, class for
+                    class.
                 </p>
-                <p><a href="https://github.com/ProjectLifeZoid/launcher">See the code</a></p>
+                <p><a href="https://github.com/AlexVDefi/ProjectLifeZoid-Launcher-Source">See the code</a></p>
             </div>
             <div class="card">
                 <h3>Nothing unsigned gets in</h3>
@@ -349,14 +350,59 @@ footer { padding: 30px 0 60px; color: var(--dim); font-size: 14px; }
 <section>
     <div class="wrap">
         <p class="eyebrow">For the curious</p>
-        <h2>Check the download</h2>
+        <h2>Check what you downloaded</h2>
         <p>
-            If you want to confirm the file you got is the file we published, compare this
-            fingerprint against your download. Step-by-step instructions are in the repository.
+            You do not have to trust us on any of this. Every claim below is something you can
+            check yourself, and the tools to do it ship in the repository.
         </p>
+
+        <h3>The installer you just got</h3>
+        <p>Its SHA-256 is:</p>
         <p class="fine">{{SHA256}}</p>
         <p>
-            <a class="btn btn-ghost btn-sm" href="https://github.com/ProjectLifeZoid/launcher#verifying-your-download">How to check it</a>
+            Compare it against your own copy. Every platform's checksum is listed in
+            <a href="download/SHA256SUMS.txt">SHA256SUMS.txt</a>.
+        </p>
+
+        <h3>The patch it installs</h3>
+        <p>
+            The Java the launcher puts into your game is listed in a manifest signed with this
+            key. It is compiled into the launcher, so this is the key it really uses:
+        </p>
+        <p class="fine">{{RELEASE_PUBKEY}}</p>
+        <p>
+            From a copy of the repository, this checks the signature and every one of the
+            {{PAYLOAD_FILES}} files against it:
+        </p>
+        <p class="fine">node tools/verify-release.mjs</p>
+
+        <h3>That the patch really is the published source</h3>
+        <p>
+            A signature says who published a file, not what is inside it. This rebuilds the whole
+            patch from the source in the repository and compares it byte for byte against what we
+            signed. The manifest names the exact commit it was built from, so there is no guessing
+            which version you are checking against.
+        </p>
+        <p class="fine">.\tools\reproduce-payload.ps1</p>
+        <p>
+            Build {{PAYLOAD_BUILD}} rebuilds identically. You can also disassemble any single
+            class and diff it against the untouched one in your own copy of the game:
+        </p>
+        <p class="fine">.\tools\inspect-class.ps1 zombie.ZomboidGlobals</p>
+
+        <h3>What this does not prove</h3>
+        <p>
+            The Java patch rebuilds from source exactly. The launcher executable does not: the
+            tools that build it do not produce identical files twice, so the checksum above tells
+            you that you have the file we published, not that it was built from this source. If
+            that distinction matters to you, build it yourself from the repository.
+        </p>
+        <p>
+            The server's mod content is not in that repository either. What is published there is
+            the launcher and the Java patch it installs on your machine.
+        </p>
+        <p>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/AlexVDefi/ProjectLifeZoid-Launcher-Source#verify-it-yourself">Full instructions</a>
         </p>
     </div>
 </section>
