@@ -5324,9 +5324,117 @@ public abstract class IsoGameCharacter
         return result + " ] ";
     }
 
+    // PLZ: drop duplicate worn-item entries before a save can choke on them.
+    //
+    // IsoPlayer.save writes the worn-item COUNT as a single signed byte and throws
+    // "too many worn items" above 127. A person wears ten to fifteen things, so passing 127 means
+    // entries are accumulating rather than replacing - the same slot listed over and over.
+    //
+    // That throw is not a contained failure. It comes from ServerPlayerDB.serverUpdateNetworkCharacter
+    // by way of NetworkPlayerManager.update, in the server's main loop, so the character is never
+    // serialised. Clients asking for that player's data never get a valid reply, retry, and the
+    // retries trip PacketsCache's rate limiter - which then drops PlayerDataRequest and State
+    // packets for EVERYONE. Measured live 2026-08-30: one broken character joined at 17:20:49, the
+    // limiter tripped at 17:20:36-17:20:55, and for the following fourteen minutes nobody on the
+    // server could act, bank, teleport or load a chunk while the main loop ticked a perfectly
+    // normal ~500 frames a minute. One character took the whole server out.
+    //
+    // Pruning rather than reporting, because a diagnostic alone leaves the server jammed. A body
+    // location holds exactly one item by definition, so a second entry for a location this
+    // character already has IS corruption and dropping it loses nothing real - the item stays in
+    // the inventory, it is only no longer listed as worn. Keeping the FIRST entry per location
+    // matches what getItem(location) already returns, so nothing else observes a change.
+    //
+    // EXCEPT WHERE THE ENGINE SAYS OTHERWISE. BodyLocations.lua marks BANDAGE, WOUND and ZED_DMG
+    // multi-item on purpose - "Multiple items at these locations are allowed" is the stock
+    // comment - because a person has more than one body part and can be bandaged on several of
+    // them at once. WornItems.setItem already honours that with the same isMultiItem test; a prune
+    // that did not was not tightening a rule, it was deleting the second bandage onwards off every
+    // wounded player on every save.
+    //
+    // Measured live 2026-08-30 before this test existed: 71 prunes in 90 minutes across 27
+    // different players, peaking at one character with 62 worn entries. Almost none of that was
+    // corruption. It was a busy server's worth of bandages and wound overlays being stripped, and
+    // the same players came back a few minutes later to be stripped again as the dressings
+    // resynced.
+    //
+    // Runs on every save, not only past 127, because the accumulation is the bug and catching it at
+    // two entries is how it never reaches the limit. Normal characters exit on the first pass with
+    // one small set allocated and nothing removed.
+    private void plzPruneDuplicateWornItems() {
+        WornItems worn = this.wornItems;
+        if (worn == null || worn.size() < 2) {
+            return;
+        }
+
+        HashSet<String> seen = new HashSet<>();
+        List<InventoryItem> doomed = null;
+        BodyLocationGroup group = worn.getBodyLocationGroup();
+
+        for (int i = 0; i < worn.size(); i++) {
+            WornItem entry = worn.get(i);
+            if (entry == null) {
+                continue;
+            }
+
+            // A multi-item location is allowed as many entries as it likes, so it is not counted
+            // and never contributes a duplicate. Asked of the group rather than hardcoded, so a
+            // location a mod marks multi-item is covered too.
+            if (entry.getLocation() != null && group != null && group.isMultiItem(entry.getLocation())) {
+                continue;
+            }
+
+            String location = entry.getLocation() == null ? "<null>" : entry.getLocation().toString();
+            InventoryItem item = entry.getItem();
+            if (seen.add(location) && item != null) {
+                continue;
+            }
+
+            if (doomed == null) {
+                doomed = new ArrayList<>();
+            }
+            if (item != null) {
+                doomed.add(item);
+            }
+        }
+
+        if (doomed == null || doomed.isEmpty()) {
+            return;
+        }
+
+        int before = worn.size();
+        for (int i = 0; i < doomed.size(); i++) {
+            worn.remove(doomed.get(i));
+        }
+
+        DebugLog.log(
+            DebugType.General,
+            "PLZ: pruned " + doomed.size() + " duplicate worn-item entr" + (doomed.size() == 1 ? "y" : "ies")
+                + " from " + plzWhoAmI() + " (" + before + " -> " + worn.size()
+                + "). A body location holds one item; the rest were corruption and would have made"
+                + " the save throw at 128."
+        );
+    }
+
+    // Username where there is one, so the line names a player and not an object hash.
+    private String plzWhoAmI() {
+        // getUsername is IsoPlayer's, not this class's, and the username is the only handle an
+        // admin can actually act on - so reach it when this IS a player and fall back otherwise.
+        if (this instanceof IsoPlayer player) {
+            String username = player.getUsername();
+            if (username != null && !username.isEmpty()) {
+                return username;
+            }
+        }
+
+        String name = this.getFullName();
+        return name == null || name.isEmpty() ? this.toString() : name;
+    }
+
     @Override
     public void save(ByteBuffer output, boolean isDebugSave) throws IOException {
         DebugType.Saving.trace("Saving: %s", this);
+        plzPruneDuplicateWornItems();
         super.save(output, isDebugSave);
         if (this.descriptor == null) {
             output.put((byte)0);

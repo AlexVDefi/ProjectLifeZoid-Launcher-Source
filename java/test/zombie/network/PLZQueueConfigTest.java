@@ -19,6 +19,17 @@ public class PLZQueueConfigTest {
         return p;
     }
 
+    /** Mirrors PLZQueue.readInt: unparseable values fall back rather than throwing. */
+    static int readIntLike(Properties p, String key, int fallback) {
+        String raw = p.getProperty(key);
+        if (raw == null) return fallback;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
     static int countLive(String text, String key) {
         int n = 0;
         for (String line : text.split("\n")) {
@@ -36,12 +47,26 @@ public class PLZQueueConfigTest {
         check("MaxPlayers (0 = use the ini)", p.getProperty("MaxPlayers"), "0");
         check("MaxQueue", p.getProperty("MaxQueue"), "0");
         check("AllowUsernameTiers", p.getProperty("AllowUsernameTiers"), "false");
+        // The whole deploy plan rests on this: shipping the class must change nothing until the
+        // ini is edited, so the server can be restarted once to prove it boots and a second time
+        // to actually turn width on.
+        check("ReleaseWidth ships as 1 (behaviour-neutral)", p.getProperty("ReleaseWidth"), "1");
         check("seam off by default", Boolean.parseBoolean(p.getProperty("AllowUsernameTiers", "false")), false);
 
         System.out.println("[2] no duplicate live keys (the Properties last-wins footgun)");
-        for (String k : new String[]{"MaxPlayers", "MaxQueue", "AllowUsernameTiers"}) {
+        for (String k : new String[]{"MaxPlayers", "MaxQueue", "ReleaseWidth", "AllowUsernameTiers"}) {
             check("live occurrences of " + k, countLive(text, k), 1);
         }
+
+        System.out.println("[2b] ReleaseWidth clamp, as clampReleaseWidth does");
+        for (int[] c : new int[][]{{-5, 1}, {0, 1}, {1, 1}, {2, 2}, {3, 3}, {8, 8}, {9, 8}, {99, 8}}) {
+            check("clamp " + c[0], Math.max(1, Math.min(c[0], 8)), c[1]);
+        }
+        check("documented edit to width 3 parses",
+            load(text.replace("ReleaseWidth=1", "ReleaseWidth=3")).getProperty("ReleaseWidth"), "3");
+        // A non-numeric value must fall back to 1, not to 0 (0 would admit nobody, ever).
+        check("garbage falls back to the shipped width", readIntLike(load(
+            text.replace("ReleaseWidth=1", "ReleaseWidth=three")), "ReleaseWidth", 1), 1);
 
         System.out.println("[3] UsernameTier examples are inert until uncommented");
         int active = 0;

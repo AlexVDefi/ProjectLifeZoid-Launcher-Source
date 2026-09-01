@@ -38,6 +38,10 @@ public final class PLZQueue {
     private static volatile boolean configLoaded;
     private static int cfgMaxPlayers = -1;
     private static int cfgMaxQueue;
+    private static int cfgReleaseWidth = 1;
+    private static final long WIDTH_RECHECK_MS = 15000L;
+    private static long widthCheckedAt;
+    private static long widthFileStamp;
     private static boolean cfgAllowUsernameTiers;
     private static final Map<String, Integer> cfgUsernameTiers = new HashMap<>();
 
@@ -59,6 +63,55 @@ public final class PLZQueue {
         return cfgMaxQueue;
     }
 
+    public static int releaseWidth() {
+        loadConfig();
+        refreshReleaseWidth();
+        return cfgReleaseWidth;
+    }
+
+    /**
+     * Re-read ONLY ReleaseWidth from the ini, at most once every 15s and only when the file's
+     * timestamp has moved.
+     *
+     * Everything else in this file is deliberately read once at boot. Width is the exception
+     * because it is the one setting we may need to back out under load, and this host cannot be
+     * restarted without a human on the panel. This makes the rollback an ini edit instead of a
+     * restart. A missing key, an unreadable file or a bad value all leave the current width
+     * alone: a broken edit must never change behaviour.
+     */
+    private static synchronized void refreshReleaseWidth() {
+        long now = System.currentTimeMillis();
+        if (now - widthCheckedAt < WIDTH_RECHECK_MS) {
+            return;
+        }
+        widthCheckedAt = now;
+
+        try {
+            File file = configFile();
+            if (!file.isFile()) {
+                return;
+            }
+            long stamp = file.lastModified();
+            if (stamp == widthFileStamp) {
+                return;
+            }
+            widthFileStamp = stamp;
+
+            Properties p = new Properties();
+            try (InputStream in = new FileInputStream(file)) {
+                p.load(in);
+            }
+            int wanted = clampReleaseWidth(readInt(p, "ReleaseWidth", cfgReleaseWidth));
+            if (wanted != cfgReleaseWidth) {
+                DebugType.General.println(
+                    "PLZQueue: ReleaseWidth " + cfgReleaseWidth + " -> " + wanted + ", re-read from " + file.getName());
+                cfgReleaseWidth = wanted;
+            }
+        } catch (Exception e) {
+            DebugType.General.println("PLZQueue: could not re-read ReleaseWidth, keeping " + cfgReleaseWidth);
+        }
+    }
+
     private static synchronized void loadConfig() {
         if (configLoaded) {
             return;
@@ -77,6 +130,7 @@ public final class PLZQueue {
             }
             cfgMaxPlayers = clampMaxPlayers(readInt(p, "MaxPlayers", -1));
             cfgMaxQueue = Math.max(0, readInt(p, "MaxQueue", 0));
+            cfgReleaseWidth = clampReleaseWidth(readInt(p, "ReleaseWidth", 1));
             cfgAllowUsernameTiers = Boolean.parseBoolean(p.getProperty("AllowUsernameTiers", "false").trim());
             readUsernameTiers(p);
             logEffectiveConfig(file);
@@ -96,6 +150,7 @@ public final class PLZQueue {
         DebugType.General.println(
             "PLZQueue: MaxPlayers=" + effective + " (from " + source + "), MaxQueue="
                 + (cfgMaxQueue > 0 ? String.valueOf(cfgMaxQueue) : "unlimited")
+                + ", ReleaseWidth=" + cfgReleaseWidth
                 + ", LoginQueueEnabled=" + ServerOptions.getInstance().loginQueueEnabled.getValue());
     }
 
@@ -157,6 +212,15 @@ public final class PLZQueue {
         return clamped;
     }
 
+    private static int clampReleaseWidth(int wanted) {
+        int clamped = Math.max(1, Math.min(wanted, 8));
+        if (clamped != wanted) {
+            DebugType.General.println(
+                "PLZQueue: ReleaseWidth=" + wanted + " out of range, clamped to " + clamped);
+        }
+        return clamped;
+    }
+
     private static int readInt(Properties p, String key, int fallback) {
         String raw = p.getProperty(key);
         if (raw == null) {
@@ -181,6 +245,7 @@ public final class PLZQueue {
         DebugType.General.println("PLZQueue: wrote default config to " + file);
         cfgMaxPlayers = -1;
         cfgMaxQueue = 0;
+        cfgReleaseWidth = 1;
         cfgAllowUsernameTiers = false;
         cfgUsernameTiers.clear();
     }
@@ -211,6 +276,28 @@ public final class PLZQueue {
             + "#   a hopeless line. They are told PLZQueueFull and the launcher can say so.\n"
             + "#   0 = no policy cap; the queue is bounded only by the connection limit.\n"
             + "MaxQueue=0\n"
+            + "#\n"
+            + "# ReleaseWidth\n"
+            + "#   How many players may be LOADING INTO THE WORLD at the same time.\n"
+            + "#\n"
+            + "#   1 is the shipped behaviour: the queue admits one player, then waits for that\n"
+            + "#   player's client to finish loading before admitting the next. One slow client\n"
+            + "#   therefore holds the line for everyone behind it, for up to\n"
+            + "#   LoginQueueConnectTimeout seconds.\n"
+            + "#\n"
+            + "#   Raising it lets N load concurrently. This is safe for the world and the player\n"
+            + "#   database: auth, slot allocation and receiveClientConnect all happen UPSTREAM of\n"
+            + "#   the queue and are already concurrent at any width, cell loading dedupes in\n"
+            + "#   ServerMap.loadOrKeepRelevent, and LoginQueueEnabled=false is vanilla's default\n"
+            + "#   and means unlimited width. The cost is main-thread chunk serialisation, which\n"
+            + "#   is per-connection per-tick, so it scales with this number.\n"
+            + "#\n"
+            + "#   Each admitted player gets its OWN deadline. Do not collapse those back into a\n"
+            + "#   single shared timer: at width > 1 it would be reset by whichever player was\n"
+            + "#   admitted last, expire early for the others, and cascade into over-release.\n"
+            + "#\n"
+            + "#   1 = unchanged. Ceiling 8.\n"
+            + "ReleaseWidth=1\n"
             + "#\n"
             + "# ---------------------------------------------------------------------------\n"
             + "# AllowUsernameTiers / UsernameTier.<name>   LOCAL TESTING ONLY\n"

@@ -96,6 +96,14 @@ public class VoiceManager {
 
     private static volatile String plzRadioPttBinding = null;
 
+    // The peers serviced by plzServiceRadioOnlyPeers on the last pass, and how many voice frames
+    // have arrived from each peer since this client joined. Both exist so the MP suite can tell
+    // "the channels line up" from "the audio actually reaches this machine" - which is the exact
+    // pair of facts the walkie was failing on, and which look identical from Lua otherwise.
+    // Written on the voice thread and read from Lua on the main one, hence the locks.
+    private static final ArrayList<Short> plzRadioOnlyPeers = new ArrayList<>();
+    private static final java.util.HashMap<Short, Integer> plzFrameCounts = new java.util.HashMap<>();
+
     public static VoiceManager getInstance() {
         return instance;
     }
@@ -418,7 +426,13 @@ public class VoiceManager {
         table.rawset("setRadioPttBinding", new JavaFunction() {
             @Override
             public int call(LuaCallFrame callFrame, int nArguments) {
-                Object arg1 = callFrame.get(1);
+                // get(0), NOT get(1). LuaCallFrame is ZERO-BASED, and this read is the whole of
+                // whether the radio key works: get(1) is the second argument, which nothing
+                // passes, so the binding was set to null on every call and plzIsRadioPttDown
+                // answered false forever. The key looked bound, the panel said it was armed, and
+                // the mic never opened. Same trap, same disguise, as setPrivateCall and
+                // setVoiceConfig - see .claude/PLZ-VOICE.md section 0.
+                Object arg1 = callFrame.get(0);
                 VoiceManager.plzRadioPttBinding = arg1 instanceof String s && !s.isEmpty() ? s : null;
                 return 1;
             }
@@ -427,6 +441,67 @@ public class VoiceManager {
             @Override
             public int call(LuaCallFrame callFrame, int nArguments) {
                 VoiceManager.plzRepublishChannels();
+                return 1;
+            }
+        });
+        // WHETHER THIS CLIENT WOULD ACTUALLY PLAY THAT PEER'S RADIO AUDIO, which getPeerRadio
+        // cannot answer: it reports that the channels and ranges line up, and for a peer far
+        // enough away that GameClient has timed their character out the engine used to agree
+        // and then never ask RakVoice for a single frame. `loaded` is the difference.
+        table.rawset("getRadioAudio", new JavaFunction() {
+            @Override
+            public int call(LuaCallFrame callFrame, int nArguments) {
+                // get(0). Zero-based, like every other read on this table.
+                KahluaTable info = callFrame.getPlatform().newTable();
+                Object arg1 = callFrame.get(0);
+                if (!(arg1 instanceof Double onlineId)) {
+                    info.rawset("known", false);
+                    callFrame.push(info);
+                    return 1;
+                }
+
+                short id = (short)onlineId.intValue();
+                boolean loaded = false;
+                if (GameClient.client && GameClient.instance != null) {
+                    ArrayList<IsoPlayer> players = GameClient.instance.getPlayers();
+                    for (int i = 0; i < players.size(); i++) {
+                        if (players.get(i).onlineId == id) {
+                            loaded = true;
+                            break;
+                        }
+                    }
+                }
+
+                boolean serviced;
+                synchronized (plzRadioOnlyPeers) {
+                    serviced = plzRadioOnlyPeers.contains(id);
+                }
+
+                int frames;
+                synchronized (plzFrameCounts) {
+                    Integer seen = plzFrameCounts.get(id);
+                    frames = seen == null ? 0 : seen;
+                }
+
+                info.rawset("known", true);
+                info.rawset("loaded", loaded);
+                info.rawset("serviced", serviced);
+                // Without this the voice thread never runs its receive pass at all, so `serviced`
+                // reads false for a reason that has nothing to do with the radio.
+                info.rawset("voip", serverVOIPEnable);
+                // AN ADMIN HEARS EVERYONE ANYWAY, and checkForNearbyRadios says so by returning
+                // the proximity entry before it ever looks at a radio. So `linked` is
+                // structurally false for a hear-all listener, and a test that read it as "the
+                // radio path is broken" would be reading the wrong thing entirely.
+                boolean hearAll = false;
+                IsoPlayer me = IsoPlayer.getInstance();
+                if (me != null && me.onlineId != -1) {
+                    hearAll = VoiceManagerData.get(me.onlineId).isCanHearAll || me.canHearAll();
+                }
+                info.rawset("hearAll", hearAll);
+                info.rawset("linked", VoiceManager.instance.plzRadioLink(VoiceManagerData.get(id)) != null);
+                info.rawset("frames", (double)frames);
+                callFrame.push(info);
                 return 1;
             }
         });
@@ -441,7 +516,8 @@ public class VoiceManager {
                         plzConfigFloat(cfg, "whisper", PLZVoice.getWhisperFraction()),
                         plzConfigFloat(cfg, "normal", PLZVoice.getNormalFraction()),
                         plzConfigFloat(cfg, "shout", PLZVoice.getShoutFraction()),
-                        plzConfigFloat(cfg, "falloff", PLZVoice.getFalloffExponent())
+                        plzConfigFloat(cfg, "falloff", PLZVoice.getFalloffExponent()),
+                        plzConfigFloat(cfg, "gain", PLZVoice.getGain())
                     );
                     VoiceManager.plzRepublishChannels();
                 }
@@ -466,6 +542,7 @@ public class VoiceManager {
 
                 info.rawset("volumeAt2", (double)PLZVoice.volumeFor(mode, 2.0F, minDistance, maxDistance));
                 info.rawset("volumeAt20", (double)PLZVoice.volumeFor(mode, 20.0F, minDistance, maxDistance));
+                info.rawset("gain", (double)PLZVoice.getGain());
 
                 info.rawset("isClient", GameClient.client);
                 info.rawset("hasConnection", GameClient.connection != null);
@@ -536,7 +613,11 @@ public class VoiceManager {
             @Override
             public int call(LuaCallFrame callFrame, int nArguments) {
                 KahluaTable info = callFrame.getPlatform().newTable();
-                Object arg1 = callFrame.get(1);
+                // get(0). The zero-based trap again, and here it wears the worst disguise of the
+                // three: rejecting the id answers known=false for every peer, which reads exactly
+                // like the routing array never crossing the wire. getPeerVoice was fixed for this
+                // and this one, written later for a suite that had never been run, repeated it.
+                Object arg1 = callFrame.get(0);
                 IsoPlayer me = IsoPlayer.getInstance();
                 if (!(arg1 instanceof Double onlineId) || me == null || me.onlineId == -1) {
                     info.rawset("known", false);
@@ -621,8 +702,18 @@ public class VoiceManager {
         return value instanceof Double d ? d.floatValue() : fallback;
     }
 
+    // THE CEILING IS THE GAIN, NOT 1.0, and that one number is the whole of what
+    // makes the loudness setting reach anything. Vanilla clamped here, so a voice
+    // could never play above what the game itself would produce - and what the
+    // game itself produces is already below full scale, because the listener's
+    // own voice slider is folded in as volumePlayers/12 and its maximum ordinary
+    // setting is ten. A gain of 1.0 leaves this byte-identical to vanilla; every
+    // other caller passes a value at or below 1.0 and is unaffected, because the
+    // slider can only ever bring those down.
     private void setUserPlaySound(long userPlayChannel, float volume) {
-        volume = IsoUtils.clamp(volume * IsoUtils.lerp(this.volumePlayers, 0.0F, 12.0F), 0.0F, 1.0F);
+        volume = IsoUtils.clamp(
+            volume * IsoUtils.lerp(this.volumePlayers, 0.0F, 12.0F), 0.0F, PLZVoice.playbackCeiling()
+        );
         javafmod.FMOD_Channel_SetVolume(userPlayChannel, volume);
     }
 
@@ -902,6 +993,12 @@ public class VoiceManager {
                     }
                 }
 
+                // A peer the world has forgotten but the radio has not counts as online here, or
+                // the loop below tears down the very channel plzServiceRadioOnlyPeers is feeding.
+                if (!online && this.plzRadioLink(d) != null) {
+                    online = true;
+                }
+
                 if (false & d.index == 0) {
                     break;
                 }
@@ -926,6 +1023,7 @@ public class VoiceManager {
 
                         while (RakVoice.ReceiveFrame(player.getOnlineID(), this.buf)) {
                             d.voicetimeout = 10L;
+                            plzCountFrame(player.getOnlineID());
                             if (!d.userplaymute) {
                                 float range = IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY());
                                 if (me.canHearAll()) {
@@ -981,7 +1079,99 @@ public class VoiceManager {
                         }
                     }
                 }
+
+                this.plzServiceRadioOnlyPeers(players);
             }
+        }
+    }
+
+    // WHY A RADIO WITH A MAP-WIDE RANGE STILL WENT SILENT ACROSS TOWN, and the whole of what the
+    // pass below fixes. The loop above only ever asks RakVoice for frames from players this client
+    // still holds an IsoPlayer for, and it stops holding one about five seconds after they leave
+    // its chunk-relevance box: the server relays PlayerPacket only to connections isRelevantTo the
+    // speaker's position, so GameClient.timeoutRemotePlayers drops them. Nothing about the routing
+    // array is wrong at that point - SyncRadioData is relayed to EVERY connection unconditionally,
+    // so the freq/range/position needed to decide "same channel, in range" is right here - there is
+    // simply nobody listening for the frames. So the walkie worked at the range you could have
+    // shouted at, and nowhere else.
+    //
+    // Nothing here touches an IsoPlayer or the world. The peers this services have no character
+    // loaded on this machine by design; propping their objects up to keep them out of the timeout
+    // would leave a frozen copy of everybody standing wherever they were last seen.
+    private void plzServiceRadioOnlyPeers(ArrayList<IsoPlayer> players) {
+        ArrayList<VoiceManagerData> data = VoiceManagerData.data;
+
+        synchronized (plzRadioOnlyPeers) {
+            plzRadioOnlyPeers.clear();
+        }
+
+        for (int i = 0; i < data.size(); i++) {
+            VoiceManagerData d = data.get(i);
+            boolean loaded = false;
+
+            for (int pn = 0; pn < players.size(); pn++) {
+                if (players.get(pn).onlineId == d.index) {
+                    loaded = true;
+                    break;
+                }
+            }
+
+            if (loaded) {
+                continue;
+            }
+
+            VoiceManagerData.RadioData link = this.plzRadioLink(d);
+            if (link == null) {
+                continue;
+            }
+
+            synchronized (plzRadioOnlyPeers) {
+                plzRadioOnlyPeers.add(d.index);
+            }
+
+            IsoPlayer me = IsoPlayer.getInstance();
+
+            while (RakVoice.ReceiveFrame(d.index, this.buf)) {
+                d.voicetimeout = 10L;
+                plzCountFrame(d.index);
+                if (d.userplaymute) {
+                    continue;
+                }
+
+                // Non-positional, at the listening radio's own volume - the same treatment the
+                // loop above gives a radio match, because a voice arriving out of a speaker has
+                // no direction to come from.
+                javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
+                javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
+                this.setUserPlaySound(d.userplaychannel, link.deviceData.getDeviceVolume());
+                link.deviceData.doReceiveMPSignal(link.lastReceiveDistance);
+                javafmod.FMOD_System_RAWPlayData(this.getUserPlaySound(d.index), this.buf, this.buf.length);
+            }
+
+            if (d.voicetimeout > 0L) {
+                d.voicetimeout--;
+            }
+        }
+    }
+
+    // Our own radio entry that matches theirs, or null. checkForNearbyRadios answers with the
+    // LISTENER's entry, and only a radio match carries a deviceData: both the hear-all branch and
+    // the proximity fallback come back with a null one, and neither has any business reaching
+    // somebody far enough away that the world has unloaded them.
+    private VoiceManagerData.RadioData plzRadioLink(VoiceManagerData theirs) {
+        IsoPlayer me = IsoPlayer.getInstance();
+        if (me == null || me.onlineId == -1 || theirs.index == me.onlineId) {
+            return null;
+        }
+
+        VoiceManagerData.RadioData link = this.checkForNearbyRadios(theirs);
+        return link != null && link.deviceData != null ? link : null;
+    }
+
+    private static void plzCountFrame(short onlineId) {
+        synchronized (plzFrameCounts) {
+            Integer seen = plzFrameCounts.get(onlineId);
+            plzFrameCounts.put(onlineId, seen == null ? 1 : seen + 1);
         }
     }
 

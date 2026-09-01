@@ -46,6 +46,20 @@ pub enum Error {
         expected: String,
     },
 
+    #[error(
+        "Steam has not finished with your Workshop mods: {mods}.\n\
+         Starting now makes the game ask Steam for mod folders it has not written yet, and \
+         the answer is cached for the whole session -- so anything refused stays refused. \
+         An invisible character, invisible vehicles and a blank map are the usual result.\n\
+         Leave Project Zomboid closed, wait for Steam's Downloads page to go quiet, then \
+         press Play again. If Steam shows nothing downloading, restart Steam -- it applies \
+         pending Workshop updates on startup."
+    )]
+    WorkshopNotReady { mods: String },
+
+    #[error("{url} returned {status}")]
+    Http { url: String, status: u16 },
+
     #[error("Payload signature check failed. Refusing to install unverified code.")]
     BadSignature,
 

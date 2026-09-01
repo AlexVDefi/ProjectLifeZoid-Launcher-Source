@@ -150,7 +150,10 @@ const collectionMods = (contentCfg.collectionMods ?? []).map((m, i) => {
         process.exit(1);
     }
     seen.add(id);
-    return { id, name: String(m.name ?? id) };
+    const entry = { id, name: String(m.name ?? id) };
+    const updated = updatedOverrides.get(id) ?? m.timeUpdated;
+    if (updated) entry.timeUpdated = Number(updated);
+    return entry;
 });
 
 if (contentCfg.collectionMods?.length && !contentCfg.collectionId) {
@@ -204,7 +207,9 @@ console.log(`client files     ${files.length}`);
 console.log(`server files     ${serverFiles.length}`);
 console.log(`builtAgainstJar  ${manifest.builtAgainstJarSha256}`);
 console.log(`mods             ${mods.length}${manifest.collectionId ? "" : "  (no collectionId set)"}`);
+const stamped = collectionMods.filter((m) => m.timeUpdated).length;
 console.log(`collection mods  ${collectionMods.length}${collectionMods.length ? "" : "  (collection cannot be verified)"}`);
+console.log(`  with publish times  ${stamped}/${collectionMods.length}${stamped === collectionMods.length ? "" : "  (version gate is blind for the rest)"}`);
 console.log(`newsUrl          ${manifest.newsUrl || "(none)"}`);
 console.log(`out              ${outDir}`);
 for (const f of files) console.log(`  client  ${f.sha256.slice(0, 12)}  ${String(f.size).padStart(6)}  ${f.path}`);

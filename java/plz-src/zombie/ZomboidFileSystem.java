@@ -35,6 +35,7 @@ import zombie.Lua.LuaEventManager;
 import zombie.core.Core;
 import zombie.core.logger.ExceptionLogger;
 import zombie.core.math.PZMath;
+import zombie.core.textures.Texture;
 import zombie.core.znet.SteamUtils;
 import zombie.core.znet.SteamWorkshop;
 import zombie.debug.DebugType;
@@ -48,6 +49,7 @@ import zombie.modding.ActiveModsFile;
 import zombie.network.CoopMaster;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
+import zombie.plz.PLZAssetRefusals;
 import zombie.plz.PLZPrefixRetry;
 import zombie.util.ResettableLazyValue;
 import zombie.util.StringUtils;
@@ -59,6 +61,9 @@ public final class ZomboidFileSystem {
     private final Map<String, ChooseGameInfo.Mod> modDirToMod = new HashMap<>();
     private ArrayList<String> modFolders;
     private ArrayList<String> modFoldersOrder;
+    private static final int PLZ_SHORT_WALK_RETRIES = 3;
+    private static final long PLZ_SHORT_WALK_PAUSE_MS = 100L;
+    private int plzBestModFolderCount;
     public final HashMap<String, String> activeFileMap = new HashMap<>();
     private final HashSet<String> allAbsolutePaths = new HashSet<>();
     private final ResettableLazyValue<List<Path>> allowedPrefixes = new ResettableLazyValue<>(() -> {
@@ -426,7 +431,12 @@ public final class ZomboidFileSystem {
     }
 
     public void resetModFolders() {
-        this.modFolders = null;
+        // Every reader of modFolders holds modFoldersLock; nulling it outside was the one write
+        // that did not, and the connect path nulls it while asset threads are walking it.
+        synchronized (this.modFoldersLock) {
+            this.modFolders = null;
+        }
+
         this.allowedPrefixes.reset();
     }
 
@@ -519,40 +529,7 @@ public final class ZomboidFileSystem {
         ArrayList<String> folders;
         synchronized (this.modFoldersLock) {
             if (this.modFolders == null) {
-                ArrayList<String> built = new ArrayList<>();
-                if (this.modFoldersOrder == null) {
-                    this.setModFoldersOrder("workshop,steam,mods");
-                }
-
-                ArrayList<String> modsFolders = new ArrayList<>();
-
-                for (int i = 0; i < this.modFoldersOrder.size(); i++) {
-                    String s = this.modFoldersOrder.get(i);
-                    if ("workshop".equals(s)) {
-                        this.getStagedItemModsFolders(modsFolders);
-                    }
-
-                    if ("steam".equals(s)) {
-                        this.getInstalledItemModsFolders(modsFolders);
-                    }
-
-                    if ("mods".equals(s)) {
-                        modsFolders.add(Core.getMyDocumentFolder() + File.separator + "mods");
-                    }
-                }
-
-                for (int j = 0; j < modsFolders.size(); j++) {
-                    String folder = modsFolders.get(j);
-                    if (!this.watchedModFolders.contains(folder)) {
-                        this.watchedModFolders.add(folder);
-                        DebugFileWatcher.instance.addDirectory(folder);
-                    }
-
-                    this.getAllModFoldersAux(folder, built);
-                }
-
-                DebugFileWatcher.instance.add(this.modFileWatcher);
-                this.modFolders = built;
+                this.modFolders = this.plzWalkModFoldersChecked();
             }
 
             folders = this.modFolders;
@@ -560,6 +537,84 @@ public final class ZomboidFileSystem {
 
         out.clear();
         out.addAll(folders);
+    }
+
+    // ConnectToServerState calls resetModFolders() on every connect, so this walk runs again each
+    // time a player joins, and each run is a fresh chance for Steam to answer before its Workshop
+    // cache is warm. A short answer is invisible on its own - the mods still load, only the assets
+    // under the folders that went missing are refused - so a regression against the best answer
+    // this process has seen is worth walking again, and worth saying out loud if it sticks.
+    //
+    // Short is measured against a high-water mark rather than the previous walk, because a genuine
+    // unsubscribe also shortens the list. Retrying an unsubscribe costs 300ms once; taking a raced
+    // walk on trust costs the player their session.
+    private ArrayList<String> plzWalkModFoldersChecked() {
+        ArrayList<String> built = this.plzWalkModFolders();
+
+        for (int attempt = 0; attempt < PLZ_SHORT_WALK_RETRIES && built.size() < this.plzBestModFolderCount; attempt++) {
+            DebugType.Mod
+                .warn(
+                    "PLZ: mod folder walk returned " + built.size() + ", best this session was " + this.plzBestModFolderCount + "; walking again"
+                );
+
+            try {
+                Thread.sleep(PLZ_SHORT_WALK_PAUSE_MS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+
+            built = this.plzWalkModFolders();
+        }
+
+        if (built.size() < this.plzBestModFolderCount) {
+            DebugType.Mod
+                .error(
+                    "PLZ: mod folder walk is still short (" + built.size() + " of " + this.plzBestModFolderCount
+                        + "). Workshop assets under the missing folders will be refused until it is walked again."
+                );
+        } else {
+            this.plzBestModFolderCount = built.size();
+        }
+
+        return built;
+    }
+
+    private ArrayList<String> plzWalkModFolders() {
+        ArrayList<String> built = new ArrayList<>();
+        if (this.modFoldersOrder == null) {
+            this.setModFoldersOrder("workshop,steam,mods");
+        }
+
+        ArrayList<String> modsFolders = new ArrayList<>();
+
+        for (int i = 0; i < this.modFoldersOrder.size(); i++) {
+            String s = this.modFoldersOrder.get(i);
+            if ("workshop".equals(s)) {
+                this.getStagedItemModsFolders(modsFolders);
+            }
+
+            if ("steam".equals(s)) {
+                this.getInstalledItemModsFolders(modsFolders);
+            }
+
+            if ("mods".equals(s)) {
+                modsFolders.add(Core.getMyDocumentFolder() + File.separator + "mods");
+            }
+        }
+
+        for (int j = 0; j < modsFolders.size(); j++) {
+            String folder = modsFolders.get(j);
+            if (!this.watchedModFolders.contains(folder)) {
+                this.watchedModFolders.add(folder);
+                DebugFileWatcher.instance.addDirectory(folder);
+            }
+
+            this.getAllModFoldersAux(folder, built);
+        }
+
+        DebugFileWatcher.instance.add(this.modFileWatcher);
+        return built;
     }
 
     public int getGameVersionIntFromName(String name) {
@@ -1466,9 +1521,13 @@ public final class ZomboidFileSystem {
 
         if (PLZPrefixRetry.refresh(generation, this::refreshAllowedPrefixes) && this.matchesAllowedPrefix(inputPath)) {
             DebugType.Mod.println("validatePrefix: allowed after re-enumerating mod folders: " + input);
+            this.plzForgetRefusedTextures();
             return;
         }
 
+        // Nothing the player sees names the mod, the file or Steam, so record it for the client
+        // to surface. Throw path only: a refusal the retry above took back is not worth a popup.
+        PLZAssetRefusals.record(input);
         throw new IllegalArgumentException("Invalid prefix found for: %s".formatted(input));
     }
 
@@ -1489,6 +1548,32 @@ public final class ZomboidFileSystem {
     private void refreshAllowedPrefixes() {
         this.resetModFolders();
         this.allowedPrefixes.get();
+    }
+
+    // Repairing the prefix list does not un-break anything already refused. Texture remembers a
+    // refusal in the public nullTextures set, getSharedTextureInternal consults it before doing
+    // anything else, and only onTexturePacksChanged clears it - which nothing on the connect path
+    // calls. So one lost enumeration leaves a blank world map and invisible remote players until
+    // the process is restarted, and reconnecting cannot fix it because ConnectToServerState calls
+    // resetModFolders() on every connect and re-rolls the same dice.
+    //
+    // Dropping only the negative entries, not onTexturePacksChanged(), which also empties
+    // s_sharedTextureTable and would make every texture in the game reload.
+    //
+    // Called from whatever thread hit the refusal, while the render thread may be in contains().
+    // HashSet.clear() nulls the bins but not the table reference, and contains() walks a bin
+    // without an iterator, so the worst a concurrent reader sees is a miss - which is the answer
+    // we want anyway: not cached as dead, go and load it. No CME, no NPE.
+    private void plzForgetRefusedTextures() {
+        int dropped = Texture.nullTextures.size();
+        if (dropped > 0) {
+            Texture.nullTextures.clear();
+            DebugType.Mod
+                .println(
+                    "PLZ: dropped " + dropped + " refused-texture entr" + (dropped == 1 ? "y" : "ies")
+                        + " so they retry now the mod folder list is good again"
+                );
+        }
     }
 
     public static String getFileName(String filePath) {

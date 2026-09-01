@@ -194,6 +194,7 @@ async fn main() {
                 line("missing", report.missing);
                 line("steam says out of date", report.out_of_date);
                 line("older than this release", report.behind_server);
+                line("newer than this release", report.ahead_of_server);
                 for req in &report.requirements {
                     line(
                         &format!("{} {}", req.kind, req.name),
@@ -247,7 +248,7 @@ Steam has not downloaded the release above. Leave the game closed and let it fin
                 for f in &m.server_files {
                     line("  server", &f.path);
                 }
-                match payload::sync(&m).await {
+                match payload::sync(&m, &|msg: &str| line("syncing", msg)).await {
                     Ok(n) => {
                         line("downloaded", n);
                         line("installed", payload::is_installed(&m));

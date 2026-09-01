@@ -24,8 +24,17 @@ pub struct ModStatus {
     pub downloading: bool,
     pub out_of_date: bool,
     pub behind_server: bool,
+    pub ahead_of_server: bool,
     pub time_updated: Option<u64>,
     pub size_bytes: u64,
+}
+
+impl ModStatus {
+    // Steam has work left on this item. Either is enough to hand the game a mod folder that is
+    // not there yet, and ZomboidFileSystem memoises that answer for the whole session.
+    pub fn not_ready(&self) -> bool {
+        self.downloading || self.out_of_date
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,6 +50,7 @@ pub struct Requirement {
     pub missing: usize,
     pub out_of_date: usize,
     pub behind_server: usize,
+    pub ahead_of_server: usize,
     pub verified: bool,
     pub missing_names: Vec<String>,
 }
@@ -54,6 +64,7 @@ pub struct ModReport {
     pub missing: usize,
     pub out_of_date: usize,
     pub behind_server: usize,
+    pub ahead_of_server: usize,
     pub collection_url: Option<String>,
     pub requirements: Vec<Requirement>,
     pub mods: Vec<ModStatus>,
@@ -152,6 +163,17 @@ impl AcfItem {
             _ => false,
         }
     }
+
+    // The other direction, and the one nothing used to catch: Steam updated the item on this
+    // machine while the server still runs the copy the release was cut against. PZ refuses a
+    // mismatch either way, but only an admin can fix this one, so it warns rather than blocks.
+    pub fn ahead(&self, expected: Option<u64>) -> bool {
+        const SLACK: u64 = 30 * 60;
+        match expected {
+            Some(want) if want > 0 && self.time_updated > 0 => self.time_updated > want + SLACK,
+            _ => false,
+        }
+    }
 }
 
 pub fn acf_items() -> BTreeMap<String, AcfItem> {
@@ -230,6 +252,7 @@ fn scan(mods: &[ModEntry], dirs: &[PathBuf], acf: &BTreeMap<String, AcfItem>) ->
                 downloading: !installed && state.is_some_and(|s| s.subscribed),
                 out_of_date: installed && state.is_some_and(AcfItem::out_of_date),
                 behind_server: installed && state.is_some_and(|s| s.behind(m.time_updated)),
+                ahead_of_server: installed && state.is_some_and(|s| s.ahead(m.time_updated)),
                 time_updated: state.map(|s| s.time_updated).filter(|t| *t > 0),
                 size_bytes: found.as_ref().map(dir_size).unwrap_or(0),
             }
@@ -251,6 +274,7 @@ fn tally(kind: &str, id: &str, name: &str, statuses: &[ModStatus], verified: boo
         missing: statuses.len() - installed - downloading,
         out_of_date: statuses.iter().filter(|m| m.out_of_date).count(),
         behind_server: statuses.iter().filter(|m| m.behind_server).count(),
+        ahead_of_server: statuses.iter().filter(|m| m.ahead_of_server).count(),
         verified,
         missing_names: statuses
             .iter()
@@ -304,6 +328,7 @@ pub fn report(req: Requirements<'_>) -> ModReport {
         missing: statuses.len() - installed - downloading,
         out_of_date: statuses.iter().filter(|m| m.out_of_date).count(),
         behind_server: statuses.iter().filter(|m| m.behind_server).count(),
+        ahead_of_server: statuses.iter().filter(|m| m.ahead_of_server).count(),
         collection_url: Some(item_url(req.collection_id)).filter(|_| !req.collection_id.is_empty()),
         requirements,
         mods: statuses,
@@ -340,6 +365,7 @@ mod requirement_tests {
             downloading,
             out_of_date: false,
             behind_server: false,
+            ahead_of_server: false,
             time_updated: None,
             size_bytes: 0,
         }
@@ -367,6 +393,27 @@ mod requirement_tests {
         let r = tally("collection", "1", "Pack", &items, true);
         assert_eq!((r.installed, r.downloading, r.missing), (1, 1, 1));
         assert_eq!(r.missing_names, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn steam_still_working_reads_as_not_ready_either_way() {
+        let mut mid_download = status("a", false, true);
+        assert!(mid_download.not_ready(), "still downloading");
+
+        mid_download.downloading = false;
+        mid_download.installed = true;
+        mid_download.out_of_date = true;
+        assert!(mid_download.not_ready(), "installed but an update is pending");
+
+        mid_download.out_of_date = false;
+        assert!(!mid_download.not_ready(), "installed and current");
+    }
+
+    #[test]
+    fn an_unsubscribed_mod_is_not_the_same_as_one_steam_is_mid_way_through() {
+        // missing is a different failure: the folder never appears, so nothing races to read it.
+        // It stays a warning, and the launch gate must not pick it up.
+        assert!(!status("c", false, false).not_ready());
     }
 
     #[test]
@@ -515,6 +562,29 @@ mod acf_tests {
 
         item.time_updated = 1_787_999_999;
         assert!(!item.behind(Some(1_787_936_663)));
+    }
+
+    #[test]
+    fn ahead_catches_the_direction_behind_is_blind_to() {
+        let expected = Some(1_787_936_663);
+        let mut item = AcfItem {
+            time_updated: 1_787_999_999,
+            ..AcfItem::default()
+        };
+
+        // The case that used to reach the join unchecked and come back as a refusal.
+        assert!(item.ahead(expected));
+        assert!(!item.behind(expected), "the old gate cannot see this one");
+
+        assert!(!item.ahead(None), "nothing to compare against");
+        assert!(!AcfItem::default().ahead(expected), "no local time");
+
+        item.time_updated = 1_787_936_655;
+        assert!(!item.ahead(expected), "same publish, within the slack");
+
+        item.time_updated = 1_787_879_368;
+        assert!(!item.ahead(expected), "older is behind, not ahead");
+        assert!(item.behind(expected));
     }
 
     #[test]

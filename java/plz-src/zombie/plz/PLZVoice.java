@@ -29,18 +29,31 @@ public final class PLZVoice {
 
     private static volatile boolean floorsEnabled = true;
     private static volatile boolean modesEnabled = true;
-    private static volatile float whisperFraction = 0.02F;
-    private static volatile float normalFraction = 1.10F;
-    private static volatile float shoutFraction = 1.75F;
+    private static volatile float whisperFraction = 0.04F;
+    private static volatile float normalFraction = 1.12F;
+    private static volatile float shoutFraction = 1.85F;
 
     private static volatile float falloffExponent = 0.5F;
 
+    // THE ONLY THING HERE THAT CHANGES LOUDNESS RATHER THAN REACH. Everything
+    // else moves where a voice stops; this multiplies what comes out of the
+    // speaker. 1.0 is exactly what the game would play.
+    //
+    // MAX_GAIN IS ALSO THE PLAYBACK CEILING, and it has to be, because vanilla
+    // clamps the channel volume to 1.0 before it reaches FMOD - a gain above one
+    // that was still clamped there would be a slider that did nothing past the
+    // first notch. See VoiceManager.setUserPlaySound.
+    public static final float MAX_GAIN = 3.0F;
+
+    private static volatile float gain = 1.75F;
+
     public static void setConfig(
-        boolean floors, boolean modes, float whisper, float normal, float shout, float falloff
+        boolean floors, boolean modes, float whisper, float normal, float shout, float falloff, float gainPercent
     ) {
         floorsEnabled = floors;
         modesEnabled = modes;
         falloffExponent = clamp(falloff, 0.2F, 2.0F);
+        gain = clamp(gainPercent, 1.0F, MAX_GAIN);
 
         float w = clamp(whisper, 0.01F, 0.95F);
         float n = clamp(normal, 0.2F, 3.0F);
@@ -64,6 +77,17 @@ public final class PLZVoice {
 
     public static float getFalloffExponent() {
         return falloffExponent;
+    }
+
+    public static float getGain() {
+        return gain;
+    }
+
+    // The highest number volumeFor can return, and therefore the value the
+    // playback clamp has to allow through. Never below 1.0, so a client running
+    // at no gain behaves exactly as it did before there was a gain at all.
+    public static float playbackCeiling() {
+        return gain < 1.0F ? 1.0F : gain;
     }
 
     public static boolean isFloorsEnabled() {
@@ -197,7 +221,7 @@ public final class PLZVoice {
 
     public static float volumeFor(int mode, float distance, float minDistance, float maxDistance) {
         if (!modesEnabled) {
-            return smoothstep(maxDistance, minDistance, distance);
+            return smoothstep(maxDistance, minDistance, distance) * gain;
         }
 
         float far = rangeForMode(mode, maxDistance);
@@ -207,10 +231,15 @@ public final class PLZVoice {
         }
 
         float level = smoothstep(far, near, distance);
-        if (level <= 0.0F || level >= 1.0F) {
-            return level;
+        if (level > 0.0F && level < 1.0F) {
+            level = (float)Math.pow(level, falloffExponent);
         }
-        return (float)Math.pow(level, falloffExponent);
+
+        // AFTER the curve, never inside it. The two ends of the curve are pinned
+        // - full beside the speaker, silent at the range - and gain lifts the
+        // whole of it by the same amount rather than bending it, so a voice
+        // still dies exactly where it stops being routed.
+        return level * gain;
     }
 
     public static float smoothstep(float edge0, float edge1, float x) {

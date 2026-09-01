@@ -594,12 +594,25 @@ function setStep(key) {
     $("work-step").textContent = STEPS[i][1];
 }
 
+// The step labels are static, so a long download and a wedged one looked identical from out
+// here and people killed the launcher on the second. Anything the backend says beyond the step
+// label goes on its own line.
+function setStepDetail(key, detail) {
+    const el = $("work-detail");
+    const label = (STEPS.find(([k]) => k === key) || [])[1] || "";
+    const text = (detail || "").trim();
+    el.textContent = text && text !== label ? text : "";
+    el.hidden = !el.textContent;
+}
+
 function enterWorking() {
     state.playing = true;
     state.startedAt = Date.now();
     $("checks").hidden = true;
     $("progress").hidden = false;
     $("bar-fill").style.width = "0%";
+    $("work-detail").textContent = "";
+    $("work-detail").hidden = true;
     clearInterval(state.timer);
     state.timer = setInterval(() => {
         $("work-time").textContent = mmss(Date.now() - state.startedAt);
@@ -949,6 +962,7 @@ $("community-links").addEventListener("click", async (e) => {
 
 listen("play-progress", (e) => {
     setStep(e.payload.step);
+    setStepDetail(e.payload.step, e.payload.detail);
     log(e.payload.step, e.payload.detail);
 });
 

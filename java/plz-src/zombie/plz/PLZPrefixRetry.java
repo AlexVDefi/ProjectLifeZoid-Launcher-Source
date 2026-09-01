@@ -3,6 +3,14 @@ package zombie.plz;
 public final class PLZPrefixRetry {
     static final long COOLDOWN_MS = 10_000L;
 
+    // Steam answering a moment late is the common case, and a flat 10s cooldown turns that into
+    // ten seconds of hard refusals: every mesh and texture asked for in the window fails, and a
+    // failed mesh or a texture cached in nullTextures never loads again this session. The first
+    // few walks are cheap, so let a cold start burst before settling into the rate limit.
+    static final int WARMUP_REFRESHES = 4;
+
+    static final long WARMUP_COOLDOWN_MS = 750L;
+
     static final int MAX_REFRESHES = 32;
 
     private static final Object LOCK = new Object();
@@ -32,7 +40,8 @@ public final class PLZPrefixRetry {
                 return false;
             }
 
-            if (everRefreshed && now() - lastRefreshAt < COOLDOWN_MS) {
+            long cooldown = refreshes < WARMUP_REFRESHES ? WARMUP_COOLDOWN_MS : COOLDOWN_MS;
+            if (everRefreshed && now() - lastRefreshAt < cooldown) {
                 return false;
             }
 
@@ -77,5 +86,9 @@ public final class PLZPrefixRetry {
         synchronized (LOCK) {
             lastRefreshAt = now() - COOLDOWN_MS;
         }
+    }
+
+    static long cooldownForTest(int afterRefreshes) {
+        return afterRefreshes < WARMUP_REFRESHES ? WARMUP_COOLDOWN_MS : COOLDOWN_MS;
     }
 }

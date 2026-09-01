@@ -167,6 +167,8 @@ import zombie.scripting.objects.ItemTag;
 import zombie.tileDepth.CutawayAttachedModifier;
 import zombie.tileDepth.TileDepthMapManager;
 import zombie.tileDepth.TileSeamModifier;
+import zombie.plz.PLZAssetRefusals;
+import zombie.plz.PLZTextureRepair;
 import zombie.plz.PLZBarrierGrid;
 import zombie.plz.PLZDoorAccess;
 import zombie.plz.PLZGatedGrid;
@@ -7961,6 +7963,28 @@ public final class IsoGridSquare {
 
     public static void plzBarrierPrintStatusBanner() {
         PLZBarrierGrid.printStatusBanner();
+    }
+
+    // LuaManager's exposer is an explicit whitelist and zombie.plz.PLZAssetRefusals is not on it,
+    // so the client reaches it the same way BarrierGrid does: statics on a class already exposed.
+    public static boolean plzTakeAssetRefusalReport() {
+        return PLZAssetRefusals.takeReport();
+    }
+
+    public static int plzAssetRefusalCount() {
+        return PLZAssetRefusals.getTotal();
+    }
+
+    public static String plzAssetRefusalMods() {
+        return PLZAssetRefusals.getModList();
+    }
+
+    public static int plzNullTextureCount() {
+        return PLZTextureRepair.deadCount();
+    }
+
+    public static int plzRepairTextures() {
+        return PLZTextureRepair.repair();
     }
 
     public static void plzGatedBeginUpdate() {

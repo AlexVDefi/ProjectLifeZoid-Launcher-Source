@@ -137,28 +137,74 @@ Events = {
     OnConnected = eventSlot("OnConnected"),
     OnGameStart = eventSlot("OnGameStart"),
     OnFETick = eventSlot("OnFETick"),
+    OnConnectionStateChanged = eventSlot("OnConnectionStateChanged"),
+    OnServerWorkshopItems = eventSlot("OnServerWorkshopItems"),
 }
 
 UI_ADDED = 0
+UI_PANELS = {}
+DRAWN = {}
 UIFont = { Large = "Large", Medium = "Medium", Small = "Small" }
+
+function getTextManager()
+    return { getFontHeight = function(self, font) return 20 end }
+end
+
 ISPanel = {}
 function ISPanel:new(x, y, w, h)
     local o = { x = x, y = y, w = w, h = h }
     o.initialise = function() end
-    o.addToUIManager = function() UI_ADDED = UI_ADDED + 1 end
-    o.removeFromUIManager = function() UI_ADDED = UI_ADDED - 1 end
+    o.addToUIManager = function(self)
+        UI_ADDED = UI_ADDED + 1
+        UI_PANELS[#UI_PANELS + 1] = self
+    end
+    o.removeFromUIManager = function(self)
+        UI_ADDED = UI_ADDED - 1
+        local kept = {}
+        for i = 1, #UI_PANELS do
+            if UI_PANELS[i] ~= self then kept[#kept + 1] = UI_PANELS[i] end
+        end
+        UI_PANELS = kept
+    end
     o.setAlwaysOnTop = function() end
     o.getWidth = function() return w end
     o.getHeight = function() return h end
-    o.drawTextCentre = function() end
+    o.drawTextCentre = function(self, str) DRAWN[#DRAWN + 1] = tostring(str) end
+    o.drawRect = function() end
+    o.drawRectBorder = function() end
     return o
 end
 function ISPanel.render() end
 
-ACCESS = { client = true, capabilities = {}, level = "" }
+-- Every panel is rendered for real, so a typo in a render body is a test failure
+-- and not a blank screen during a live join.
+function RENDER_ALL()
+    DRAWN = {}
+    for i = 1, #UI_PANELS do
+        UI_PANELS[i]:render()
+    end
+end
+
+function DRAWN_HAS(line)
+    for i = 1, #DRAWN do
+        if DRAWN[i] == line then return true end
+    end
+    return false
+end
+
+-- ACCESS.role is the connection Role. Until ConnectToServerState.TestTCP sets one,
+-- getAccessLevel THROWS and haveAccess swallows the same failure and answers false --
+-- which is exactly how a real join behaves between RakNet connecting and TestTCP running.
+ACCESS = { client = true, capabilities = {}, level = "", role = true }
 function isClient() return ACCESS.client end
-function haveAccess(capability) return ACCESS.capabilities[capability] == true end
-function getAccessLevel() return ACCESS.level end
+function haveAccess(capability)
+    if not ACCESS.role then return false end
+    return ACCESS.capabilities[capability] == true
+end
+function getAccessLevel()
+    if not ACCESS.role then error("NullPointerException: getRole() is null") end
+    return ACCESS.level
+end
 """
 
 BODY = r"""
@@ -234,7 +280,7 @@ print("--- 7. the role probe records the CAPABILITY, not the role name ---")
 FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
 WRITTEN = {}
 RELOAD()
-ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin" }
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin", role = true }
 enterMenu()
 HANDLERS.OnConnected()
 HANDLERS.OnGameStart()
@@ -244,7 +290,7 @@ print("")
 print("--- 8. a role WITHOUT the capability is recorded as denied ---")
 WRITTEN = {}
 RELOAD()
-ACCESS = { client = true, capabilities = {}, level = "moderator" }
+ACCESS = { client = true, capabilities = {}, level = "moderator", role = true }
 enterMenu()
 HANDLERS.OnConnected()
 HANDLERS.OnGameStart()
@@ -254,7 +300,7 @@ print("")
 print("--- 9. a custom role holding the capability still reads as allowed ---")
 WRITTEN = {}
 RELOAD()
-ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "builder" }
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "builder", role = true }
 enterMenu()
 HANDLERS.OnConnected()
 HANDLERS.OnGameStart()
@@ -264,7 +310,7 @@ print("")
 print("--- 10. single player and foreign joins write nothing ---")
 WRITTEN = {}
 RELOAD()
-ACCESS = { client = false, capabilities = { ConnectWithDebug = true }, level = "admin" }
+ACCESS = { client = false, capabilities = { ConnectWithDebug = true }, level = "admin", role = true }
 enterMenu()
 HANDLERS.OnGameStart()
 check("nothing written in SP", WRITTEN["PLZLauncher/role.txt"], nil)
@@ -272,7 +318,7 @@ check("nothing written in SP", WRITTEN["PLZLauncher/role.txt"], nil)
 WRITTEN = {}
 RELOAD()
 FILES["PLZLauncher/join.txt"] = nil
-ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin" }
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin", role = true }
 enterMenu()
 HANDLERS.OnGameStart()
 check("nothing written for a join we did not start", WRITTEN["PLZLauncher/role.txt"], nil)
@@ -284,27 +330,34 @@ WRITTEN = {}
 RELOAD()
 local realHaveAccess = haveAccess
 haveAccess = nil
-ACCESS = { client = true, capabilities = {}, level = "admin" }
+ACCESS = { client = true, capabilities = {}, level = "admin", role = true }
 enterMenu()
 HANDLERS.OnGameStart()
 haveAccess = realHaveAccess
 check("no role file, no crash", WRITTEN["PLZLauncher/role.txt"], nil)
 
 print("")
-print("--- 12. the welcome overlay holds the join, then lets it through ---")
+print("--- 12. the welcome overlay holds the join, then hands over to the status box ---")
 FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
 WRITTEN = {}
 UI_ADDED = 0
+UI_PANELS = {}
 CONNECT_ARGS = nil
 RELOAD()
 HANDLERS.OnMainMenuEnter()
 check("overlay shown", UI_ADDED, 1)
 check("join held while it is up", CONNECT_ARGS, nil)
+RENDER_ALL()
+check("  the welcome is what it draws", DRAWN_HAS("Welcome to Project Life Zoid!"), true)
 for i = 1, 89 do HANDLERS.OnFETick() end
 check("still held one tick short", CONNECT_ARGS, nil)
 HANDLERS.OnFETick()
-check("overlay removed", UI_ADDED, 0)
 check("join went ahead", CONNECT_ARGS ~= nil, true)
+check("exactly one overlay is left", UI_ADDED, 1)
+RENDER_ALL()
+check("  the welcome is gone", DRAWN_HAS("Welcome to Project Life Zoid!"), false)
+check("  the status box took over", DRAWN_HAS("Project Life Zoid"), true)
+check("  and says what it is doing", DRAWN_HAS("Contacting the server..."), true)
 
 print("")
 print("--- 13. no join intent means no banner and no connect ---")
@@ -315,6 +368,154 @@ RELOAD()
 enterMenu()
 check("nothing shown", UI_ADDED, 0)
 check("nothing connected", CONNECT_ARGS, nil)
+
+print("")
+print("--- 15. the status box survives the whole connect and names each stage ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+TRANSLATIONS["UI_servers_UDPConnecting"] = "Opening the connection"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectionStateChanged("UDPConnecting")
+RENDER_ALL()
+check("the engine wording is shown", DRAWN_HAS("Opening the connection"), true)
+HANDLERS.OnServerWorkshopItems("Required", "1234")
+RENDER_ALL()
+check("the workshop pass is named", DRAWN_HAS("Checking your Workshop mods against the server..."), true)
+HANDLERS.OnConnectionStateChanged("AuthPending")
+RENDER_ALL()
+check("an untranslated state falls back", DRAWN_HAS("Contacting the server..."), true)
+
+print("")
+print("--- 16. the last frame before ResetLua explains the freeze ---")
+HANDLERS.OnConnectionStateChanged("Connected")
+check("the box is still up", UI_ADDED, 1)
+RENDER_ALL()
+check("it says what is loading", DRAWN_HAS("Loading the server's content"), true)
+check("it warns about the freeze", DRAWN_HAS("The screen stays frozen the whole time. That is normal."), true)
+check("it says not to close the game", DRAWN_HAS("Do not close the game or the launcher."), true)
+
+print("")
+print("--- 17. Connected is the handoff, so the result lands there, not at OnConnected ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin", role = true }
+enterMenu()
+HANDLERS.OnConnectionStateChanged("Connected")
+check("OK written without OnConnected", string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 2), "OK")
+check("role written without OnGameStart", WRITTEN["PLZLauncher/role.txt"], "1\nadmin\n")
+
+print("")
+print("--- 18. a refusal takes the box down so the vanilla screen is readable ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+check("box up while connecting", UI_ADDED, 1)
+HANDLERS.OnConnectFailed("UI_OnConnectFailed_PLZNameTaken")
+check("box STAYS on refusal", UI_ADDED, 1)
+RENDER_ALL()
+check("  and captions the failure", DRAWN_HAS("Could not connect to Project Life Zoid"), true)
+check("reason still reported", string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 12), "PLZNameTaken")
+
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectionStateChanged("Disconnected", "banned")
+check("box stays on a drop", UI_ADDED, 1)
+
+print("")
+print("--- 19. RakNet's early Connected is not the join, and must not answer for it ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin", role = false }
+enterMenu()
+-- the transport callback: a message argument, and no Role on the connection yet
+HANDLERS.OnConnectionStateChanged("Connected", "")
+check("no result yet", WRITTEN["PLZLauncher/result.txt"], nil)
+check("no role guessed", WRITTEN["PLZLauncher/role.txt"], nil)
+check("box still up", UI_ADDED, 1)
+-- a refusal arriving after it must still be reported
+HANDLERS.OnConnectFailed("UI_OnConnectFailed_PLZNotApproved")
+check("refusal still reported", string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 14), "PLZNotApproved")
+
+print("")
+print("--- 20. a Role that appears late is picked up, not locked out by the early event ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+ACCESS = { client = true, capabilities = { ConnectWithDebug = true }, level = "admin", role = false }
+enterMenu()
+HANDLERS.OnConnectionStateChanged("Connected", "")
+check("still nothing written", WRITTEN["PLZLauncher/role.txt"], nil)
+-- TestTCP has now run, and receiveStartLocation fires with NO message
+ACCESS.role = true
+HANDLERS.OnConnectionStateChanged("Connected")
+check("OK written once the role exists", string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 2), "OK")
+check("role written correctly", WRITTEN["PLZLauncher/role.txt"], "1\nadmin\n")
+RENDER_ALL()
+check("and the freeze warning is up", DRAWN_HAS("The screen stays frozen the whole time. That is normal."), true)
+
+print("")
+print("--- 21. a plain player has an empty access level, which is an answer, not a failure ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+RELOAD()
+ACCESS = { client = true, capabilities = {}, level = "", role = true }
+enterMenu()
+HANDLERS.OnConnectionStateChanged("Connected")
+check("recorded as denied with no name", WRITTEN["PLZLauncher/role.txt"], "0\n\n")
+
+print("")
+print("--- 22. a server that never answers still explains itself, on screen and to the launcher ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+TRANSLATIONS["UI_servers_ServerFailedToRespond"] = "The server did not respond."
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+-- this is the ONLY event a transport failure fires: OnConnectFailed never comes
+HANDLERS.OnConnectionStateChanged("Failed", "ServerFailedToRespond")
+check("the box is still there", UI_ADDED, 1)
+RENDER_ALL()
+check("  it says it could not connect", DRAWN_HAS("Could not connect to Project Life Zoid"), true)
+check("  it gives the engine reason", DRAWN_HAS("The server did not respond."), true)
+check("  it says what to do", DRAWN_HAS("Wait a minute, then press Play in the launcher again."), true)
+check("nothing reported yet", WRITTEN["PLZLauncher/result.txt"], nil)
+for i = 1, 179 do HANDLERS.OnFETick() end
+check("still holding for a real reason", WRITTEN["PLZLauncher/result.txt"], nil)
+HANDLERS.OnFETick()
+check("reported once the grace lapses", string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 10), "NoResponse")
+
+print("")
+print("--- 23. a classified refusal wins the race against the transport fallback ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectionStateChanged("Disconnected", "kicked")
+HANDLERS.OnConnectFailed("UI_OnConnectFailed_PLZNotApproved")
+for i = 1, 200 do HANDLERS.OnFETick() end
+check("the real reason is what the launcher gets",
+      string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 14), "PLZNotApproved")
 
 print("")
 print("--- 14. a build without ISPanel still joins ---")

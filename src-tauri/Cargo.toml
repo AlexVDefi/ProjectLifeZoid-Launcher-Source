@@ -1,6 +1,6 @@
 [package]
 name = "plz-launcher"
-version = "0.5.0"
+version = "0.5.3"
 description = "ProjectLifeZoid Launcher"
 authors = ["AlexVDefi"]
 edition = "2021"
@@ -43,6 +43,10 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
 
 [profile.release]
 codegen-units = 1

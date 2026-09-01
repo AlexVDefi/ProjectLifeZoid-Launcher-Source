@@ -18,6 +18,7 @@ local ROLE_FILE = "PLZLauncher/role.txt"
 local consumed = false
 local armed = false
 local reported = false
+local roleWritten = false
 local ours = false
 
 local function readIntent()
@@ -113,33 +114,228 @@ local function classify(message)
     return nil, nil
 end
 
-local function onConnectFailed(message)
-    if not armed or not message then return end
-    local key, detail = classify(message)
-    writeResult(key or "Other", detail or message)
+-- The game throws this Lua state away the moment the server's options arrive:
+-- Core.ResetLua wipes UIManager and reloads mods from the SERVER's list only, so this
+-- mod is never loaded again. Everything we want to report or show has to happen before
+-- that, and the last frame we draw is what the player stares at for the whole load.
+local WELCOME_TICKS = 90
+local welcomeTicks = 0
+local welcomePanel = nil
+local statusPanel = nil
+local statusLine = ""
+local statusNotes = nil
+
+local CONNECTING = "Contacting the server..."
+local LOADING_NOTES = {
+    "The game is loading the server's mods and Lua now.",
+    "On a first join this can take several minutes.",
+    "The screen stays frozen the whole time. That is normal.",
+    "Do not close the game or the launcher.",
+}
+
+local function removeWelcome()
+    if welcomePanel then
+        pcall(function() welcomePanel:removeFromUIManager() end)
+        welcomePanel = nil
+    end
+end
+
+local function showWelcome()
+    if not ISPanel or not getCore then return false end
+    local ok = pcall(function()
+        local w, h = getCore():getScreenWidth(), getCore():getScreenHeight()
+        local panel = ISPanel:new(0, 0, w, h)
+        panel:initialise()
+        panel.backgroundColor = { r = 0, g = 0, b = 0, a = 0.82 }
+        panel.borderColor = { r = 0, g = 0, b = 0, a = 0 }
+        panel.render = function(self)
+            ISPanel.render(self)
+            local cx = self:getWidth() / 2
+            local cy = self:getHeight() / 2
+            self:drawTextCentre("Welcome to Project Life Zoid!", cx, cy - 24, 1, 1, 1, 1, UIFont.Large)
+            self:drawTextCentre(
+                "You are being connected to the server, please wait...",
+                cx, cy + 10, 0.8, 0.8, 0.8, 1, UIFont.Medium
+            )
+        end
+        panel:addToUIManager()
+        panel:setAlwaysOnTop(true)
+        welcomePanel = panel
+    end)
+    return ok and welcomePanel ~= nil
+end
+
+local FAILURE_GRACE = 180
+local failureTicks = 0
+local failureReason = nil
+
+local function removeStatus()
+    if statusPanel then
+        pcall(function() statusPanel:removeFromUIManager() end)
+        statusPanel = nil
+    end
+end
+
+local function setStatus(line, notes)
+    if line then statusLine = line end
+    statusNotes = notes
+end
+
+-- Deliberately zero-sized. A top-level element draws anywhere it likes in screen
+-- coordinates, but occludes and swallows input only inside its own rect, so the
+-- vanilla connect screen underneath keeps its abort button and its failure text.
+local function showStatus()
+    if statusPanel then return true end
+    if not ISPanel or not getCore or not getTextManager then return false end
+    local ok = pcall(function()
+        local panel = ISPanel:new(0, 0, 0, 0)
+        panel:initialise()
+        panel.backgroundColor = { r = 0, g = 0, b = 0, a = 0 }
+        panel.borderColor = { r = 0, g = 0, b = 0, a = 0 }
+        panel.onMouseDown = function() return false end
+        panel.onMouseUp = function() return false end
+        panel.onRightMouseDown = function() return false end
+        panel.onRightMouseUp = function() return false end
+        panel.render = function(self)
+            local text = getTextManager()
+            local titleHgt = text:getFontHeight(UIFont.Large)
+            local lineHgt = text:getFontHeight(UIFont.Medium)
+            local noteCount = 0
+            if statusNotes then noteCount = #statusNotes end
+            local w = getCore():getScreenWidth()
+            local h = getCore():getScreenHeight()
+            local boxW = w - 120
+            if boxW > 820 then boxW = 820 end
+            local boxH = titleHgt + lineHgt * (noteCount + 1) + 50
+            local boxX = (w - boxW) / 2
+            -- Below the vanilla connect screen's own text, above its abort button.
+            local boxY = h - boxH - 120
+            if boxY < 40 then boxY = 40 end
+            self:drawRect(boxX, boxY, boxW, boxH, 0.82, 0, 0, 0)
+            self:drawRectBorder(boxX, boxY, boxW, boxH, 0.45, 0.75, 0.75, 0.75)
+            local cx = w / 2
+            local y = boxY + 16
+            self:drawTextCentre("Project Life Zoid", cx, y, 1, 1, 1, 1, UIFont.Large)
+            y = y + titleHgt + 10
+            self:drawTextCentre(statusLine, cx, y, 0.92, 0.92, 0.92, 1, UIFont.Medium)
+            y = y + lineHgt + 8
+            for i = 1, noteCount do
+                self:drawTextCentre(statusNotes[i], cx, y, 0.72, 0.72, 0.72, 1, UIFont.Medium)
+                y = y + lineHgt
+            end
+        end
+        panel:addToUIManager()
+        panel:setAlwaysOnTop(true)
+        statusPanel = panel
+    end)
+    return ok and statusPanel ~= nil
+end
+
+local function serverText(key, fallback)
+    if not key then return fallback end
+    local full = "UI_servers_" .. key
+    local rendered = getText(full)
+    if not rendered or rendered == "" or rendered == full then return fallback end
+    return rendered
+end
+
+-- nil until ConnectToServerState.TestTCP has put a Role on the connection. getAccessLevel is
+-- the probe because it throws while there is none; haveAccess cannot be, as it catches that
+-- same NullPointerException itself and answers a confident false.
+local function roleName()
+    if not isClient() then return nil end
+    if not getAccessLevel then return nil end
+    local ok, name = pcall(getAccessLevel)
+    if not ok then return nil end
+    return name
+end
+
+local function writeRole()
+    if roleWritten then return end
+    if not ours then return end
+    local name = roleName()
+    if not name then return end
+    if not haveAccess then return end
+    local ok, granted = pcall(haveAccess, "ConnectWithDebug")
+    if not ok then return end
+    local writer = getFileWriter(ROLE_FILE, true, false)
+    if not writer then return end
+    roleWritten = true
+    writer:write((granted and "1" or "0") .. "\n" .. name .. "\n")
+    writer:close()
 end
 
 local function onConnected()
     if not armed then return end
+    if not roleName() then return end
     armed = false
     writeResult("OK", "")
+    writeRole()
 end
 
-local function writeRole()
-    if not ours then return end
-    if not isClient() then return end
-    if not haveAccess then return end
-    local ok, granted = pcall(haveAccess, "ConnectWithDebug")
-    if not ok then return end
-    local name = ""
-    if getAccessLevel then
-        local okName, value = pcall(getAccessLevel)
-        if okName and value then name = value end
+local function showFailure(reason)
+    failureTicks = 0
+    setStatus("Could not connect to Project Life Zoid", {
+        reason,
+        "Wait a minute, then press Play in the launcher again.",
+    })
+    showStatus()
+end
+
+local function onConnectFailed(message)
+    if not armed then return end
+    if not message then return end
+    local key, detail = classify(message)
+    showFailure(message)
+    writeResult(key or "Other", detail or message)
+end
+
+local function onConnectionStateChanged(state, message, arg)
+    if not ours or not state then return end
+    -- Two events carry "Connected". RakNetPeerInterface's transport callback fires one WITH a
+    -- message, before the connection has a Role and before the server has decided anything;
+    -- ConnectToServerState.receiveStartLocation fires the other with NO message, and that one
+    -- is the last thing to reach this Lua state before ResetLua destroys it. Only the second is
+    -- a join worth reporting: the whitelist, the name check and the workshop pass all refuse
+    -- between them, and answering early would swallow the reason.
+    if state == "Connected" and message == nil then
+        setStatus("Loading the server's content", LOADING_NOTES)
+        onConnected()
+        return
     end
-    local writer = getFileWriter(ROLE_FILE, true, false)
-    if not writer then return end
-    writer:write((granted and "1" or "0") .. "\n" .. name .. "\n")
-    writer:close()
+    if state == "Disconnecting" then return end
+    -- A transport-level failure arrives ONLY as this event: the server never answered, so nothing
+    -- classifies it and Events.OnConnectFailed is never fired. Leaving the screen bare here is
+    -- what made a refused join look like a hang. Give OnConnectFailed a moment to arrive with a
+    -- real reason first, and report this one from the tick if it does not.
+    if state == "Failed" or state == "Disconnected" then
+        showFailure(serverText(message, "The server did not answer."))
+        failureReason = message or state
+        failureTicks = FAILURE_GRACE
+        return
+    end
+    if state == "FormatMessage" then
+        local line = serverText(message, CONNECTING)
+        local okFormat, formatted = pcall(string.format, line, tostring(arg))
+        if okFormat then line = formatted end
+        setStatus(line, nil)
+        return
+    end
+    if state == "Message" then
+        setStatus(serverText(message, CONNECTING), nil)
+        return
+    end
+    setStatus(serverText(state, CONNECTING), nil)
+end
+
+local function onServerWorkshopItems(state)
+    if not ours then return end
+    if state == "Error" then
+        removeStatus()
+        return
+    end
+    if state == "Success" then return end
+    setStatus("Checking your Workshop mods against the server...", nil)
 end
 
 local function join()
@@ -180,52 +376,30 @@ local function join()
     )
 end
 
-local WELCOME_TICKS = 90
-local welcomeTicks = 0
-local welcomePanel = nil
-
-local function removeWelcome()
-    if welcomePanel then
-        pcall(function() welcomePanel:removeFromUIManager() end)
-        welcomePanel = nil
-    end
-end
-
-local function showWelcome()
-    if not ISPanel or not getCore then return false end
-    local ok = pcall(function()
-        local w, h = getCore():getScreenWidth(), getCore():getScreenHeight()
-        local panel = ISPanel:new(0, 0, w, h)
-        panel:initialise()
-        panel.backgroundColor = { r = 0, g = 0, b = 0, a = 0.82 }
-        panel.borderColor = { r = 0, g = 0, b = 0, a = 0 }
-        panel.render = function(self)
-            ISPanel.render(self)
-            local cx = self:getWidth() / 2
-            local cy = self:getHeight() / 2
-            self:drawTextCentre("Welcome to Project Life Zoid!", cx, cy - 24, 1, 1, 1, 1, UIFont.Large)
-            self:drawTextCentre(
-                "You are being connected to the server, please wait...",
-                cx, cy + 10, 0.8, 0.8, 0.8, 1, UIFont.Medium
-            )
-        end
-        panel:addToUIManager()
-        panel:setAlwaysOnTop(true)
-        welcomePanel = panel
-    end)
-    return ok and welcomePanel ~= nil
-end
-
-local function onFrontEndTick()
-    if welcomeTicks <= 0 then return end
-    welcomeTicks = welcomeTicks - 1
-    if welcomeTicks > 0 then return end
+local function beginJoin()
     removeWelcome()
+    setStatus(CONNECTING, nil)
     local ok, err = pcall(join)
     if not ok then
         armed = true
         writeResult("BootstrapError", tostring(err))
+        return
     end
+    showStatus()
+end
+
+local function onFrontEndTick()
+    if failureTicks > 0 then
+        failureTicks = failureTicks - 1
+        if failureTicks == 0 and armed then
+            armed = false
+            writeResult("NoResponse", failureReason or "")
+        end
+    end
+    if welcomeTicks <= 0 then return end
+    welcomeTicks = welcomeTicks - 1
+    if welcomeTicks > 0 then return end
+    beginJoin()
 end
 
 local function onMainMenuEnter()
@@ -236,16 +410,14 @@ local function onMainMenuEnter()
         welcomeTicks = WELCOME_TICKS
         return
     end
-    local ok, err = pcall(join)
-    if not ok then
-        armed = true
-        writeResult("BootstrapError", tostring(err))
-    end
+    beginJoin()
 end
 
 Events.OnMainMenuEnter.Add(onMainMenuEnter)
 Events.OnFETick.Add(onFrontEndTick)
 Events.OnConnectFailed.Add(onConnectFailed)
+Events.OnConnectionStateChanged.Add(onConnectionStateChanged)
+Events.OnServerWorkshopItems.Add(onServerWorkshopItems)
 Events.OnConnected.Add(onConnected)
 Events.OnGameStart.Add(writeRole)
 "#;
@@ -396,6 +568,10 @@ pub fn explain(result: &JoinResult) -> Option<String> {
              Send your Steam ID to an admin, then try again."
                 .into(),
         ),
+        "NoResponse" => Some(
+            "The server did not answer, so the connection never got as far as being accepted or              refused. That almost always means the server is busy rather than down: under load it              sheds new connections while everyone already on it keeps playing. Wait a minute and              press Play again."
+                .into(),
+        ),
         "BootstrapError" => Some(format!(
             "The launcher's in-game handoff failed before it could connect: {}. This is a launcher bug, not a server problem -- please report it.",
             result.detail
@@ -427,6 +603,15 @@ pub fn explain(result: &JoinResult) -> Option<String> {
         "InvalidUsername" => Some(
             "The server refused that username. Try a different one -- 2 to 20 plain characters, \
              and a word filter applies."
+                .into(),
+        ),
+        // Vanilla's own refusal text, echoed back through the "Other" catch-all. Worth naming
+        // because the fix is specific and the raw sentence does not suggest it.
+        _ if result.detail.contains("Workshop item version") => Some(
+            "One of your Workshop mods is a different version than the server's, so the server \
+             refused the connection. Let Steam finish updating your mods -- restart Steam if it \
+             looks idle -- then press Play again. If it keeps happening, the server is the one \
+             running the older copy and an admin has to update it."
                 .into(),
         ),
         _ => Some(format!("The server refused the connection: {}", result.detail)),
@@ -467,7 +652,139 @@ mod tests {
     #[test]
     fn bootstrap_reports_the_outcome_of_our_join_only() {
         assert!(BOOTSTRAP_LUA.contains("Events.OnConnectFailed.Add(onConnectFailed)"));
-        assert!(BOOTSTRAP_LUA.contains("if not armed or not message then return end"));
+        let failed = BOOTSTRAP_LUA
+            .split("local function onConnectFailed")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("onConnectFailed not found");
+        assert!(failed.contains("if not armed then return end"));
+        assert!(failed.contains("if not message then return end"));
+    }
+
+    // Core.ResetLua fires while the server options are being read, and it reloads mods from
+    // the SERVER's list, which never contains PLZLauncher. OnConnected and OnGameStart both
+    // land after that, in a Lua state this file was not loaded into, so the connection state
+    // change is the last moment we can report anything at all.
+    #[test]
+    fn the_join_is_reported_before_the_lua_state_is_thrown_away() {
+        let handler = BOOTSTRAP_LUA
+            .split("local function onConnectionStateChanged")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("onConnectionStateChanged not found");
+        // RakNetPeerInterface fires "Connected" WITH a message as soon as the transport is up,
+        // before the connection has a Role and before the server has accepted anything.
+        // Answering on that one records a role of "no debug access, no name" and clears the
+        // armed flag, which makes onConnectFailed discard every refusal reason.
+        assert!(
+            handler.contains("if state == \"Connected\" and message == nil then"),
+            "the handoff must ignore RakNet's early transport-level Connected"
+        );
+        assert!(handler.contains("onConnected()"));
+        assert!(
+            BOOTSTRAP_LUA.contains("Events.OnConnectionStateChanged.Add(onConnectionStateChanged)")
+        );
+        assert!(BOOTSTRAP_LUA.contains("writeRole()"));
+        let write_role = BOOTSTRAP_LUA
+            .split("local function writeRole")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("writeRole not found");
+        assert!(
+            write_role.contains("local name = roleName()")
+                && write_role.contains("if not name then return end"),
+            "writeRole must refuse to answer while the connection has no Role"
+        );
+        let probe = BOOTSTRAP_LUA
+            .split("local function roleName")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("roleName not found");
+        assert!(
+            probe.contains("pcall(getAccessLevel)") && !probe.contains("haveAccess"),
+            "haveAccess swallows the NullPointerException and answers false, so it cannot be the probe"
+        );
+    }
+
+    // A screen-sized top-level element occludes isPointOver for everything under it, which
+    // would take the vanilla connect screen's abort button and error text with it. The status
+    // box draws in screen coordinates from a zero-sized element instead.
+    #[test]
+    fn the_status_box_does_not_cover_the_connect_screen() {
+        let show = BOOTSTRAP_LUA
+            .split("local function showStatus")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("showStatus not found");
+        assert!(show.contains("ISPanel:new(0, 0, 0, 0)"));
+        for handler in [
+            "onMouseDown",
+            "onMouseUp",
+            "onRightMouseDown",
+            "onRightMouseUp",
+        ] {
+            assert!(
+                show.contains(&format!("panel.{handler} = function() return false end")),
+                "{handler} must not swallow the click"
+            );
+        }
+    }
+
+    // A transport failure never reaches Events.OnConnectFailed: the server simply never
+    // answered, so nothing classifies it. Tearing the overlay down there left the player
+    // looking at bare menu art with no indication at all, which is the bug this whole
+    // feature exists to prevent.
+    #[test]
+    fn a_failure_leaves_something_on_screen_and_tells_the_launcher() {
+        let handler = BOOTSTRAP_LUA
+            .split("local function onConnectionStateChanged")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("onConnectionStateChanged not found");
+        assert!(
+            !handler.contains("removeStatus()"),
+            "a connection state change must never leave the screen bare"
+        );
+        assert!(handler.contains("showFailure("));
+        assert!(
+            handler.contains("failureTicks = FAILURE_GRACE"),
+            "the transport failure must be reported, after a grace period for a real reason"
+        );
+        let failed = BOOTSTRAP_LUA
+            .split("local function onConnectFailed")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("onConnectFailed not found");
+        assert!(
+            !failed.contains("removeStatus()") && failed.contains("showFailure(message)"),
+            "a classified refusal must be captioned, not blanked"
+        );
+        assert!(explain(&super::JoinResult {
+            code: "NoResponse".into(),
+            detail: String::new()
+        })
+        .is_some_and(|t| t.contains("busy")));
+    }
+
+    // The frame drawn inside ResetLua is the one the player stares at for the whole content
+    // load, so the box has to still be up, and saying something useful, when it is taken.
+    #[test]
+    fn the_frozen_frame_explains_itself() {
+        assert!(BOOTSTRAP_LUA.contains("The screen stays frozen the whole time. That is normal."));
+        assert!(BOOTSTRAP_LUA.contains("Do not close the game or the launcher."));
+        let begin = BOOTSTRAP_LUA
+            .split("local function beginJoin")
+            .nth(1)
+            .and_then(|s| s.split("\nlocal function ").next())
+            .expect("beginJoin not found");
+        assert!(
+            begin.contains("removeWelcome()"),
+            "the welcome modal must go"
+        );
+        assert!(
+            begin.contains("showStatus()"),
+            "and the status box must replace it"
+        );
     }
 
     #[test]
@@ -511,6 +828,21 @@ mod tests {
     fn a_successful_join_needs_no_explanation() {
         assert!(explain(&parse_join_result("OK\n\n").unwrap()).is_none());
         assert!(explain(&parse_join_result("PLZNameTaken\n\n").unwrap()).is_some());
+    }
+
+    #[test]
+    fn a_workshop_version_refusal_says_what_to_do_about_it() {
+        let r = parse_join_result("Other\nWorkshop item version is different than the server's\n")
+            .unwrap();
+        let explained = explain(&r).expect("a refusal always explains itself");
+        assert!(
+            explained.contains("Steam"),
+            "the workshop case must point at Steam, got: {explained}"
+        );
+        assert!(
+            !explained.starts_with("The server refused the connection:"),
+            "the workshop case must not fall through to the raw echo"
+        );
     }
 }
 

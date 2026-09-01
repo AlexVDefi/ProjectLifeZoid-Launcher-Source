@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const PUBLIC_KEY_HEX: &str = "cee5e242040235eecccad136376acedf3abb9a4919b15551d23461abc937a403";
 
@@ -153,6 +155,77 @@ mod url_tests {
     }
 }
 
+// reqwest::get builds a default client with no timeout of any kind, so a socket that stalled
+// mid-download left this hanging until the player killed the launcher. A read timeout rather
+// than a whole-request one: a large file on a slow line is fine, a socket that stops talking
+// is not.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const FETCH_ATTEMPTS: u32 = 3;
+
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+async fn fetch_once(url: &str) -> Result<Vec<u8>> {
+    let resp = client().get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(Error::Http {
+            url: url.to_string(),
+            status: status.as_u16(),
+        });
+    }
+    Ok(resp.bytes().await?.to_vec())
+}
+
+// A 4xx that is not "slow down" or "try again" means the file is not there. Retrying makes the
+// player wait three times as long for the same answer.
+fn worth_retrying(e: &Error) -> bool {
+    match e {
+        Error::Http { status, .. } => *status == 408 || *status == 429 || *status >= 500,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::worth_retrying;
+    use crate::error::Error;
+
+    fn http(status: u16) -> Error {
+        Error::Http {
+            url: "https://h/files/x".into(),
+            status,
+        }
+    }
+
+    #[test]
+    fn a_missing_file_fails_on_the_first_answer() {
+        assert!(!worth_retrying(&http(404)));
+        assert!(!worth_retrying(&http(403)));
+    }
+
+    #[test]
+    fn a_server_that_is_struggling_gets_another_go() {
+        for status in [408, 429, 500, 502, 503] {
+            assert!(worth_retrying(&http(status)), "{status} should retry");
+        }
+    }
+
+    #[test]
+    fn a_transport_failure_is_the_case_retries_exist_for() {
+        assert!(worth_retrying(&Error::Other("network: timed out".into())));
+    }
+}
+
 async fn fetch(url: &str) -> Result<Vec<u8>> {
     if let Some(rest) = url.strip_prefix("file:///") {
         return Ok(fs::read(rest.replace('/', "\\"))?);
@@ -160,11 +233,18 @@ async fn fetch(url: &str) -> Result<Vec<u8>> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(fs::read(url)?);
     }
-    let resp = reqwest::get(url).await?;
-    if !resp.status().is_success() {
-        return Err(Error::Other(format!("{} returned {}", url, resp.status())));
+
+    let mut attempt = 1u32;
+    loop {
+        match fetch_once(url).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(e) if attempt < FETCH_ATTEMPTS && worth_retrying(&e) => {
+                tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
     }
-    Ok(resp.bytes().await?.to_vec())
 }
 
 pub async fn fetch_manifest() -> Result<Manifest> {
@@ -264,16 +344,28 @@ pub fn is_installed(m: &Manifest) -> bool {
     m.files.iter().all(|f| file_matches(&dir.join(&f.path), f))
 }
 
-pub async fn sync(m: &Manifest) -> Result<usize> {
+// The whole sync used to report one line before the loop started, so a big file and a wedged
+// connection looked the same from the outside and players killed the launcher on the second.
+// Hashing every file up front costs nothing extra -- it was already hashed inside the loop --
+// and it buys a count the caller can actually show.
+pub async fn sync(m: &Manifest, progress: &(dyn Fn(&str) + Send + Sync)) -> Result<usize> {
     let dir = config::patch_dir(m.build);
     let base = base_url(&manifest_url());
-    let mut fetched = 0usize;
 
-    for f in &m.files {
+    let pending: Vec<&PayloadFile> = m
+        .files
+        .iter()
+        .filter(|f| !file_matches(&dir.join(&f.path), f))
+        .collect();
+    let total = pending.len();
+
+    for (i, f) in pending.iter().enumerate() {
+        progress(&format!(
+            "Syncing patch file {} of {total} ({})",
+            i + 1,
+            f.path
+        ));
         let dest = dir.join(&f.path);
-        if file_matches(&dest, f) {
-            continue;
-        }
         let bytes = fetch(&format!("{base}/files/{}", f.path)).await?;
         let actual = hex::encode(Sha256::digest(&bytes));
         if actual != f.sha256 || bytes.len() as u64 != f.size {
@@ -287,7 +379,6 @@ pub async fn sync(m: &Manifest) -> Result<usize> {
             fs::create_dir_all(parent)?;
         }
         fs::write(&dest, &bytes)?;
-        fetched += 1;
     }
-    Ok(fetched)
+    Ok(total)
 }

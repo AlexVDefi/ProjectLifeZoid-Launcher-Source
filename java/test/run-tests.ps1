@@ -54,10 +54,13 @@ if ($code -ne 0) {
 }
 
 $failed = 0
-foreach ($test in @("zombie.network.PLZQueueConfigTest")) {
+foreach ($test in @("zombie.network.PLZQueueConfigTest", "zombie.network.LoginQueueReleaseTest")) {
     "=== $test ==="
     $ErrorActionPreference = "Continue"
-    & $javaExe -cp "$out;$jar" $test
+    # -Xmx256m/SerialGC: these tests need almost no heap, and the default G1 reservation fails
+    # outright on a machine with a small paging file ("Native memory allocation (mmap) failed").
+    # That looked like a test failure and is not one.
+    & $javaExe -Xmx256m -XX:+UseSerialGC -cp "$out;$jar" $test
     if ($LASTEXITCODE -ne 0) { $failed++ }
     $ErrorActionPreference = $prevEap
     ""

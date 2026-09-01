@@ -406,17 +406,13 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         );
     }
     if mods.missing > 0 {
-        notes.push(format!(
+        let note = format!(
             "{} required mod(s) are not subscribed. Use Pre-load mods, or the server will make \
              you download them on the connect screen.",
             mods.missing
-        ));
-    }
-    if mods.downloading > 0 {
-        notes.push(format!(
-            "Steam is still downloading {} mod(s). You can play, but the join will wait for them.",
-            mods.downloading
-        ));
+        );
+        progress("mods", &note);
+        notes.push(note);
     }
     if mods.behind_server > 0 {
         let behind: Vec<&workshop::ModStatus> =
@@ -441,23 +437,47 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         });
     }
 
-    let stale: Vec<&str> = mods
+    // Deliberately a warning and not a block, unlike WorkshopBehind above. Being ahead means
+    // Steam updated the mod and the server has not been rebuilt against it yet -- nothing the
+    // player can do, and blocking Play would lock everyone out on the mod author's schedule.
+    let ahead: Vec<&str> = mods
         .mods
         .iter()
-        .filter(|x| x.out_of_date)
+        .filter(|x| x.ahead_of_server)
         .map(|x| x.name.as_str())
         .collect();
-    if !stale.is_empty() {
-        notes.push(format!(
-            "Steam has an update it has not applied for: {}. The server checks mod versions \
-             during the join, so this is likely to disconnect you. Let Steam finish updating, \
-             then press Play again.",
-            stale.join(", ")
-        ));
+    if !ahead.is_empty() {
+        let note = format!(
+            "Steam has a newer copy of {} than this release was built against. The server \
+             checks mod versions during the join, so it may refuse you until an admin updates \
+             the server. Nothing you can do from here -- report it if the join fails.",
+            ahead.join(", ")
+        );
+        progress("mods", &note);
+        notes.push(note);
+    }
+
+    // A block, not a note, and for a different reason than WorkshopBehind above. Launching into
+    // a half-finished Steam sync is what produces the unreadable bug: ZomboidFileSystem
+    // enumerates the mod folders once and memoises the answer, so any folder Steam has not
+    // written yet has every asset under it refused for the rest of the session. The player sees
+    // an invisible character, invisible vehicles and a blank map, and nothing in the log names
+    // Steam. Unlike ahead_of_server this is the player's to fix and it fixes itself -- they only
+    // have to wait -- so stopping here costs a minute and saves the session.
+    let not_ready: Vec<&str> = mods
+        .mods
+        .iter()
+        .filter(|x| x.not_ready())
+        .map(|x| x.name.as_str())
+        .collect();
+    if !not_ready.is_empty() {
+        return Err(Error::WorkshopNotReady {
+            mods: not_ready.join(", "),
+        });
     }
 
     progress("download", "Syncing the patch payload");
-    let fetched = payload::sync(&m).await?;
+    let fetched = payload::sync(&m, &|msg: &str| progress("download", msg)).await?;
     if fetched > 0 {
         notes.push(format!("Downloaded {fetched} patch file(s)."));
     }
@@ -490,7 +510,22 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
                 None => "Playing. The patch could not be verified. Restoring on exit",
             },
         );
-        launch::wait_for_exit();
+        let mut seen_result = false;
+        launch::wait_for_exit_with(|| {
+            if seen_result {
+                return;
+            }
+            let Some(result) = bootstrap::read_join_result() else {
+                return;
+            };
+            seen_result = true;
+            if let Some(explained) = bootstrap::explain(&result) {
+                progress(
+                    "join-failed",
+                    &format!("{explained} You can close the game now."),
+                );
+            }
+        });
         Ok(stamp)
     })();
 

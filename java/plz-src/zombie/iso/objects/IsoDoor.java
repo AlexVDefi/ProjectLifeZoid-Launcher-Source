@@ -3,6 +3,7 @@ package zombie.iso.objects;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.function.Consumer;
 import org.joml.Matrix4f;
 import se.krka.kahlua.vm.KahluaTable;
@@ -1674,6 +1675,36 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
         this.setRenderEffect(RenderEffectType.Hit_Door, true);
     }
 
+    // A refusal is driven entirely by what a client chooses to send, so an unattended
+    // client leaning on a locked door used to write a console line AND a durable audit row
+    // for every packet - thousands of rows an hour, drowning the money trail the audit exists
+    // for. One report per door, per player, per interval; the correction itself still goes out
+    // on every packet.
+    private static final long PLZ_REFUSAL_REPORT_INTERVAL_MS = 10000L;
+    private static final HashMap<Long, Long> plzRefusalReported = new HashMap<>();
+
+    private boolean plzShouldReportRefusal() {
+        long key = (long)(this.square.getX() & 0xFFFFF) << 40
+            | (long)(this.square.getY() & 0xFFFFF) << 20
+            | (long)(this.square.getZ() & 0xF) << 16
+            | this.lastPlayerOnlineId & 0xFFFFL;
+        long now = System.currentTimeMillis();
+
+        synchronized (plzRefusalReported) {
+            Long last = plzRefusalReported.get(key);
+            if (last != null && now - last < PLZ_REFUSAL_REPORT_INTERVAL_MS) {
+                return false;
+            }
+
+            if (plzRefusalReported.size() > 256) {
+                plzRefusalReported.values().removeIf(seen -> now - seen >= PLZ_REFUSAL_REPORT_INTERVAL_MS);
+            }
+
+            plzRefusalReported.put(key, now);
+            return true;
+        }
+    }
+
     private boolean plzSenderCannotUseDoors() {
         if (this.lastPlayerOnlineId == -1) {
             return false;
@@ -1747,13 +1778,13 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
         PacketTypes.PacketType.SyncIsoObject.send(connection);
     }
 
-    private boolean plzRefuseUnlock(boolean bOpen, boolean bLocked) {
+    private boolean plzRefuseUnlock(boolean bOpen, boolean bLocked, boolean bLockedByKey) {
         if (!GameServer.server) {
             return false;
         }
 
         if (this.plzSenderCannotUseDoors()) {
-            return bOpen != this.isOpen() || bLocked != this.locked;
+            return bOpen != this.isOpen() || bLocked != this.locked || bLockedByKey != this.lockedByKey;
         }
 
         boolean keyLocked = this.isLockedByKey()
@@ -1762,7 +1793,18 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
             return false;
         }
 
-        boolean wantsUnlock = !bLocked || bOpen && !this.isOpen();
+        // NOT `!bLocked`. A CustomLock door - every faction territory door, and any property
+        // door locked before PLZLock existed - carries locked=false, because only the ModData
+        // flag is set. So every ordinary packet about that door arrives with bLocked=false, and
+        // refusing on that alone made a player rattling a shut door, or closing one behind
+        // themselves, indistinguishable from a break-in. Only a packet that turns the lock off
+        // or swings a shut locked door open is asking for anything.
+        // The key lock is in here as well as `locked` because both flags are applied straight
+        // off the packet below, so a client that could clear lockedByKey on a door we hold shut
+        // would have unlocked it just as thoroughly.
+        boolean wantsUnlock = this.locked && !bLocked
+            || this.lockedByKey && !bLockedByKey
+            || bOpen && !this.isOpen();
         if (!wantsUnlock) {
             return false;
         }
@@ -1862,15 +1904,17 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
                 }
 
                 if (bRemote) {
-                    if (this.plzRefuseUnlock(bOpen, bLocked)) {
-                        DebugType.Multiplayer.warn(
-                            "PLZ: refused door unlock at %d,%d,%d keyId=%d from onlineId=%d",
-                            this.square.getX(), this.square.getY(), this.square.getZ(),
-                            this.getKeyId(), this.lastPlayerOnlineId
-                        );
-                        LuaEventManager.triggerEvent(
-                            "PLZDoorUnlockRefused", GameServer.IDToPlayerMap.get(this.lastPlayerOnlineId), this
-                        );
+                    if (this.plzRefuseUnlock(bOpen, bLocked, bLockedByKey)) {
+                        if (this.plzShouldReportRefusal()) {
+                            DebugType.Multiplayer.debugln(
+                                "PLZ: refused door unlock at %d,%d,%d keyId=%d from onlineId=%d",
+                                this.square.getX(), this.square.getY(), this.square.getZ(),
+                                this.getKeyId(), this.lastPlayerOnlineId
+                            );
+                            LuaEventManager.triggerEvent(
+                                "PLZDoorUnlockRefused", GameServer.IDToPlayerMap.get(this.lastPlayerOnlineId), this
+                            );
+                        }
                         bOpen = this.isOpen();
                         bLocked = this.locked;
                         bLockedByKey = this.lockedByKey;

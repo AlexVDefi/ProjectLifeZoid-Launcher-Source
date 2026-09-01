@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "plz-launcher"
-version = "0.5.0"
+version = "0.5.3"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -2861,6 +2861,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.20",
  "tokio",
+ "windows",
  "winreg 0.52.0",
 ]
 
