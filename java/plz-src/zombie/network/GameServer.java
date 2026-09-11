@@ -199,6 +199,7 @@ import zombie.network.statistics.data.NetworkStatistic;
 import zombie.pathfind.nativeCode.PathfindNative;
 import zombie.popman.NetworkZombieManager;
 import zombie.popman.PoolCaps;
+import zombie.plz.PLZConnectWatch;
 import zombie.plz.PLZDisconnectWatch;
 import zombie.popman.ZombiePopulationManager;
 import zombie.popman.animal.AnimalInstanceManager;
@@ -2886,6 +2887,10 @@ public class GameServer {
 
                 LoggerManager.getLogger("user")
                     .write(connection.getIDStr() + " \"" + player.username + "\" fully connected " + LoggerManager.getPlayerCoords(player));
+                // PLZ: OnCreatePlayer is a client event, so the server has no join
+                // hook at all. Fired LAST, once the character, the online list and
+                // the connection are all true. See zombie.plz.PLZConnectWatch.
+                PLZConnectWatch.onConnect(playerIndex, player);
             }
         }
     }

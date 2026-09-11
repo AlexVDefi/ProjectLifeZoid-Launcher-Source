@@ -165,6 +165,10 @@ On the first join the server binds that name to the SteamID it verified on the c
 Every later join is checked against that binding. Usernames are 2 to 20 ASCII characters and
 cannot start with `admin`; the survivor you build in game can be named anything.
 
+If you would rather not run the launcher at all, [docs/MANUAL-INSTALL.md](docs/MANUAL-INSTALL.md)
+walks through installing the same patch by hand and joining from the vanilla server browser,
+including the three version checks the launcher does for you and what happens when you skip them.
+
 ## Build from source
 
 Requires Rust, Node, a JDK, and a Project Zomboid install.

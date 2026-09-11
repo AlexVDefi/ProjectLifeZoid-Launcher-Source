@@ -30,6 +30,35 @@ public final class PLZPrefixRetry {
         }
     }
 
+    /**
+     * A new connect, and therefore a new budget.
+     *
+     * <p>The cap and the cooldown exist to stop a permanently broken enumeration from walking the
+     * disk forever. Counting them for the life of the PROCESS put the two at odds: the connect
+     * burst is when a retry is worth most - the client is resolving its whole asset set and every
+     * refusal in the window is permanent - and it is also the moment most likely to have already
+     * spent the budget on an earlier join. A player who reconnects a few times was reaching
+     * MAX_REFRESHES and then loading the rest of the session with no retry at all.
+     *
+     * <p>Per connect instead of per process, so a genuinely broken machine still walks a bounded
+     * number of times, and the cheap warmup burst is available exactly when it is needed.
+     *
+     * <p>Does nothing while a refresh is running. resetModFolders is on the retry's own path
+     * (refreshAllowedPrefixes calls it), so without this guard every retry would clear the counter
+     * it had just incremented and the cap would never be reached.
+     */
+    public static void newSession() {
+        synchronized (LOCK) {
+            if (refreshing) {
+                return;
+            }
+
+            refreshes = 0;
+            everRefreshed = false;
+            lastRefreshAt = 0L;
+        }
+    }
+
     public static boolean refresh(long seenGeneration, Runnable refresh) {
         synchronized (LOCK) {
             if (generation != seenGeneration) {

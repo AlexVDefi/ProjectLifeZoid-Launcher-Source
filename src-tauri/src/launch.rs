@@ -84,9 +84,14 @@ pub fn is_game_running() -> bool {
         .unwrap_or(false)
 }
 
-pub fn launch(steam_exe: &Path) -> Result<()> {
+pub const DEBUG_ARG: &str = "-debug";
+
+// Anything after the app id is handed on to the game by Steam, and lands on top of whatever
+// the player has in Properties > Launch Options rather than replacing it.
+pub fn launch(steam_exe: &Path, extra_args: &[&str]) -> Result<()> {
     let mut cmd = Command::new(steam_exe);
     cmd.arg("-applaunch").arg(config::STEAM_APP_ID);
+    cmd.args(extra_args);
     no_window(&mut cmd);
     cmd.spawn().map_err(|e| {
         Error::Io(format!(

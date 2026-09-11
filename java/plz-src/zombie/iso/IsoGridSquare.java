@@ -172,6 +172,7 @@ import zombie.plz.PLZTextureRepair;
 import zombie.plz.PLZBarrierGrid;
 import zombie.plz.PLZDoorAccess;
 import zombie.plz.PLZGatedGrid;
+import zombie.plz.PLZObjectDamage;
 import zombie.util.CappedConcurrentQueue;
 import zombie.util.StringUtils;
 import zombie.util.Type;
@@ -8041,6 +8042,18 @@ public final class IsoGridSquare {
 
     public static int plzDoorAccessKeyCount(String username) {
         return PLZDoorAccess.getGrantedKeyCount(username);
+    }
+
+    // Melee refusal, raised by ProtectionDoors from inside OnWeaponHitThumpable
+    // and read by IsoDoor.WeaponHit on the line after the trigger. Lua has no
+    // route to a zombie.plz class of its own, so it reaches this one the same way
+    // it reaches the barrier grid and the door register - see the block above.
+    //
+    // ONLY THE REFUSAL IS EXPOSED. arm() and takeRefusal() are the engine's half
+    // of the handshake and Lua calling either of them could only ever break it,
+    // so neither is bridged.
+    public static void plzRefuseObjectDamage() {
+        PLZObjectDamage.refuse();
     }
 
     public static int plzBarrierRefresh() {

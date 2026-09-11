@@ -4,7 +4,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import zombie.characters.IsoGameCharacter;
 import zombie.characters.IsoPlayer;
+import zombie.iso.IsoGridSquare;
+import zombie.network.GameServer;
 
 public final class PLZGatedGrid {
     private PLZGatedGrid() {
@@ -54,6 +57,39 @@ public final class PLZGatedGrid {
         }
 
         return false;
+    }
+
+    /**
+     * Whether a group refuses this character the square they are about to be PLACED on, for the
+     * moves that are not a step: climbing through a window, over a fence, off a sheet rope.
+     *
+     * <p>Those never reach {@code testCollideAdjacent} - the character's position is written
+     * directly - so the walking barrier says nothing about them and a sealed house with an open
+     * or broken window is a house with a door in it. Vanilla has the same hole and plugs it in
+     * the same place: {@code IsoWindow.canClimbThroughHelper} already refuses a climb whose
+     * DESTINATION square is somebody else's safehouse.
+     *
+     * <p>The destination is what is asked about, never the square left behind, so a burglar who
+     * is already inside can still climb out and a household member is refused nothing. That is
+     * the same direction {@code testCollideAdjacent} tests, so walking and climbing agree.
+     *
+     * <p>PLAYERS ONLY, deliberately. A zombie coming through the window of a sealed house is the
+     * feature working - a seal is a claim against other players, not a bunker.
+     *
+     * <p>Gated on {@code GameServer.server || isLocalPlayer()} for the reason the collision site
+     * is: the server decides for everyone, a client decides only for the player it drives, or the
+     * two fight over a remote player and the climb animation stutters for a bystander.
+     */
+    public static boolean refusesEntry(IsoGridSquare destination, IsoGameCharacter chr) {
+        if (destination == null || !(chr instanceof IsoPlayer player)) {
+            return false;
+        }
+
+        if (!GameServer.server && !player.isLocalPlayer()) {
+            return false;
+        }
+
+        return blocksPlayer(destination.getX(), destination.getY(), destination.getZ(), player);
     }
 
     private static HashSet<String> flagsOf(IsoPlayer player) {

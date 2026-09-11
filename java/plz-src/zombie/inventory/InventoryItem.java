@@ -89,6 +89,7 @@ import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
+import zombie.plz.PLZItemBlob;
 import zombie.radio.ZomboidRadio;
 import zombie.radio.media.MediaData;
 import zombie.scripting.ScriptManager;
@@ -5741,5 +5742,15 @@ public class InventoryItem extends GameEntity {
 
     public String getGunTypeString() {
         return this.gunTypeDisplayName.toString().replaceAll("\\[", "").replaceAll("\\]", "");
+    }
+
+    // PLZ: this whole item as one string, for a mod that has to hold somebody's belongings and
+    // give back the same item rather than a fresh one wearing its properties. The work is in
+    // zombie.plz.PLZItemBlob, which explains what was wrong with writing the fields out by hand;
+    // this exists because Lua cannot reach that package. Pairs with ItemContainer.plzAddBlob.
+    // Answers null if the item could not be written, which the caller reads as "bank the property
+    // record instead".
+    public String plzSaveBlob() {
+        return PLZItemBlob.save(this);
     }
 }

@@ -1,5 +1,5 @@
 use app_lib::{
-    account, bootstrap, config, install, launch, patch, payload, query, state::State,
+    bootstrap, config, install, launch, patch, payload, query, state::State,
     workshop_override,
 };
 
@@ -381,25 +381,12 @@ Only the built-in `admin` role carries ConnectWithDebug. moderator and gm do not
             }
         }
         "name" => {
-            let mut st = State::load();
+            let st = app_lib::load_state_for_active_account();
             match std::env::args().nth(2) {
-                Some(raw) => match account::validate(&raw) {
+                Some(raw) => match app_lib::choose_username(&raw) {
                     Ok(name) => {
-                        if st.account_confirmed && st.account_username.as_deref() != Some(&name) {
-                            eprintln!(
-                                "refusing: the server already knows this Steam account as {:?}. Renaming needs an admin.",
-                                st.account_username.unwrap_or_default()
-                            );
-                            std::process::exit(1);
-                        }
-                        st.account_username = Some(name.clone());
-                        match st.save() {
-                            Ok(()) => {
-                                line("username", name);
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        }
+                        line("username", name);
+                        Ok(())
                     }
                     Err(e) => Err(e),
                 },
@@ -409,6 +396,12 @@ Only the built-in `admin` role carries ConnectWithDebug. moderator and gm do not
                         st.account_username.unwrap_or("NOT SET".into()),
                     );
                     line("confirmed", st.account_confirmed);
+                    line(
+                        "steam account",
+                        st.identity_steam_id
+                            .map(|id| id.to_string())
+                            .unwrap_or("unknown".into()),
+                    );
                     Ok(())
                 }
             }

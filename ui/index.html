@@ -15,6 +15,21 @@
             <div class="topbar-right">
                 <span class="steam-session" id="chip-steam">Steam &mdash;</span>
                 <span class="build" id="chip-build">Build &mdash;</span>
+                <div class="memory-chip" id="memory-chip" title="Memory allocated to Project Zomboid">
+                    <select id="select-memory" class="memory-select">
+                        <option value="" hidden>&mdash;</option>
+                        <option value="3072">3 GB (default)</option>
+                        <option value="4096">4 GB</option>
+                        <option value="6144">6 GB</option>
+                        <option value="8192">8 GB</option>
+                        <option value="12288">12 GB</option>
+                        <option value="16384">16 GB</option>
+                        <option value="24576">24 GB</option>
+                        <option value="32768">32 GB</option>
+                    </select>
+                    <span class="memory-warn" id="memory-warn" title="Still at the default 3 GB. More helps if you run mods." hidden></span>
+                </div>
+                <span class="build" id="chip-version">v&mdash;</span>
                 <button class="btn btn-ghost" id="btn-details" aria-expanded="false">Details</button>
             </div>
         </header>
@@ -146,11 +161,6 @@
                     <p class="hint">Playing as</p>
                     <select id="steam-account"></select>
                 </div>
-                <p class="hint" id="debug-role-note" hidden></p>
-                <label class="toggle" id="debug-toggle-row" hidden>
-                    <input type="checkbox" id="allow-debug" />
-                    <span>Allow debug mode (server admins only)</span>
-                </label>
             </section>
             <section>
                 <h3>Server</h3>
@@ -177,6 +187,23 @@
                     <button class="btn btn-secondary" id="btn-ov-apply">Apply</button>
                     <button class="btn btn-secondary" id="btn-ov-clear">Use normal server</button>
                 </details>
+            </section>
+            <section>
+                <h3>Debug mode</h3>
+                <label class="toggle" id="launch-debug-row">
+                    <input type="checkbox" id="launch-debug" />
+                    <span>Start the game in debug mode (adds <code>-debug</code>)</span>
+                </label>
+                <p class="hint danger" id="launch-debug-warn">
+                    Server admins only. The server disconnects a debug client during the join
+                    unless the account holds the built-in <b>admin</b> role &mdash; moderator, gm
+                    and ordinary players are all refused. Leave this off if you just want to play.
+                </p>
+                <p class="hint" id="debug-role-note" hidden></p>
+                <label class="toggle" id="debug-toggle-row" hidden>
+                    <input type="checkbox" id="allow-debug" />
+                    <span>Allow <code>-debug</code> from my Steam launch options</span>
+                </label>
             </section>
             <section class="grow">
                 <h3>Activity</h3>

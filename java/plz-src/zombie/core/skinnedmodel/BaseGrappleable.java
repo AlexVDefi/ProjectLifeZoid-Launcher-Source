@@ -12,6 +12,7 @@ import zombie.inventory.types.HandWeapon;
 import zombie.iso.IsoMovingObject;
 import zombie.iso.Vector2;
 import zombie.iso.objects.IsoDeadBody;
+import zombie.plz.PLZGrappleEdit;
 import zombie.util.StringUtils;
 import zombie.util.lambda.Invokers;
 
@@ -362,7 +363,15 @@ public class BaseGrappleable implements IGrappleable {
 
     @Override
     public float getSharedGrappleAnimFraction() {
-        return this.sharedGrappleFraction;
+        float fraction = PLZGrappleEdit.fraction(this.sharedGrappleFraction);
+        if (!this.isBeingGrappled()) {
+            return fraction;
+        }
+
+        // PLZ. The phase is stored against the GRAPPLER node, because that is the node the editor
+        // edits; this side carries the name of the matching grappled node instead.
+        IGrappleable grappler = this.getGrappledBy();
+        return grappler == null ? fraction : PLZGrappleEdit.phase(grappler.getSharedGrappleAnimNode(), fraction);
     }
 
     @Override
@@ -404,8 +413,12 @@ public class BaseGrappleable implements IGrappleable {
     public float getGrapplePosOffsetForward() {
         if (this.isBeingGrappled()) {
             return this.getGrappledBy().getGrapplePosOffsetForward();
+        } else if (!this.isGrappling()) {
+            return 0.0F;
         } else {
-            return this.isGrappling() ? this.grappleOffsetForward : 0.0F;
+            // PLZ. AnimLayer has already stamped the node value onto grappleOffsetForward this
+            // frame. The registry gets the last word, which is what lets the editor move it live.
+            return PLZGrappleEdit.forward(this.sharedGrappleAnimNode, this.grappleOffsetForward, this.getSharedGrappleAnimFraction());
         }
     }
 
@@ -418,8 +431,11 @@ public class BaseGrappleable implements IGrappleable {
     public float getGrappleRotOffsetYaw() {
         if (this.isBeingGrappled()) {
             return this.getGrappledBy().getGrappleRotOffsetYaw();
+        } else if (!this.isGrappling()) {
+            return 0.0F;
         } else {
-            return this.isGrappling() ? this.grappleOffsetYaw : 0.0F;
+            // PLZ. Same seam as the forward offset above.
+            return PLZGrappleEdit.yaw(this.sharedGrappleAnimNode, this.grappleOffsetYaw, this.getSharedGrappleAnimFraction());
         }
     }
 
@@ -431,7 +447,13 @@ public class BaseGrappleable implements IGrappleable {
             return inherited == null ? GrappleOffsetBehaviour.NONE : inherited;
         } else {
             GrappleOffsetBehaviour current = this.isGrappling() ? this.grappleOffsetBehaviour : GrappleOffsetBehaviour.NONE;
-            return current == null ? GrappleOffsetBehaviour.NONE : current;
+            if (current == null) {
+                current = GrappleOffsetBehaviour.NONE;
+            }
+
+            // PLZ. Still never null out of here: AnimLayer switches on it inside the render loop,
+            // and the registry keeps the fallback whenever it cannot parse what it was given.
+            return this.isGrappling() ? PLZGrappleEdit.behaviour(this.sharedGrappleAnimNode, current) : current;
         }
     }
 

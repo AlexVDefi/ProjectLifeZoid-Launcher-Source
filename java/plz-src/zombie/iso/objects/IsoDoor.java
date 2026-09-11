@@ -14,6 +14,7 @@ import zombie.WorldSoundManager;
 import zombie.Lua.LuaEventManager;
 import zombie.plz.PLZDoorAccess;
 import zombie.plz.PLZGatedGrid;
+import zombie.plz.PLZObjectDamage;
 import zombie.audio.parameters.ParameterMeleeHitSurface;
 import zombie.characters.BaseCharacterSoundEmitter;
 import zombie.characters.Capability;
@@ -1263,7 +1264,24 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
                 if (thumpable instanceof IsoBarricade) {
                     thumpable.WeaponHit(owner, weapon);
                 } else {
+                    // PLZ PATCH: a door inside a property or a territory may only be broken by
+                    // somebody entitled to break things there. Vanilla announces the hit to Lua
+                    // and then damages the door on the next line whatever Lua did, so the event
+                    // is given a return value it never had: ProtectionDoors raises the flag from
+                    // inside the handler and this reads it back one line later.
+                    //
+                    // ARMED IMMEDIATELY BEFORE THE TRIGGER, not at the top of the method. The
+                    // same event is fired by IsoThumpable and IsoWindow, which are NOT patched,
+                    // and arming here is what stops a refusal raised by one of those from
+                    // surviving to block a later swing at a door.
+                    //
+                    // The rule itself is in Lua and stays there. See ProtectionDoors.lua.
+                    PLZObjectDamage.arm();
                     LuaEventManager.triggerEvent("OnWeaponHitThumpable", owner, weapon, this);
+                    if (PLZObjectDamage.takeRefusal()) {
+                        return;
+                    }
+                    // END PLZ PATCH
                     if (!this.isOpen()) {
                         if (!this.isDestroyed()) {
                             int perk = owner.getPerkLevel(PerkFactory.Perks.Strength);

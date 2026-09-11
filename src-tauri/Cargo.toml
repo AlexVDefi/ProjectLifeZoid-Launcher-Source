@@ -1,6 +1,6 @@
 [package]
 name = "plz-launcher"
-version = "0.5.3"
+version = "0.5.5"
 description = "ProjectLifeZoid Launcher"
 authors = ["AlexVDefi"]
 edition = "2021"

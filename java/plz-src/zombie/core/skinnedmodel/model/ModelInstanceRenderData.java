@@ -18,7 +18,7 @@ import zombie.vehicles.BaseVehicle;
 
 public final class ModelInstanceRenderData extends AnimatedModel.AnimatedModelInstanceRenderData {
     public static boolean invertAttachmentSelfTransform;
-    private static final ObjectPool<ModelInstanceRenderData> pool = new ObjectPool<>(ModelInstanceRenderData::new, "ModelInstanceRenderData.pool");
+    private static final ObjectPool<ModelInstanceRenderData> pool = new ObjectPool<>(ModelInstanceRenderData::new, "ModelInstanceRenderData.pool", 4096);
     public float depthBias;
     public float hue;
     public float tintR;

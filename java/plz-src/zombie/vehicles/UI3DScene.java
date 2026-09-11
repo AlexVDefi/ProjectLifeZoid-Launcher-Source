@@ -1468,6 +1468,11 @@ public final class UI3DScene extends UIElement {
                 vehicle.setScriptName((String)arg1);
                 return null;
             }
+            case "setVehicleVisibleParts": {
+                UI3DScene.SceneVehicle vehicle = this.getSceneObjectById((String)arg0, UI3DScene.SceneVehicle.class, true);
+                vehicle.setVisibleParts(arg1 == null ? null : (String)arg1);
+                return null;
+            }
             case "setVehicleSkinIndex": {
                 UI3DScene.SceneVehicle vehicle = this.getSceneObjectById((String)arg0, UI3DScene.SceneVehicle.class, true);
                 int index = arg1 == null ? 0 : (int)Math.floor(((Double)arg1).doubleValue());
@@ -6153,6 +6158,9 @@ public final class UI3DScene extends UIElement {
         VehicleScript script;
         final Vector3f paint = new Vector3f(0.0F, 0.5F, 0.5F);
         int skinIndex;
+        // WHICH PARTS HAVE SOMETHING FITTED, part id -> the item's full type, or
+        // null for "no idea, show what the script has". See setVisibleParts.
+        HashMap<String, String> visibleParts;
         final ArrayList<UI3DScene.SceneVehicleModelInfo> modelInfo = new ArrayList<>();
         String showBonesPartId;
         String showBonesModelId;
@@ -6197,26 +6205,37 @@ public final class UI3DScene extends UIElement {
 
                 for (int i = 0; i < this.script.getPartCount(); i++) {
                     VehicleScript.Part scriptPart = this.script.getPart(i);
-                    if (scriptPart.wheel == null) {
+                    if (scriptPart.wheel != null) {
+                        continue;
+                    }
+
+                    // A PART WITH NOTHING FITTED SHOWS NOTHING ON A REAL CAR, which
+                    // this scene had no way to know: it has no VehiclePart objects and
+                    // so no installed items, and stock it drew every model of every
+                    // part. On a car built from a script that spells out its options
+                    // that is the union of every fitment the script can express - on a
+                    // KI5 body, five front bumpers and four spoilers stacked inside
+                    // each other, plus bolt-on armour and a roof rack nobody bought.
+                    // setVisibleParts is how a caller hands over the missing half.
+                    String fittedItem = null;
+                    if (this.visibleParts != null) {
+                        fittedItem = this.visibleParts.get(scriptPart.id);
+                        if (fittedItem == null) {
+                            continue;
+                        }
+                    }
+
+                    // ONE MODEL PER PART, ALWAYS, filter or no filter. A real vehicle
+                    // can never show two models of one part - VehiclePart.setModelVisible
+                    // picks exactly one - so drawing the rest is wrong even when there
+                    // is nothing to say which. The wanted one is tried first and any
+                    // loadable one after it, so a part whose chosen variant has no model
+                    // loaded still shows its default rather than vanishing.
+                    int wanted = modelIndexFor(scriptPart, fittedItem);
+                    if (!this.addPartModel(scriptPart, wanted)) {
                         for (int j = 0; j < scriptPart.getModelCount(); j++) {
-                            VehicleScript.Model scriptModel = scriptPart.getModel(j);
-                            modelName = scriptModel.file;
-                            if (modelName != null) {
-                                model = ModelManager.instance.getLoadedModel(modelName);
-                                if (model != null) {
-                                    modelInfo = UI3DScene.SceneVehicleModelInfo.s_pool.alloc();
-                                    modelInfo.sceneVehicle = this;
-                                    modelInfo.part = scriptPart;
-                                    modelInfo.scriptModel = scriptModel;
-                                    modelInfo.modelScript = ScriptManager.instance.getModelScript(scriptModel.file);
-                                    modelInfo.wheelIndex = -1;
-                                    modelInfo.model = model;
-                                    modelInfo.tex = model.tex;
-                                    modelInfo.releaseAnimationPlayer();
-                                    modelInfo.animPlayer = null;
-                                    modelInfo.track = null;
-                                    this.modelInfo.add(modelInfo);
-                                }
+                            if (j != wanted && this.addPartModel(scriptPart, j)) {
+                                break;
                             }
                         }
                     }
@@ -6458,9 +6477,107 @@ public final class UI3DScene extends UIElement {
             }
         }
 
+        // Adds one part model to the scene, and answers whether it landed. False
+        // means the model file is missing or not loaded yet, which is ordinary -
+        // a mod may ship a part whose mesh another mod provides.
+        boolean addPartModel(VehicleScript.Part scriptPart, int index) {
+            if (index < 0 || index >= scriptPart.getModelCount()) {
+                return false;
+            }
+
+            VehicleScript.Model scriptModel = scriptPart.getModel(index);
+            if (scriptModel.file == null) {
+                return false;
+            }
+
+            Model model = ModelManager.instance.getLoadedModel(scriptModel.file);
+            if (model == null) {
+                return false;
+            }
+
+            UI3DScene.SceneVehicleModelInfo modelInfo = UI3DScene.SceneVehicleModelInfo.s_pool.alloc();
+            modelInfo.sceneVehicle = this;
+            modelInfo.part = scriptPart;
+            modelInfo.scriptModel = scriptModel;
+            modelInfo.modelScript = ScriptManager.instance.getModelScript(scriptModel.file);
+            modelInfo.wheelIndex = -1;
+            modelInfo.model = model;
+            modelInfo.tex = model.tex;
+            modelInfo.releaseAnimationPlayer();
+            modelInfo.animPlayer = null;
+            modelInfo.track = null;
+            this.modelInfo.add(modelInfo);
+            return true;
+        }
+
+        // WHICH OF A PART'S ALTERNATIVE MODELS THE FITTED ITEM MEANS. Scripts that
+        // offer variants list them in step - itemType = R32Spoiler0;R32Spoiler1;...
+        // against models Spoiler0, Spoiler1, ... - so the item's position in the
+        // list is the model's index. That pairing is a convention rather than
+        // something the engine enforces (the real mapping lives in the mod's own
+        // install Lua, which is not reachable from here), so anything that does
+        // not line up falls back to the part's first model, which is what this
+        // class showed before any of this existed.
+        static int modelIndexFor(VehicleScript.Part scriptPart, String fittedItem) {
+            if (fittedItem == null || fittedItem.isEmpty() || scriptPart.itemType == null) {
+                return 0;
+            }
+
+            for (int i = 0; i < scriptPart.itemType.size(); i++) {
+                if (fittedItem.equals(scriptPart.itemType.get(i))) {
+                    return i < scriptPart.getModelCount() ? i : 0;
+                }
+            }
+
+            return 0;
+        }
+
+        // A SEMICOLON-SEPARATED "partId=Base.SomeItem" LIST, or null to go back to
+        // showing whatever the script has. A bare "partId" with no item is accepted
+        // and means "fitted, but I cannot say with what".
+        //
+        // A plain string rather than a KahluaTable because it crosses fromLua2 as
+        // one opaque Object either way, and a string has no indexing convention to
+        // get wrong on the way over.
+        //
+        // Rebuilds the model list only when the answer actually changed - the
+        // caller pushes this on every open, and resetModels drops every cached
+        // model the scene had.
+        void setVisibleParts(String spec) {
+            HashMap<String, String> parsed = null;
+            if (spec != null && !spec.isEmpty()) {
+                parsed = new HashMap<>();
+
+                for (String entry : spec.split(";")) {
+                    String trimmed = entry.trim();
+                    if (!trimmed.isEmpty()) {
+                        int eq = trimmed.indexOf(61);
+                        if (eq < 0) {
+                            parsed.put(trimmed, "");
+                        } else {
+                            parsed.put(trimmed.substring(0, eq), trimmed.substring(eq + 1));
+                        }
+                    }
+                }
+
+                if (parsed.isEmpty()) {
+                    parsed = null;
+                }
+            }
+
+            if (!Objects.equals(parsed, this.visibleParts)) {
+                this.visibleParts = parsed;
+                this.resetModels();
+            }
+        }
+
         void setScriptName(String scriptName) {
             this.scriptName = scriptName;
             this.script = ScriptManager.instance.getVehicle(scriptName);
+            // A part-id list belongs to ONE script, so a new car arrives with no
+            // filter rather than with the last car's. Callers push theirs after
+            // setVehicleScript, which is the order ISVehicleShowroom uses.
+            this.visibleParts = null;
             this.resetModels();
         }
 

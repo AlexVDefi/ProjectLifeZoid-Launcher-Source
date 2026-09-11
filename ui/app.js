@@ -257,7 +257,7 @@ function paintIdentity(st) {
     if (state.joinError) return setIdentityHelp(state.joinError, true);
     setIdentityHelp(
         st.accountConfirmed
-            ? "Locked in. An admin can change it."
+            ? "Locked to this Steam account. An admin can change it."
             : name
                 ? "Locks in the first time you join."
                 : "The name other players will see."
@@ -282,6 +282,18 @@ function stopEditingName() {
     if (state.status) paintIdentity(state.status);
 }
 
+// One row for both sources of -debug: the launcher's own toggle and the player's Steam
+// launch options. Only the built-in admin role survives the join with either of them set,
+// so an unconfirmed role is a warning and a known denial is a failure.
+function debugCheck(st) {
+    const wanted = st.launchDebug || !!st.debugLaunchOption;
+    if (st.blockingLaunchOption) return ["Debug mode on", "bad"];
+    if (!wanted) return ["Launch options ok", "ok"];
+    if (st.roleGrantsDebug === true) return ["Debug mode allowed", "ok"];
+    if (st.roleGrantsDebug === false) return ["Debug mode refused", "bad"];
+    return ["Debug mode on (unverified)", "warn"];
+}
+
 function paintChecks(st) {
     const box = $("checks");
     box.innerHTML = "";
@@ -290,20 +302,7 @@ function paintChecks(st) {
         [st.installDir ? "Game found" : "Game not found", st.installDir ? "ok" : "bad"],
         [st.steamId ? "Steam ready" : "Steam not signed in", st.steamId ? "ok" : "bad"],
         [st.accountUsername ? "Username set" : "No username", st.accountUsername ? "ok" : "warn"],
-        [
-            st.blockingLaunchOption
-                ? "Debug mode on"
-                : st.debugLaunchOption
-                    ? st.roleGrantsDebug === true
-                        ? "Debug mode allowed"
-                        : "Debug mode allowed (unverified)"
-                    : "Launch options ok",
-            st.blockingLaunchOption
-                ? "bad"
-                : !st.debugLaunchOption || st.roleGrantsDebug === true
-                    ? "ok"
-                    : "warn",
-        ],
+        debugCheck(st),
         [
             st.jarMatches === true ? "Version matched" : st.jarMatches === false ? "Update required" : "Version unknown",
             st.jarMatches === true ? "ok" : st.jarMatches === false ? "bad" : "warn",
@@ -456,7 +455,7 @@ function paintDrawer(st, s) {
         [
             "Username",
             st.accountUsername
-                ? st.accountUsername + (st.accountConfirmed ? "" : " (not joined yet)")
+                ? st.accountUsername + (st.accountConfirmed ? " (this Steam account)" : " (not joined yet)")
                 : "Not chosen",
             st.accountUsername ? "" : "warn",
         ],
@@ -486,9 +485,15 @@ function paintDrawer(st, s) {
     }
 
     const confirmed = st.roleGrantsDebug === true;
-    const relevant = !!st.debugLaunchOption || st.debugAllowed || st.roleGrantsDebug !== null;
+    const relevant =
+        !!st.debugLaunchOption || st.debugAllowed || st.launchDebug || st.roleGrantsDebug !== null;
     $("debug-toggle-row").hidden = confirmed || !(!!st.debugLaunchOption || st.debugAllowed);
     $("allow-debug").checked = !!st.debugAllowed;
+    $("launch-debug").checked = !!st.launchDebug;
+
+    const warn = $("launch-debug-warn");
+    warn.classList.toggle("danger", st.roleGrantsDebug !== true);
+    warn.classList.toggle("armed", !!st.launchDebug && st.roleGrantsDebug !== true);
 
     const note = $("debug-role-note");
     if (confirmed) {
@@ -544,6 +549,50 @@ function fitWindow() {
     }, 220);
 }
 
+const MEMORY_PRESETS = [3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768];
+
+function paintMemory(st) {
+    $("memory-chip").hidden = !st.memorySupported;
+    if (!st.memorySupported) return;
+
+    const select = $("select-memory");
+    const mb = st.memoryMb;
+
+    let custom = select.querySelector("option[data-custom]");
+    if (mb != null && !MEMORY_PRESETS.includes(mb)) {
+        if (!custom) {
+            custom = document.createElement("option");
+            custom.dataset.custom = "1";
+            select.append(custom);
+        }
+        custom.value = String(mb);
+        custom.textContent = (mb / 1024).toFixed(1).replace(/\.0$/, "") + " GB (custom)";
+    } else if (custom) {
+        custom.remove();
+    }
+
+    select.value = mb != null ? String(mb) : "";
+    select.disabled = state.playing || !st.installDir;
+    $("memory-chip").title = mb != null
+        ? "Memory allocated to Project Zomboid"
+        : "Could not read ProjectZomboid64.json";
+    $("memory-warn").hidden = !st.memoryIsDefault;
+}
+
+$("select-memory").addEventListener("change", async (e) => {
+    const mb = parseInt(e.target.value, 10);
+    if (!Number.isFinite(mb)) return;
+    e.target.disabled = true;
+    try {
+        await invoke("set_memory_mb", { mb });
+        await refreshStatus();
+        toast("Memory set to " + (mb / 1024) + " GB", "Takes effect next time Project Zomboid starts.");
+    } catch (err) {
+        toast("Could not change memory", String(err), true);
+        await refreshStatus();
+    }
+});
+
 async function refreshStatus() {
     try {
         state.status = await invoke("get_status");
@@ -555,6 +604,8 @@ async function refreshStatus() {
     $("chip-steam").textContent = st.steamId ? "Steam ready" : "Steam offline";
     $("chip-steam").classList.toggle("off", !st.steamId);
     $("chip-build").textContent = st.build != null ? "Build " + st.build : "Build —";
+    $("chip-version").textContent = "v" + st.launcherVersion;
+    paintMemory(st);
     paintIdentity(st);
     paintChecks(st);
     paintNotice(st);
@@ -744,6 +795,23 @@ $("btn-ov-clear").addEventListener("click", async () => {
     }
 });
 
+$("launch-debug").addEventListener("change", async (e) => {
+    try {
+        await invoke("set_launch_debug", { enabled: e.target.checked });
+        await refreshStatus();
+        log("debug", e.target.checked ? "launching with -debug" : "launching normally");
+        toast(
+            e.target.checked ? "Debug mode on" : "Debug mode off",
+            e.target.checked
+                ? "The game will start with -debug. Only the server's built-in admin role can join like that."
+                : "The game will start normally."
+        );
+    } catch (err) {
+        e.target.checked = !e.target.checked;
+        toast("Could not change that", String(err), true);
+    }
+});
+
 $("allow-debug").addEventListener("change", async (e) => {
     try {
         await invoke("set_allow_debug", { allowed: e.target.checked });
@@ -836,6 +904,8 @@ function paintUpdate(info) {
         note.classList.remove("ready");
         btn.textContent = "Check for updates";
     }
+    $("btn-details").classList.toggle("has-update", !!updateReady);
+    $("btn-details").title = updateReady ? "An update is available" : "";
 }
 
 async function checkForUpdate(quiet) {
@@ -971,6 +1041,7 @@ $("hero").addEventListener("error", () => {
 });
 
 $("log").innerHTML = '<div class="empty">No activity yet</div>';
+$("memory-warn").innerHTML = ICON.alert;
 refreshStatus();
 loadServerOverride();
 refreshServer();

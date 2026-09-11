@@ -35,6 +35,7 @@ import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.ServerOptions;
 import zombie.plz.PLZVoice;
+import zombie.plz.PLZVoiceChanger;
 import zombie.radio.devices.DeviceData;
 import zombie.vehicles.VehiclePart;
 
@@ -104,6 +105,22 @@ public class VoiceManager {
     private static final ArrayList<Short> plzRadioOnlyPeers = new ArrayList<>();
     private static final java.util.HashMap<Short, Integer> plzFrameCounts = new java.util.HashMap<>();
 
+    // THE MEGAPHONE HISS, per speaker, on the LISTENER's machine.
+    //
+    // A walkie sounds like a walkie because the DEVICE is emitting RadioStatic
+    // the whole time it is on - see DeviceData's sound pass - and not because
+    // anything is done to the voice itself. A megaphone has no device, so the
+    // hiss is played from the speaker's own emitter for as long as their frames
+    // keep arriving, which puts it in the world at the right place and lets the
+    // engine's own 3D falloff carry it.
+    //
+    // KEYED BY ONLINE ID AND STOPPED WHEN THE VOICE STOPS. The handle is what
+    // lets it be stopped at all; without it a hiss started here would run until
+    // the listener left the area, which is the leak the walkie's own
+    // radioLoopSound handle exists to avoid.
+    private static final java.util.HashMap<Short, Long> plzMegaphoneLoops = new java.util.HashMap<>();
+    private static final String PLZ_MEGAPHONE_STATIC = "RadioStatic";
+
     public static VoiceManager getInstance() {
         return instance;
     }
@@ -142,6 +159,14 @@ public class VoiceManager {
 
         javafmod.FMOD_System_SetVADMode(this.vadMode - 1);
         fmodReceiveBuffer = new byte[2048];
+
+        // PLZ. The grain length is a fraction of a second, so it is a different number of
+        // samples on an 8 kHz host than on a 24 kHz one. Done here rather than once at load
+        // because this is the point where the rate is settled AND the capture buffer is fresh,
+        // and a stale ring read at the wrong delay is a burst of noise on the first word.
+        PLZVoiceChanger.setSampleRate(sampleRate);
+        PLZVoiceChanger.reset();
+
         this.initialisedRecDev = true;
     }
 
@@ -516,6 +541,7 @@ public class VoiceManager {
                         plzConfigFloat(cfg, "whisper", PLZVoice.getWhisperFraction()),
                         plzConfigFloat(cfg, "normal", PLZVoice.getNormalFraction()),
                         plzConfigFloat(cfg, "shout", PLZVoice.getShoutFraction()),
+                        plzConfigFloat(cfg, "megaphone", PLZVoice.getMegaphoneFraction()),
                         plzConfigFloat(cfg, "falloff", PLZVoice.getFalloffExponent()),
                         plzConfigFloat(cfg, "gain", PLZVoice.getGain())
                     );
@@ -666,6 +692,46 @@ public class VoiceManager {
                 return 1;
             }
         });
+        // PLZ VOICE CHANGER. Two functions, because Lua has exactly two questions to ask:
+        // what may I do, and do this. The gate is answered by Java rather than worked out in
+        // Lua so the row in the management window and the shifter itself can never disagree
+        // about who is allowed - see PLZVoiceChanger.ALLOWED_ACCOUNT.
+        //
+        // get(0), NOT get(1). LuaCallFrame is zero-based; see setRadioPttBinding above for what
+        // that cost the last time it was got wrong.
+        table.rawset("setVoiceChanger", new JavaFunction() {
+            @Override
+            public int call(LuaCallFrame callFrame, int nArguments) {
+                Object arg1 = callFrame.get(0);
+                Object arg2 = callFrame.get(1);
+                boolean on = arg1 instanceof Boolean && (Boolean)arg1;
+
+                // The preset lands BEFORE the enable, so switching straight from one preset to
+                // another while armed does not pass through the old one for a frame.
+                boolean took = true;
+                if (arg2 instanceof Double preset) {
+                    took = PLZVoiceChanger.setPreset((int)Math.round(preset));
+                }
+                took = PLZVoiceChanger.setEnabled(on) && took;
+
+                callFrame.push(took);
+                return 1;
+            }
+        });
+        table.rawset("getVoiceChanger", new JavaFunction() {
+            @Override
+            public int call(LuaCallFrame callFrame, int nArguments) {
+                KahluaTable info = callFrame.getPlatform().newTable();
+                info.rawset("allowed", PLZVoiceChanger.localIsAllowed());
+                info.rawset("enabled", PLZVoiceChanger.isEnabled());
+                info.rawset("preset", (double)PLZVoiceChanger.getPreset());
+                info.rawset("presets", (double)PLZVoiceChanger.PRESET_COUNT);
+                info.rawset("ratio", (double)PLZVoiceChanger.activeRatio());
+                info.rawset("window", (double)PLZVoiceChanger.getWindow());
+                callFrame.push(info);
+                return 1;
+            }
+        });
         environment.rawset("VoiceManager", table);
     }
 
@@ -675,6 +741,51 @@ public class VoiceManager {
                 return PLZVoice.MODE_NORMAL;
             }
             return PLZVoice.bucketMode(speaker.radioData.get(0).distance, maxDistance);
+        }
+    }
+
+    // Started once and left running while the frames keep coming. isPlaying is
+    // asked first because playSoundImpl would start a second copy every frame
+    // otherwise, which is the same guard DeviceData puts in front of its own
+    // loop sound.
+    private static void plzStartMegaphoneStatic(IsoPlayer speaker) {
+        if (speaker == null) {
+            return;
+        }
+
+        Short id = speaker.getOnlineID();
+        if (plzMegaphoneLoops.containsKey(id)) {
+            return;
+        }
+        if (speaker.getEmitter() == null || speaker.getEmitter().isPlaying(PLZ_MEGAPHONE_STATIC)) {
+            return;
+        }
+
+        // playSoundImpl, not playSound: this is a LOCAL sound on the listener's
+        // machine. Every client that can hear the voice starts its own copy, and
+        // a networked one would have each of them broadcasting the same hiss to
+        // all the others.
+        long handle = speaker.getEmitter().playSoundImpl(PLZ_MEGAPHONE_STATIC, null);
+        if (handle > 0L) {
+            plzMegaphoneLoops.put(id, handle);
+        }
+    }
+
+    // CALLED FOR EVERYBODY, not only for a speaker known to have stopped. The
+    // map is the record of what this machine started, so asking it to stop
+    // something it never started is free, and it is the only thing that ends a
+    // hiss when the speaker simply stops talking.
+    private static void plzStopMegaphoneStatic(IsoPlayer speaker) {
+        if (speaker == null) {
+            return;
+        }
+
+        Long handle = plzMegaphoneLoops.remove(speaker.getOnlineID());
+        if (handle == null) {
+            return;
+        }
+        if (speaker.getEmitter() != null) {
+            speaker.getEmitter().stopOrTriggerSound(handle);
         }
     }
 
@@ -946,6 +1057,15 @@ public class VoiceManager {
                 javafmod.FMOD_System_GetRecordPosition(this.fmodVoiceRecordDriverId, this.fmodRecordPosition);
                 if (fmodReceiveBuffer != null) {
                     while ((this.fmodSoundDataError = javafmod.FMOD_Sound_GetData(this.fmodRecordSound, fmodReceiveBuffer, this.fmodSoundData)) == 0) {
+                        // PLZ VOICE CHANGER. Before the frame reaches the encoder, so the changed
+                        // voice is what is sent and every listener hears it without carrying the
+                        // patch or being told which preset was picked. See PLZVoiceChanger.
+                        //
+                        // ABOVE THE SEND GATE ON PURPOSE. The shifter carries a ring between
+                        // calls; running it only on frames a VAD gate lets through would leave a
+                        // seam in that ring at every word boundary. Shift always, send sometimes.
+                        PLZVoiceChanger.process(fmodReceiveBuffer, (int)this.fmodSoundData.size);
+
                         if ((IsoPlayer.getInstance() != null && GameClient.connection != null || FakeClientManager.isVOIPEnabled())
                             && (!is3D || !IsoPlayer.getInstance().isDead())) {
                             if (this.isModePpt) {
@@ -1053,12 +1173,24 @@ public class VoiceManager {
                                                 javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                             }
 
+                                            int speakerMode = plzSpeakerMode(d);
                                             this.setUserPlaySound(
                                                 d.userplaychannel,
                                                 PLZVoice.volumeFor(
-                                                    plzSpeakerMode(d), rdata.lastReceiveDistance, minDistance, maxDistance
+                                                    speakerMode, rdata.lastReceiveDistance, minDistance, maxDistance
                                                 )
                                             );
+
+                                            // The hiss rides the PROXIMITY path only. A voice
+                                            // coming out of a radio already has the device's own
+                                            // static under it, and stacking a second copy on top
+                                            // would make a megaphone held next to a walkie sound
+                                            // like two radios.
+                                            if (PLZVoice.isMegaphone(speakerMode)) {
+                                                plzStartMegaphoneStatic(player);
+                                            } else {
+                                                plzStopMegaphoneStatic(player);
+                                            }
                                         }
 
                                         if (range > maxDistance) {
@@ -1073,6 +1205,11 @@ public class VoiceManager {
 
                         if (d.voicetimeout == 0L) {
                             player.isSpeek = false;
+                            // The one place a hiss reliably ends. A speaker who
+                            // stops talking, walks out of range, or switches off
+                            // the megaphone all arrive here the same way: their
+                            // frames stop and the timeout runs out.
+                            plzStopMegaphoneStatic(player);
                         } else {
                             d.voicetimeout--;
                             player.isSpeek = true;

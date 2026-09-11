@@ -134,6 +134,7 @@ import zombie.iso.objects.RainManager;
 import zombie.iso.objects.RenderEffectType;
 import zombie.iso.objects.interfaces.Thumpable;
 import zombie.iso.weather.ClimateManager;
+import zombie.plz.PLZVehicleAccess;
 import zombie.plz.PLZVehicleWatch;
 import zombie.network.ClientServerMap;
 import zombie.network.GameClient;
@@ -976,6 +977,10 @@ public final class BaseVehicle
     }
 
     public void putKeyToZombie(IsoZombie zombie) {
+        if (PLZVehicleAccess.isSuppressingKeySpawns()) {
+            return;
+        }
+
         if (zombie.shouldZombieHaveKey(true)) {
             if (this.checkZombieKeyForVehicle(zombie)) {
                 InventoryItem key = this.createVehicleKey();
@@ -1059,6 +1064,10 @@ public final class BaseVehicle
     }
 
     public void addKeyToWorld(boolean crashed) {
+        if (PLZVehicleAccess.isSuppressingKeySpawns()) {
+            return;
+        }
+
         if (!this.isPreviouslyEntered() && !this.isPreviouslyMoved() && !this.isHotwired() && !this.isBurnt()) {
             if (this.isInTrafficJam()) {
                 crashed = true;
@@ -1264,6 +1273,10 @@ public final class BaseVehicle
             return false;
         }
 
+        if (PLZVehicleAccess.isEnabled()) {
+            return PLZVehicleAccess.mayWorkLocks(chr, this.getKeyId());
+        }
+
         if (this.getSeat(chr) != -1) {
             return true;
         }
@@ -1301,6 +1314,10 @@ public final class BaseVehicle
 
         if (!door.locked) {
             return false;
+        }
+
+        if (PLZVehicleAccess.isEnabled()) {
+            return PLZVehicleAccess.mayWorkLocks(chr, this.getKeyId());
         }
 
         if (this.getSeat(chr) != -1) {
@@ -2232,7 +2249,117 @@ public final class BaseVehicle
         return switchSeat != null;
     }
 
+    // PLZ: entering, sliding across and the ignition all answer to the ledger
+    // rather than to a key item. See .claude/PLZ-VEHICLE-ACCESS.md.
+    // Lua reaches zombie.plz through an exposed class, the way DoorAccess.lua
+    // reaches PLZDoorAccess through IsoGridSquare. Shared/VehicleAccess/VehicleAccessBridge.lua.
+    public static void plzVehicleAccessSetEnabled(boolean value) {
+        PLZVehicleAccess.setEnabled(value);
+    }
+
+    public static boolean plzVehicleAccessIsEnabled() {
+        return PLZVehicleAccess.isEnabled();
+    }
+
+    public static void plzVehicleAccessSetSuppressKeys(boolean value) {
+        PLZVehicleAccess.setSuppressKeySpawns(value);
+    }
+
+    public static void plzVehicleAccessSetGranted(String username, String keyIds) {
+        PLZVehicleAccess.setGranted(username, keyIds);
+    }
+
+    public static void plzVehicleAccessSetOverride(String username, boolean allowed) {
+        PLZVehicleAccess.setOverride(username, allowed);
+    }
+
+    public static void plzVehicleAccessSetClaimed(String keyIds) {
+        PLZVehicleAccess.setClaimed(keyIds);
+    }
+
+    public static boolean plzVehicleAccessHas(String username, double keyId) {
+        return PLZVehicleAccess.has(username, (int)Math.floor(keyId));
+    }
+
+    public static boolean plzVehicleAccessIsClaimed(double keyId) {
+        return PLZVehicleAccess.isClaimed((int)Math.floor(keyId));
+    }
+
+    public static boolean plzVehicleAccessHasOverride(String username) {
+        return PLZVehicleAccess.hasOverride(username);
+    }
+
+    public static void plzVehicleAccessClear() {
+        PLZVehicleAccess.clearAll();
+    }
+
+    public static int plzVehicleAccessPlayerCount() {
+        return PLZVehicleAccess.getGrantedPlayerCount();
+    }
+
+    public static int plzVehicleAccessKeyCount(String username) {
+        return PLZVehicleAccess.getGrantedKeyCount(username);
+    }
+
+    public static int plzVehicleAccessOverrideCount() {
+        return PLZVehicleAccess.getOverrideCount();
+    }
+
+    public static int plzVehicleAccessClaimedCount() {
+        return PLZVehicleAccess.getClaimedCount();
+    }
+
+    public static void plzVehicleAccessGrantSeatTicket(String username, double keyId) {
+        PLZVehicleAccess.grantSeatTicket(username, (int)Math.floor(keyId));
+    }
+
+    public static void plzVehicleAccessSetFleetKeys(String keyIds) {
+        PLZVehicleAccess.setFleetKeys(keyIds);
+    }
+
+    public static void plzVehicleAccessSetStaff(String username, boolean isStaff) {
+        PLZVehicleAccess.setStaff(username, isStaff);
+    }
+
+    public static boolean plzVehicleAccessMayOpenContainer(String username, double keyId) {
+        return PLZVehicleAccess.mayOpenContainer(username, (int)Math.floor(keyId));
+    }
+
+    public static int plzVehicleAccessFleetCount() {
+        return PLZVehicleAccess.getFleetCount();
+    }
+
+    public static int plzVehicleAccessStaffCount() {
+        return PLZVehicleAccess.getStaffCount();
+    }
+
+    public boolean plzMayTakeSeat(int seat, IsoGameCharacter chr) {
+        if (!PLZVehicleAccess.isEnabled()) {
+            return true;
+        }
+
+        int keyId = this.getKeyId();
+        if (seat != 0 && !(PLZVehicleAccess.isClaimed(keyId) && this.isAnyDoorLocked())) {
+            return true;
+        }
+
+        // A restrained prisoner or an EMS patient placed by somebody else -
+        // the ticket is scoped to this one non-driver seat of this one
+        // vehicle and is consumed the instant it is read, so it can never be
+        // replayed into the driver's seat or into any other car.
+        if (seat != 0 && chr instanceof IsoPlayer player
+                && PLZVehicleAccess.consumeSeatTicket(player.getUsername(), keyId)) {
+            return true;
+        }
+
+        return PLZVehicleAccess.mayOperate(chr, keyId);
+    }
+
     public void switchSeat(IsoGameCharacter chr, int seatTo) {
+        if (!this.plzMayTakeSeat(seatTo, chr)) {
+            return;
+        }
+
         int seatFrom = this.getSeat(chr);
         if (seatFrom != -1) {
             this.clearPassenger(seatFrom);
@@ -2528,6 +2655,10 @@ public final class BaseVehicle
         }
 
         if (chr.getVehicle() != null && !chr.getVehicle().exit(chr)) {
+            return false;
+        }
+
+        if (!this.plzMayTakeSeat(seat, chr)) {
             return false;
         }
 
@@ -7635,6 +7766,9 @@ public final class BaseVehicle
                     || this.isKeysInIgnition()
                     || haveKey
                     || this.isHotwired();
+                if (PLZVehicleAccess.isEnabled()) {
+                    startAllowed = PLZVehicleAccess.mayOperate(this.getDriver(), this.getKeyId());
+                }
                 if (part.getCondition() > 0 && this.getEngineQuality() > 0) {
                     if (this.getEngineState() == BaseVehicle.engineStateTypes.Idle) {
                         DrainableComboItem batteryItem = this.getBattery().getInventoryItem();

@@ -59,6 +59,7 @@ import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
+import zombie.plz.PLZItemBlob;
 import zombie.popman.ObjectPool;
 import zombie.scripting.ScriptManager;
 import zombie.scripting.objects.CharacterTrait;
@@ -3466,6 +3467,16 @@ public final class ItemContainer {
                 + "); an item is inside itself and getCharacter cannot resolve an owner. chain: "
                 + chain
         );
+    }
+
+    // PLZ: rebuild a banked item straight out of its blob and put it here, keeping the id it had
+    // when it was taken. The whole of the work is in zombie.plz.PLZItemBlob; this exists because
+    // Lua cannot reach a class in that package, and an instance method on a container it is
+    // already holding is the one call shape that is always available to it. Pairs with
+    // InventoryItem.plzSaveBlob. Answers null if the blob is missing, foreign or unreadable, which
+    // the caller reads as "use the property record instead".
+    public InventoryItem plzAddBlob(String blob) {
+        return PLZItemBlob.addTo(this, blob);
     }
 
     public void emptyIt() {

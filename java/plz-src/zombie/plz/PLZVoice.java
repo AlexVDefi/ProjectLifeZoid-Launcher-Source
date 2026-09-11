@@ -10,6 +10,17 @@ public final class PLZVoice {
     public static final int MODE_NORMAL = 1;
     public static final int MODE_SHOUT = 2;
 
+    // THE MEGAPHONE. A fourth step above shout, not a separate mechanism, and
+    // that is what makes it cheap: a mode is carried to every listener by the
+    // RANGE the speaker's own client publishes in its routing entry, so nothing
+    // is synced and nothing on the server has to know a megaphone exists. See
+    // bucketMode, which is how a listener reads the mode back out.
+    //
+    // WHO MAY USE IT IS NOT DECIDED HERE. This class knows about loudness; the
+    // Lua side (Voice/VoiceMegaphone) decides that it takes a police shift and
+    // a marked car, and turns the mode off again when either ends.
+    public static final int MODE_MEGAPHONE = 3;
+
     public static final int VOICE_BASE = 64;
 
     public static final int MIN_FLOOR = -32;
@@ -32,6 +43,10 @@ public final class PLZVoice {
     private static volatile float whisperFraction = 0.04F;
     private static volatile float normalFraction = 1.12F;
     private static volatile float shoutFraction = 1.85F;
+    // WELL CLEAR OF SHOUT, and it has to be: bucketMode reads a mode back out of
+    // a distance by which band it falls in, so two fractions close together
+    // would have a shout arriving as a megaphone at the far end.
+    private static volatile float megaphoneFraction = 3.4F;
 
     private static volatile float falloffExponent = 0.5F;
 
@@ -48,7 +63,14 @@ public final class PLZVoice {
     private static volatile float gain = 1.75F;
 
     public static void setConfig(
-        boolean floors, boolean modes, float whisper, float normal, float shout, float falloff, float gainPercent
+        boolean floors,
+        boolean modes,
+        float whisper,
+        float normal,
+        float shout,
+        float megaphone,
+        float falloff,
+        float gainPercent
     ) {
         floorsEnabled = floors;
         modesEnabled = modes;
@@ -58,6 +80,7 @@ public final class PLZVoice {
         float w = clamp(whisper, 0.01F, 0.95F);
         float n = clamp(normal, 0.2F, 3.0F);
         float sh = clamp(shout, 0.3F, 6.0F);
+        float mg = clamp(megaphone, 0.5F, 12.0F);
 
         if (n <= w) {
             n = w * 2.0F;
@@ -65,10 +88,18 @@ public final class PLZVoice {
         if (sh <= n) {
             sh = n * 1.5F;
         }
+        // The same ordering rule the three above already keep, extended one
+        // step. A host who sets the megaphone at or below shout has asked for
+        // two bands that overlap, which bucketMode cannot tell apart, so it is
+        // pushed clear rather than honoured.
+        if (mg <= sh) {
+            mg = sh * 1.5F;
+        }
 
         whisperFraction = w;
         normalFraction = n;
         shoutFraction = sh;
+        megaphoneFraction = mg;
     }
 
     public static float getNormalFraction() {
@@ -106,11 +137,19 @@ public final class PLZVoice {
         return shoutFraction;
     }
 
+    public static float getMegaphoneFraction() {
+        return megaphoneFraction;
+    }
+
+    public static boolean isMegaphone(int mode) {
+        return mode == MODE_MEGAPHONE;
+    }
+
     public static void setMode(int playerIndex, int mode) {
         if (playerIndex < 0 || playerIndex >= MAX_LOCAL_PLAYERS) {
             return;
         }
-        if (mode < MODE_WHISPER || mode > MODE_SHOUT) {
+        if (mode < MODE_WHISPER || mode > MODE_MEGAPHONE) {
             return;
         }
         MODES[playerIndex] = mode;
@@ -162,6 +201,9 @@ public final class PLZVoice {
         if (mode == MODE_SHOUT) {
             return shoutFraction;
         }
+        if (mode == MODE_MEGAPHONE) {
+            return megaphoneFraction;
+        }
         return normalFraction;
     }
 
@@ -203,7 +245,14 @@ public final class PLZVoice {
         if (fraction < (normalFraction + shoutFraction) * 0.5F) {
             return MODE_NORMAL;
         }
-        return MODE_SHOUT;
+        // The midpoint between shout and megaphone, the same rule as the two
+        // bands above. An UNPATCHED speaker publishes vanilla's own maxDistance,
+        // which is fraction 1.0 and lands in the normal band - so a client
+        // without the patch is never mistaken for one holding a megaphone.
+        if (fraction < (shoutFraction + megaphoneFraction) * 0.5F) {
+            return MODE_SHOUT;
+        }
+        return MODE_MEGAPHONE;
     }
 
     public static float clampToMode(float distance, float maxDistance) {

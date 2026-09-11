@@ -6,6 +6,7 @@ import zombie.characters.ecs.ECSEntity;
 import zombie.core.raknet.VoiceManager;
 import zombie.iso.Vector2;
 import zombie.plz.PLZVoice;
+import zombie.plz.PLZGrappleEdit;
 import zombie.util.lambda.PZOptional;
 
 public interface CharacterInputComponentEntity extends ECSEntity {
@@ -252,5 +253,87 @@ public interface CharacterInputComponentEntity extends ECSEntity {
             return PLZVoice.getMode(player.getIndex());
         }
         return PLZVoice.MODE_NORMAL;
+    }
+
+    /**
+     * PLZ. The live grapple offsets - where a held character stands relative to whoever holds
+     * them. The work is in zombie.plz.PLZGrappleEdit; these exist because Lua cannot reach that
+     * package, and neither BaseGrappleable, where the values are read, nor PLZGrappleEdit itself
+     * is exposed. THIS interface is the right home rather than IsoGameCharacter: it already
+     * ships to every client (payload.json), which IsoGameCharacter does not, and the escort
+     * already depends on it for its movement keys.
+     *
+     * <p>The receiver is ignored. The registry is global because the anim node is, and one node
+     * positions every pair playing it.
+     *
+     * <p>Scalars only, no collections: Kahlua will not marshal a Lua table into a collection
+     * parameter. Probe for them the way EscortGrapple.patchAvailable does - Kahlua THROWS on a
+     * missing Java method rather than answering nil.
+     */
+    default void plzGrappleSet(String node, float forward, float yaw, String behaviour) {
+        PLZGrappleEdit.set(node, forward, yaw, behaviour);
+    }
+
+    default void plzGrappleSetPhase(String node, float phase) {
+        PLZGrappleEdit.setPhase(node, phase);
+    }
+
+    /** kind is "forward" or "yaw"; fraction is a point in the clip, 0..1. */
+    default void plzGrappleAddKey(String node, String kind, float fraction, float value) {
+        PLZGrappleEdit.addKey(node, kind, fraction, value);
+    }
+
+    default void plzGrappleClearKeys(String node) {
+        PLZGrappleEdit.clearKeys(node);
+    }
+
+    default void plzGrappleClear(String node) {
+        PLZGrappleEdit.clear(node);
+    }
+
+    default void plzGrappleClearAll() {
+        PLZGrappleEdit.clearAll();
+    }
+
+    /** Hold every grapple at one point in its clip. Anything below zero releases the hold. */
+    default void plzGrappleSetForcedFraction(float fraction) {
+        PLZGrappleEdit.setForcedFraction(fraction);
+    }
+
+    default float plzGrappleGetForcedFraction() {
+        return PLZGrappleEdit.getForcedFraction();
+    }
+
+    default boolean plzGrappleHas(String node) {
+        return PLZGrappleEdit.has(node);
+    }
+
+    /** NaN when the node carries no override, which is how the editor tells unset from zero. */
+    default float plzGrappleGetForward(String node) {
+        return PLZGrappleEdit.forwardOf(node);
+    }
+
+    default float plzGrappleGetYaw(String node) {
+        return PLZGrappleEdit.yawOf(node);
+    }
+
+    default float plzGrappleGetPhase(String node) {
+        return PLZGrappleEdit.phaseOf(node);
+    }
+
+    default String plzGrappleGetBehaviour(String node) {
+        return PLZGrappleEdit.behaviourOf(node);
+    }
+
+    default int plzGrappleKeyCount(String node, String kind) {
+        return PLZGrappleEdit.keyCountOf(node, kind);
+    }
+
+    default float plzGrappleKeyTime(String node, String kind, int index) {
+        return PLZGrappleEdit.keyTimeAt(node, kind, index);
+    }
+
+    default float plzGrappleKeyValue(String node, String kind, int index) {
+        return PLZGrappleEdit.keyValueAt(node, kind, index);
     }
 }

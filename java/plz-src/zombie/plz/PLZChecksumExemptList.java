@@ -5,9 +5,9 @@ public final class PLZChecksumExemptList {
     private PLZChecksumExemptList() {
     }
 
-    public static final String SOURCE_SHA256 = "AEDFE2DD6B0078C4E7D6DCC5EA109FF60E660A21116E19ED226C2BD48BBA2482";
+    public static final String SOURCE_SHA256 = "98426372B00E313D42F68DA9C90914AA78A8FA0E476461457D31B419C2B529CF";
 
-    public static final String[] MOD_IDS = {  };
+    public static final String[] MOD_IDS = { "damnlib", "49ford8N", "85clubMan", "tsarslib", "amclub", "ATA_Bus", "autotsartrailers", "AquatsarYachtClubB42", "agrotsar42", "rSemiTruck", "USPSTruck" };
 
     public static final String[] AUTHORS = { "KI5" };
 

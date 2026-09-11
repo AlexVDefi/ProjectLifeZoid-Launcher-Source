@@ -593,11 +593,18 @@ pub fn explain(result: &JoinResult) -> Option<String> {
                 .into(),
         ),
         "DebugNotAllowed" => Some(
-            "The server refused the connection because the game is in debug mode and your account is not an admin. Only the built-in 'admin' role may join with -debug; moderator and gm may not. Turn off 'Allow debug mode' under Details, or clear -debug from your Steam launch options."
+            "The server refused the connection because the game is in debug mode and your account is not an admin. Only the built-in 'admin' role may join with -debug; moderator and gm may not. Turn off 'Start the game in debug mode' under Details, and clear -debug from your Steam launch options."
                 .into(),
         ),
         "MaxAccountsReached" => Some(
             "This Steam account has already created the maximum number of characters allowed on this server."
+                .into(),
+        ),
+        // Written by ProjectLifeZoidCore's AfkDisconnectNotice, not by the bootstrap. It is
+        // the one code here that describes a session that JOINED FINE and ended later, which
+        // is why the caller still treats it as a confirmed account.
+        "AFKKick" => Some(
+            "The server disconnected you for being away from the keyboard. Nothing is lost, and you can join again straight away."
                 .into(),
         ),
         "InvalidUsername" => Some(
@@ -828,6 +835,23 @@ mod tests {
     fn a_successful_join_needs_no_explanation() {
         assert!(explain(&parse_join_result("OK\n\n").unwrap()).is_none());
         assert!(explain(&parse_join_result("PLZNameTaken\n\n").unwrap()).is_some());
+    }
+
+    // The idle kick is the only code written mid-session rather than at the join, by the
+    // mod's own client Lua. It has to explain itself like a refusal without reading like
+    // one: the join worked, and lib.rs confirms the account on it for that reason.
+    #[test]
+    fn an_idle_kick_explains_itself_without_reading_as_a_refusal() {
+        let r = parse_join_result("AFKKick\n\n").unwrap();
+        let explained = explain(&r).expect("an idle kick has to say why the game closed");
+        assert!(
+            explained.contains("away from the keyboard"),
+            "the idle kick must name the reason, got: {explained}"
+        );
+        assert!(
+            !explained.starts_with("The server refused the connection:"),
+            "the idle kick must not fall through to the raw echo"
+        );
     }
 
     #[test]

@@ -1748,6 +1748,171 @@ public final class ModelManager {
                 }
             }
         }
+
+        this.plzReloadBodyModels();
+    }
+
+    /**
+     * Rebuild the two player body meshes after the active mod list has changed.
+     *
+     * <p>create() is one-shot behind !this.created and runs from GameWindow's boot, before a server
+     * mod list exists, so maleModel and femaleModel are bound to whatever media/models_x held at
+     * boot - vanilla, for every player who did not tick the body mod in the main menu. Core.ResetLua
+     * re-runs initAnimationMeshes(true), loadModAnimations, ClothingDecals, BeardStyles and
+     * HairStyles once the server's mods are loaded, but nothing re-runs these two. That single gap
+     * is the whole of the "body mods are clientside, enable them before you join" rule: a body mod
+     * the server sends is inert until the player restarts with it enabled locally.
+     *
+     * <p>The Model objects are kept and only their ModelMesh is reloaded. Model.mesh is final and
+     * held as a dependency, so onBeforeReady re-reads skinningData and softwareMesh by itself and
+     * every existing reference stays valid. No character exists yet at this point in ResetLua, so
+     * there is nothing holding a stale instance either.
+     *
+     * <p>Called from loadModAnimations, which create() also calls - hence the this.created guard,
+     * false for the whole of boot and true on every reload after it. Costs nothing for a player
+     * whose body meshes still resolve to the same files, because plzReloadBodyMesh compares the
+     * resolved path first and does not reload when it is unchanged.
+     */
+    private void plzReloadBodyModels() {
+        if (!this.created || GameServer.server) {
+            return;
+        }
+
+        int reloaded = this.plzReloadBodyMesh(this.maleModel, "skinned/malebody")
+            + this.plzReloadBodyMesh(this.femaleModel, "skinned/femalebody");
+        if (reloaded > 0) {
+            this.plzWaitForBodyMeshes();
+        }
+    }
+
+    /** Reload one body mesh, but only if media/models_x now resolves its name to a different file. */
+    private int plzReloadBodyMesh(Model model, String meshName) {
+        if (model == null || model.mesh == null) {
+            return 0;
+        }
+
+        String resolved = plzResolveMeshFile(meshName);
+        if (resolved == null) {
+            DebugType.Animation.error("PLZ: nothing resolves body mesh \"" + meshName + "\"; keeping the one already loaded");
+            return 0;
+        }
+
+        if (!model.mesh.isFailure() && resolved.equalsIgnoreCase(model.mesh.fullPath)) {
+            return 0;
+        }
+
+        ModelMesh.MeshAssetParams assetParams = new ModelMesh.MeshAssetParams();
+        assetParams.isStatic = false;
+        assetParams.animationsMesh = this.animModel;
+        assetParams.postProcess = null;
+        DebugType.Animation.println("PLZ: body mesh \"" + meshName + "\" now resolves to " + resolved + "; reloading it");
+        MeshAssetManager.instance.reload(model.mesh, assetParams);
+        return 1;
+    }
+
+    /**
+     * The file media/models_x/&lt;name&gt; resolves to right now, in the engine's own order.
+     *
+     * <p>Deliberately the same fbx-glb-x sequence FileTask_AbstractLoadModel walks, because that
+     * order is the only reason a body mod works at all: it ships FemaleBody.fbx beside vanilla's
+     * FemaleBody.x rather than replacing a file, so there is no override and nothing in the log to
+     * say it happened. Reading the path back through ZomboidFileSystem is therefore the only way to
+     * tell whether a mod has taken the name over.
+     */
+    private static String plzResolveMeshFile(String meshName) {
+        String base = "media/models_x/" + meshName.toLowerCase(Locale.ENGLISH);
+
+        for (String extension : new String[]{".fbx", ".glb", ".x"}) {
+            String path = ZomboidFileSystem.instance.getString(base + extension);
+            if (new File(path).exists()) {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Block until both body meshes have settled, the way create() blocks on them at boot.
+     *
+     * <p>BUT NOT ON THE JOIN, and that exception is the whole of this comment.
+     * updateAsyncTransactions drains the WHOLE async file-system queue rather than just the two
+     * meshes asked for above, and it runs each finished task's completion callback right here,
+     * on whatever call stack we happen to be on. At boot that is safe. On the connect-time
+     * ResetLua it is not: the engine is half built, OutfitManager.instance is still null, and a
+     * clothing item finishing in that window dies inside
+     * ClothingItemAssetManager.onStateChanged. The NPE then unwinds out of this method, out of
+     * loadModAnimations, out of Core.ResetLua and out of ConnectToServerState.Finish - which
+     * does not fail one body mesh, it ABORTS THE JOIN. Every connect hung on it, live, on
+     * 2026-09-11, the first time this patch was ever built and run.
+     *
+     * <p>So the wait is skipped while the engine is still coming up. Nothing is lost by that:
+     * plzReloadBodyMesh has already REQUESTED the reload, and the game loop's own pump finishes
+     * it a few frames later with everything initialised. Only the synchrony goes, and only on
+     * the one path that cannot afford to block anyway. Draining the queue early and swallowing
+     * the failure was the other candidate and is worse - the clothing item's state change would
+     * be consumed here and lost, instead of being handled later by the engine that was going to
+     * handle it correctly.
+     */
+    private void plzWaitForBodyMeshes() {
+        // FULLY QUALIFIED rather than imported, deliberately: it keeps this fix to one
+        // contiguous block in a file that is edited from more than one place at a time.
+        if (zombie.core.skinnedmodel.population.OutfitManager.instance == null) {
+            DebugType.Animation.println(
+                "PLZ: body meshes are reloading asynchronously - the engine is still coming up "
+                    + "(this is the server-join path), so they are not waited for here");
+            return;
+        }
+
+        boolean bClient = SpriteRenderer.instance != null;
+        long deadline = System.currentTimeMillis() + 30000L;
+
+        while (this.plzIsLoadingBodyMeshes()) {
+            // A SAFETY NET, NOT THE FIX - the guard above is what closes the known case. This is
+            // here because the pump runs FOREIGN callbacks we do not own and cannot audit, and
+            // one of the callers of this method is the join. Anything that escapes from here
+            // costs a connection, so it is caught, reported, and the wait is abandoned in favour
+            // of the asynchronous finish the skip path already relies on.
+            try {
+                GameWindow.fileSystem.updateAsyncTransactions();
+                if (bClient) {
+                    SpriteRenderer.instance.notifyRenderStateQueue();
+                }
+            } catch (Throwable var7) {
+                DebugType.Animation.error(
+                    "PLZ: an async task failed while waiting for the player body meshes; leaving "
+                        + "them to finish on their own (" + var7 + ")");
+                return;
+            }
+
+            if (System.currentTimeMillis() > deadline) {
+                DebugType.Animation.error("PLZ: timed out reloading the player body meshes; bodies stay vanilla until the game is restarted");
+                return;
+            }
+
+            try {
+                Thread.sleep(5L);
+            } catch (InterruptedException var6) {
+            }
+        }
+
+        if (this.plzBodyMeshFailed(this.maleModel) || this.plzBodyMeshFailed(this.femaleModel)) {
+            DebugType.Animation.error("PLZ: a player body mesh failed to reload; bodies stay vanilla until the game is restarted");
+        } else {
+            DebugType.Animation.println("PLZ: player body meshes reloaded from the active mod list");
+        }
+    }
+
+    private boolean plzIsLoadingBodyMeshes() {
+        return this.plzIsLoadingBodyMesh(this.maleModel) || this.plzIsLoadingBodyMesh(this.femaleModel);
+    }
+
+    private boolean plzIsLoadingBodyMesh(Model model) {
+        return model != null && model.mesh != null && !model.mesh.isFailure() && !model.mesh.isReady();
+    }
+
+    private boolean plzBodyMeshFailed(Model model) {
+        return model != null && model.mesh != null && model.mesh.isFailure();
     }
 
     public void animationAssetLoaded(AnimationAsset animationAsset) {
@@ -1809,10 +1974,7 @@ public final class ModelManager {
     }
 
     private void plzWaitForAnimationMeshes() {
-        if (!this.isLoadingAnimationMeshes()) {
-            return;
-        }
-
+        int requeued = this.plzRequeueFailedAnimationMeshes();
         boolean bClient = !GameServer.server && SpriteRenderer.instance != null;
         long deadline = System.currentTimeMillis() + 30000L;
 
@@ -1833,7 +1995,71 @@ public final class ModelManager {
             }
         }
 
-        DebugType.Animation.println("PLZ: animation meshes ready before loadModAnimations");
+        if (this.plzReportFailedAnimationMeshes() == 0) {
+            DebugType.Animation
+                .println("PLZ: animation meshes ready before loadModAnimations" + (requeued > 0 ? " (" + requeued + " reloaded first)" : ""));
+        }
+    }
+
+    /**
+     * Ask again for any animation mesh that failed, before deciding the wait is over.
+     *
+     * <p>A FAILED mesh is not "still loading", so isLoadingAnimationMeshes steps straight over it,
+     * the wait returns at once and reports success - and loadModAnimations then skips that mod
+     * anyway, because it requires modelMesh.isReady(). The mod's ModAnimations entry is created
+     * before the mesh is checked, so every later reload takes the "already known" branch and the
+     * directory scan never happens again. That is a modded animal rendering as a static lump for
+     * the rest of the process while this method says everything was fine.
+     *
+     * <p>The usual reason for the failure is a prefix refusal: FileTask_LoadMesh calls
+     * validatePrefix before it imports, so a mod folder Steam had not finished enumerating fails
+     * the whole task. By the time this runs PLZPrefixRetry has normally repaired the list, which is
+     * what makes asking again worth anything.
+     *
+     * <p>Once per call, and only for a mesh that is already failed. A file that is genuinely
+     * missing or corrupt fails again immediately, drops back out of the wait by itself, and is
+     * reported rather than retried in a loop. reload() is the same call
+     * MeshAssetManager.watchedFileChanged makes for a mesh edited on disk; the params are rebuilt
+     * exactly as initAnimationMeshes builds them above, rather than copied off the mesh, because
+     * ModelMesh.isStatic is package-private to zombie.core.skinnedmodel.model and an animation
+     * mesh is queued with a fixed shape anyway.
+     */
+    private int plzRequeueFailedAnimationMeshes() {
+        int requeued = 0;
+
+        for (AnimationsMesh am : ScriptManager.instance.getAllAnimationsMeshes()) {
+            ModelMesh mesh = am.modelMesh;
+            if (mesh == null || !mesh.isFailure()) {
+                continue;
+            }
+
+            ModelMesh.MeshAssetParams assetParams = new ModelMesh.MeshAssetParams();
+            assetParams.isStatic = false;
+            assetParams.animationsMesh = null;
+            assetParams.postProcess = am.postProcess;
+            DebugType.Animation.error("PLZ: animation mesh \"" + am.meshFile + "\" failed to load; asking for it again");
+            MeshAssetManager.instance.reload(mesh, assetParams);
+            requeued++;
+        }
+
+        return requeued;
+    }
+
+    /** What is still dead after the wait, named, because nothing downstream will mention it. */
+    private int plzReportFailedAnimationMeshes() {
+        int failed = 0;
+
+        for (AnimationsMesh am : ScriptManager.instance.getAllAnimationsMeshes()) {
+            if (am.modelMesh != null && am.modelMesh.isFailure()) {
+                failed++;
+                DebugType.Animation
+                    .error(
+                        "PLZ: animation mesh \"" + am.meshFile + "\" is still failed after a reload; that mod's animations stay missing until the game is restarted"
+                    );
+            }
+        }
+
+        return failed;
     }
 
     private boolean isLoadingAnimationMeshes() {

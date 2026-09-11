@@ -5431,6 +5431,16 @@ public abstract class IsoGameCharacter
         return name == null || name.isEmpty() ? this.toString() : name;
     }
 
+    // PLZ: remove this player for being away, showing them `messageKey` resolved on their own
+    // client. The work is in zombie.plz.PLZAfkKick, which explains why an idle kick needs a patch
+    // at all; this exists because Lua cannot reach that package, and GameServer - where the real
+    // kick lives - is not exposed to Lua either. Pairs with PLZAfk.lua, which owns every decision
+    // about WHO is away. Answers false if they were already gone, which the caller logs rather
+    // than retries.
+    public boolean plzKickAfk(String messageKey) {
+        return zombie.plz.PLZAfkKick.kick(this, messageKey);
+    }
+
     @Override
     public void save(ByteBuffer output, boolean isDebugSave) throws IOException {
         DebugType.Saving.trace("Saving: %s", this);

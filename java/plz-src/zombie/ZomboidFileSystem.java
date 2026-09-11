@@ -50,6 +50,7 @@ import zombie.network.CoopMaster;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.plz.PLZAssetRefusals;
+import zombie.plz.PLZModFolderBaseline;
 import zombie.plz.PLZPrefixRetry;
 import zombie.util.ResettableLazyValue;
 import zombie.util.StringUtils;
@@ -61,8 +62,11 @@ public final class ZomboidFileSystem {
     private final Map<String, ChooseGameInfo.Mod> modDirToMod = new HashMap<>();
     private ArrayList<String> modFolders;
     private ArrayList<String> modFoldersOrder;
-    private static final int PLZ_SHORT_WALK_RETRIES = 3;
-    private static final long PLZ_SHORT_WALK_PAUSE_MS = 100L;
+    // One pause per retry, growing. A flat 100ms x 3 was tuned for "Steam answered a moment late"
+    // and is nowhere near long enough for the case that actually breaks sessions: Steam
+    // re-indexing after a Workshop item updated, which is exactly when a walk comes back short.
+    // The whole ladder is only ever paid when the walk IS short, and it buys back a session.
+    private static final long[] PLZ_SHORT_WALK_BACKOFF_MS = {250L, 1000L, 3000L};
     private int plzBestModFolderCount;
     public final HashMap<String, String> activeFileMap = new HashMap<>();
     private final HashSet<String> allAbsolutePaths = new HashSet<>();
@@ -386,7 +390,12 @@ public final class ZomboidFileSystem {
         this.modIdToDir.clear();
         this.modDirToMod.clear();
         this.mods.clear();
-        this.modFolders = null;
+        // Under the lock for the same reason resetModFolders is: a walk already running holds it
+        // and would otherwise publish its result on top of this null, losing the reset.
+        synchronized (this.modFoldersLock) {
+            this.modFolders = null;
+        }
+
         ActiveMods.Reset();
         if (this.fileGuidTable != null) {
             this.fileGuidTable.clear();
@@ -430,14 +439,21 @@ public final class ZomboidFileSystem {
         return uri;
     }
 
+    // EVERY read and write of modFolders holds modFoldersLock. Getting only some of them under it
+    // is worse than none: a walk running inside getAllModFolders holds the lock for the length of
+    // the enumeration, so an unlocked null written meanwhile is simply overwritten when the walk
+    // publishes - the reset is lost, and the stale list stays memoised until something resets it
+    // again. Reset(), update() and isModFile() were each missing it.
+    //
+    // A caller that is already inside a retry does NOT start a new retry budget; see
+    // PLZPrefixRetry.newSession.
     public void resetModFolders() {
-        // Every reader of modFolders holds modFoldersLock; nulling it outside was the one write
-        // that did not, and the connect path nulls it while asset threads are walking it.
         synchronized (this.modFoldersLock) {
             this.modFolders = null;
         }
 
         this.allowedPrefixes.reset();
+        PLZPrefixRetry.newSession();
     }
 
     public void getInstalledItemModsFolders(ArrayList<String> out) {
@@ -551,14 +567,23 @@ public final class ZomboidFileSystem {
     private ArrayList<String> plzWalkModFoldersChecked() {
         ArrayList<String> built = this.plzWalkModFolders();
 
-        for (int attempt = 0; attempt < PLZ_SHORT_WALK_RETRIES && built.size() < this.plzBestModFolderCount; attempt++) {
+        // The mark comes from PLZModFolderBaseline, not from a field that starts at zero, so the
+        // FIRST walk of a process is checked as well. That walk is the one that matters: nothing
+        // is smaller than zero, so a short answer there used to be accepted in silence and become
+        // the session's own baseline, and every later walk in the run then matched it and looked
+        // healthy. It is also the likeliest walk to be short, because a launch after a crash or
+        // after a Workshop update is when Steam's cache is coldest.
+        int best = Math.max(this.plzBestModFolderCount, PLZModFolderBaseline.best());
+
+        for (int attempt = 0; attempt < PLZ_SHORT_WALK_BACKOFF_MS.length && built.size() < best; attempt++) {
             DebugType.Mod
                 .warn(
-                    "PLZ: mod folder walk returned " + built.size() + ", best this session was " + this.plzBestModFolderCount + "; walking again"
+                    "PLZ: mod folder walk returned " + built.size() + ", best known is " + best + "; walking again in "
+                        + PLZ_SHORT_WALK_BACKOFF_MS[attempt] + "ms"
                 );
 
             try {
-                Thread.sleep(PLZ_SHORT_WALK_PAUSE_MS);
+                Thread.sleep(PLZ_SHORT_WALK_BACKOFF_MS[attempt]);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
                 break;
@@ -567,14 +592,28 @@ public final class ZomboidFileSystem {
             built = this.plzWalkModFolders();
         }
 
-        if (built.size() < this.plzBestModFolderCount) {
-            DebugType.Mod
-                .error(
-                    "PLZ: mod folder walk is still short (" + built.size() + " of " + this.plzBestModFolderCount
-                        + "). Workshop assets under the missing folders will be refused until it is walked again."
-                );
+        if (built.size() < best) {
+            // An unsubscribe shortens the list for good, so a mark that can only ever rise would
+            // charge that player the whole backoff on every connect forever. Coming down takes
+            // several separate launches, which a transient cold cache does not survive.
+            if (PLZModFolderBaseline.recordShort(built.size())) {
+                this.plzBestModFolderCount = built.size();
+                DebugType.Mod
+                    .warn(
+                        "PLZ: mod folder walk has returned " + built.size()
+                            + " across several launches; taking it as the new baseline, which is what an unsubscribe looks like."
+                    );
+            } else {
+                this.plzBestModFolderCount = best;
+                DebugType.Mod
+                    .error(
+                        "PLZ: mod folder walk is still short (" + built.size() + " of " + best
+                            + "). Workshop assets under the missing folders will be refused until it is walked again."
+                    );
+            }
         } else {
             this.plzBestModFolderCount = built.size();
+            PLZModFolderBaseline.recordGood(built.size());
         }
 
         return built;
@@ -1370,7 +1409,10 @@ public final class ZomboidFileSystem {
             long now = System.currentTimeMillis();
             if (this.modsChangedTime <= now) {
                 this.modsChangedTime = 0L;
-                this.modFolders = null;
+                synchronized (this.modFoldersLock) {
+                    this.modFolders = null;
+                }
+
                 this.modIdToDir.clear();
                 this.modDirToMod.clear();
                 this.allowedPrefixes.reset();
@@ -1390,7 +1432,16 @@ public final class ZomboidFileSystem {
             return false;
         }
 
-        if (this.modFolders == null) {
+        // Snapshotted, not read field-by-field: this runs on the DebugFileWatcher thread, and a
+        // reset between the null check and the loop below used to be an NPE on that thread. A
+        // slightly stale list is the right answer here - it only decides whether a changed file is
+        // worth reacting to.
+        ArrayList<String> folders;
+        synchronized (this.modFoldersLock) {
+            folders = this.modFolders;
+        }
+
+        if (folders == null) {
             return false;
         }
 
@@ -1399,8 +1450,8 @@ public final class ZomboidFileSystem {
             return false;
         }
 
-        for (int i = 0; i < this.modFolders.size(); i++) {
-            String path1 = this.modFolders.get(i).toLowerCase().replace('\\', '/');
+        for (int i = 0; i < folders.size(); i++) {
+            String path1 = folders.get(i).toLowerCase().replace('\\', '/');
             if (path.startsWith(path1)) {
                 return true;
             }

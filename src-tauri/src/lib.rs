@@ -40,6 +40,7 @@ pub struct Status {
     pub role_name: Option<String>,
     pub role_grants_debug: Option<bool>,
     pub debug_allowed: bool,
+    pub launch_debug: bool,
     pub steam_id: Option<String>,
     pub account_username: Option<String>,
     pub account_confirmed: bool,
@@ -49,6 +50,10 @@ pub struct Status {
     pub server_overridden: bool,
     pub last_stamp: Option<patch::Stamp>,
     pub problems: Vec<String>,
+    pub launcher_version: String,
+    pub memory_mb: Option<u32>,
+    pub memory_is_default: bool,
+    pub memory_supported: bool,
 }
 
 pub fn effective_server(m: &payload::Manifest, st: &State) -> payload::ServerInfo {
@@ -72,6 +77,35 @@ pub fn requirements(m: &payload::Manifest) -> workshop::Requirements<'_> {
     }
 }
 
+/// Load the launcher state with the username fields pointed at whichever Steam account is
+/// signed in. Every path that reads or writes the username goes through this, so a second
+/// Steam account on the same PC never inherits the first one's confirmed name.
+pub fn load_state_for_active_account() -> State {
+    let mut st = State::load();
+    if let Ok(id) = steam::resolve_steam_id(st.steam_id_override) {
+        if st.bind_identity(id) {
+            let _ = st.save();
+        }
+    }
+    st
+}
+
+/// Set the username for the account signed in now. Shared by the UI command and plzctl so
+/// the two cannot disagree about when a name is locked.
+pub fn choose_username(raw: &str) -> Result<String> {
+    let name = account::validate(raw)?;
+    let mut st = load_state_for_active_account();
+    if st.account_confirmed && st.account_username.as_deref() != Some(name.as_str()) {
+        return Err(Error::Other(
+            "This Steam account already exists on the server under its current username. Ask an admin to rename it."
+                .into(),
+        ));
+    }
+    st.account_username = Some(name.clone());
+    st.save()?;
+    Ok(name)
+}
+
 fn emit(app: &AppHandle, step: &str, detail: &str) {
     let _ = app.emit(
         "play-progress",
@@ -85,7 +119,7 @@ async fn get_status() -> Result<Status> {
 }
 
 pub async fn status() -> Result<Status> {
-    let mut st = State::load();
+    let mut st = load_state_for_active_account();
     let repaired = patch::repair(&mut st).unwrap_or(false);
 
     let mut problems: Vec<String> = Vec::new();
@@ -109,6 +143,12 @@ pub async fn status() -> Result<Status> {
         st.jar = Some(fp.clone());
         let _ = st.save();
     }
+
+    let memory_mb = install_dir.as_ref().and_then(|p| patch::read_heap_mb(p));
+    let memory_is_default = memory_mb.is_some_and(|mb| mb <= patch::DEFAULT_HEAP_MB);
+    let memory_supported = install_dir
+        .as_ref()
+        .is_some_and(|p| install::json_path_opt(p).is_some());
 
     let mut manifest_error: Option<String> = None;
     let manifest = match payload::fetch_manifest().await {
@@ -146,6 +186,15 @@ pub async fn status() -> Result<Status> {
             "Your Steam launch options for Project Zomboid contain '{opt}', which puts the game in debug mode. The server disconnects debug clients during the join handshake, so this cannot work. Clear it in Steam > Project Zomboid > Properties > Launch Options."
         ));
     }
+    if st.launch_debug && st.role_grants_debug == Some(false) {
+        problems.push(format!(
+            "The launcher is set to start the game with -debug, but the server has already refused this account for it{}. The join will fail until you turn off 'Start the game in debug mode' under Details.",
+            st.role_name
+                .as_deref()
+                .map(|r| format!(" (role '{r}')"))
+                .unwrap_or_default()
+        ));
+    }
     if let Some(opts) = &steam_launch_options {
         if opts.contains("-nosteam") {
             problems.push(format!(
@@ -155,7 +204,7 @@ pub async fn status() -> Result<Status> {
             ));
         }
     }
-    let steam_id = install::active_steam_id().ok();
+    let steam_id = steam::resolve_steam_id(st.steam_id_override).ok();
     if steam_id.is_none() {
         problems.push("Steam is not signed in. Open Steam before pressing Play.".into());
     }
@@ -189,6 +238,7 @@ pub async fn status() -> Result<Status> {
         role_name: st.role_name.clone(),
         role_grants_debug: st.role_grants_debug,
         debug_allowed: st.allow_debug,
+        launch_debug: st.launch_debug,
         steam_id: steam_id.map(|id| id.to_string()),
         account_username: st.account_username.clone(),
         account_confirmed: st.account_confirmed,
@@ -198,6 +248,10 @@ pub async fn status() -> Result<Status> {
         server_overridden: st.server_override.is_some(),
         last_stamp: patch::read_stamp(),
         problems,
+        launcher_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_mb,
+        memory_is_default,
+        memory_supported,
     })
 }
 
@@ -321,7 +375,7 @@ async fn play(app: AppHandle) -> Result<PlayResult> {
 
 pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<PlayResult> {
     let mut notes: Vec<String> = Vec::new();
-    let mut st = State::load();
+    let mut st = load_state_for_active_account();
 
     progress("repair", "Checking for a previous session");
     if patch::repair(&mut st)? {
@@ -339,11 +393,27 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         .filter(|_| !st.debug_permitted())
     {
         return Err(Error::Other(format!(
-            "Remove '{opt}' from your Steam launch options for Project Zomboid first. It puts the game in debug mode, and the server drops debug clients mid-join. If your account is a server admin, turn on 'Allow debug mode' under Details instead."
+            "Remove '{opt}' from your Steam launch options for Project Zomboid first. It puts the game in debug mode, and the server drops debug clients mid-join. If your account is a server admin, use the debug options under Details instead."
         )));
     }
     let steam = install::steam_exe()?;
-    let _steam_id = install::active_steam_id()?;
+    let launch_debug = st.launch_debug;
+    let debug_args: &[&str] = if launch_debug {
+        &[launch::DEBUG_ARG]
+    } else {
+        &[]
+    };
+    if launch_debug {
+        notes.push(
+            "Started with -debug, as set under Details. Only the server's built-in 'admin' role may join a debug client; every other role is disconnected during the join."
+                .into(),
+        );
+    }
+    // Steam can change accounts while the launcher sits open, so the name is re-bound here
+    // rather than trusted from whenever the window last refreshed.
+    if st.bind_identity(steam::resolve_steam_id(st.steam_id_override)?) {
+        st.save()?;
+    }
     let username = match st.account_username.as_deref() {
         Some(name) => account::validate(name)?,
         None => {
@@ -497,8 +567,15 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         let _ = serverlist::seed(&sv.name, &sv.host, sv.connect_port, &username)?;
         bootstrap::write_join_intent(&sv.host, sv.connect_port, &username, &sv.name)?;
 
-        progress("launch", "Starting Project Zomboid through Steam");
-        launch::launch(&steam)?;
+        progress(
+            "launch",
+            if launch_debug {
+                "Starting Project Zomboid through Steam with -debug"
+            } else {
+                "Starting Project Zomboid through Steam"
+            },
+        );
+        launch::launch(&steam, debug_args)?;
         launch::wait_for_start(120)?;
 
         let stamp = wait_for_stamp(progress);
@@ -510,15 +587,18 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
                 None => "Playing. The patch could not be verified. Restoring on exit",
             },
         );
-        let mut seen_result = false;
+        // The last code reported, not merely "have we reported". A session writes "OK" the
+        // moment the join lands, and an idle kick overwrites it two hours later - latching on
+        // the first result would swallow every mid-session result there will ever be.
+        let mut last_code: Option<String> = None;
         launch::wait_for_exit_with(|| {
-            if seen_result {
-                return;
-            }
             let Some(result) = bootstrap::read_join_result() else {
                 return;
             };
-            seen_result = true;
+            if last_code.as_deref() == Some(result.code.as_str()) {
+                return;
+            }
+            last_code = Some(result.code.clone());
             if let Some(explained) = bootstrap::explain(&result) {
                 progress(
                     "join-failed",
@@ -547,16 +627,27 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
 
     let mut bound_username = None;
     let join_error = match &join {
-        Some(r) if r.code == "OK" => {
+        Some(r) if r.code == "OK" || r.code == "AFKKick" => {
             if !st.account_confirmed {
                 st.account_confirmed = true;
                 st.save()?;
             }
-            None
+            bootstrap::explain(r)
         }
         Some(r) => {
             if r.code == "DebugNotAllowed" && st.role_grants_debug != Some(false) {
                 st.role_grants_debug = Some(false);
+                st.save()?;
+            }
+            // Every one of these is the server saying this name is not this account's, and
+            // each explanation tells the player to pick a different one. A stale local
+            // confirmation would leave the name locked and the advice impossible to follow.
+            if matches!(
+                r.code.as_str(),
+                "PLZNameTaken" | "InvalidUsername" | "DuplicateAccount" | "InvalidUsernamePassword"
+            ) && st.account_confirmed
+            {
+                st.account_confirmed = false;
                 st.save()?;
             }
             if r.code == "PLZWrongCharacter" && !r.detail.is_empty() {
@@ -592,17 +683,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
 
 #[tauri::command]
 async fn set_account_username(name: String) -> Result<String> {
-    let name = account::validate(&name)?;
-    let mut st = State::load();
-    if st.account_confirmed && st.account_username.as_deref() != Some(name.as_str()) {
-        return Err(Error::Other(
-            "Your account already exists on the server under its current username. Ask an admin to rename it."
-                .into(),
-        ));
-    }
-    st.account_username = Some(name.clone());
-    st.save()?;
-    Ok(name)
+    choose_username(&name)
 }
 
 #[tauri::command]
@@ -611,6 +692,14 @@ async fn set_allow_debug(allowed: bool) -> Result<bool> {
     st.allow_debug = allowed;
     st.save()?;
     Ok(allowed)
+}
+
+#[tauri::command]
+async fn set_launch_debug(enabled: bool) -> Result<bool> {
+    let mut st = State::load();
+    st.launch_debug = enabled;
+    st.save()?;
+    Ok(enabled)
 }
 
 #[tauri::command]
@@ -652,6 +741,25 @@ async fn get_server_override() -> Result<Option<state::ServerOverride>> {
 async fn restore_now() -> Result<bool> {
     let mut st = State::load();
     patch::repair(&mut st)
+}
+
+#[tauri::command]
+async fn set_memory_mb(mb: u32) -> Result<()> {
+    if !(1024..=65536).contains(&mb) {
+        return Err(Error::Other(
+            "Choose a memory amount between 1 GB and 64 GB.".into(),
+        ));
+    }
+    let st = State::load();
+    if st.active_patch.is_some() {
+        return Err(Error::Other(
+            "Quit Project Zomboid first. This session's patch is still in place, and \
+             changing the memory setting needs a clean copy of ProjectZomboid64.json."
+                .into(),
+        ));
+    }
+    let install_dir = install::find_install(st.install_dir.as_deref())?;
+    patch::set_heap_mb(&install_dir, mb)
 }
 
 fn guard_install_change(st: &State) -> Result<()> {
@@ -796,6 +904,9 @@ async fn set_steam_account(steam_id: Option<String>) -> Result<()> {
     };
     let mut st = State::load();
     st.steam_id_override = parsed;
+    if let Ok(id) = steam::resolve_steam_id(st.steam_id_override) {
+        st.bind_identity(id);
+    }
     st.save()?;
     Ok(())
 }
@@ -876,7 +987,9 @@ pub fn run() {
             play,
             set_account_username,
             set_allow_debug,
+            set_launch_debug,
             restore_now,
+            set_memory_mb,
             set_install_dir,
             clear_install_dir,
             pick_install_dir,

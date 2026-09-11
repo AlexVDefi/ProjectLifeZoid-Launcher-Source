@@ -13,6 +13,9 @@ const PROP_BUILD: &str = "-Dplz.build=";
 const PROP_WORKSHOP_STATE: &str = "-Dplz.workshopStateFile=";
 const PROP_WORKSHOP_SESSION: &str = "-Dplz.workshopSession=";
 
+/// Steam's shipped default across the client, dedicated server and Linux copies alike.
+pub const DEFAULT_HEAP_MB: u32 = 3072;
+
 pub fn repair(st: &mut State) -> Result<bool> {
     if launch::is_game_running()
         && (st.active_patch.is_some() || config::workshop_override_active_path().is_file())
@@ -257,6 +260,57 @@ pub fn apply(st: &mut State, install_dir: &Path, build: u64) -> Result<()> {
     }
 }
 
+fn parse_xmx_mb(arg: &str) -> Option<u32> {
+    let value = arg.strip_prefix("-Xmx")?;
+    let (digits, unit) = value.split_at(value.len().checked_sub(1)?);
+    let n: u64 = digits.parse().ok()?;
+    match unit {
+        "g" | "G" => u32::try_from(n * 1024).ok(),
+        "m" | "M" => u32::try_from(n).ok(),
+        _ => None,
+    }
+}
+
+pub fn read_heap_mb(install_dir: &Path) -> Option<u32> {
+    let bytes = fs::read(install::json_path_opt(install_dir)?).ok()?;
+    let json: Value = serde_json::from_slice(&bytes).ok()?;
+    json.get("vmArgs")?
+        .as_array()?
+        .iter()
+        .find_map(|v| v.as_str().and_then(parse_xmx_mb))
+}
+
+pub fn set_heap_mb(install_dir: &Path, mb: u32) -> Result<()> {
+    let json_path = install::json_path_opt(install_dir).ok_or_else(|| {
+        Error::Other("Project Zomboid's memory is not configurable on this platform.".into())
+    })?;
+    let bytes = fs::read(&json_path)?;
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(Error::Other(
+            "ProjectZomboid64.json already has a UTF-8 BOM, which stops the game launching. \
+             Verify the game files in Steam."
+                .into(),
+        ));
+    }
+    let mut json: Value = serde_json::from_slice(&bytes)?;
+    let vm = json
+        .get_mut("vmArgs")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| Error::MalformedJson("no vmArgs array".into()))?;
+
+    let entry = Value::String(format!("-Xmx{mb}m"));
+    match vm
+        .iter_mut()
+        .find(|v| v.as_str().is_some_and(|s| s.starts_with("-Xmx")))
+    {
+        Some(slot) => *slot = entry,
+        None => vm.push(entry),
+    }
+
+    let text = serde_json::to_string_pretty(&json)? + "\n";
+    state::write_no_bom(&json_path, &text)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stamp {
@@ -275,4 +329,81 @@ pub fn read_stamp() -> Option<Stamp> {
         origin: v.get("origin")?.as_str().unwrap_or("").to_string(),
         classpath: v.get("classpath")?.as_str().unwrap_or("").to_string(),
     })
+}
+
+#[cfg(test)]
+mod heap_tests {
+    use super::*;
+
+    #[test]
+    fn parses_gigabyte_and_megabyte_suffixes() {
+        assert_eq!(parse_xmx_mb("-Xmx3072m"), Some(3072));
+        assert_eq!(parse_xmx_mb("-Xmx8g"), Some(8192));
+        assert_eq!(parse_xmx_mb("-Xmx8G"), Some(8192));
+        assert_eq!(parse_xmx_mb("-Xmx8192M"), Some(8192));
+    }
+
+    #[test]
+    fn rejects_anything_that_is_not_an_xmx_flag() {
+        assert_eq!(parse_xmx_mb("-Xms2048m"), None);
+        assert_eq!(parse_xmx_mb("-Dzomboid.steam=1"), None);
+        assert_eq!(parse_xmx_mb("-Xmx"), None);
+        assert_eq!(parse_xmx_mb("-Xmxabc"), None);
+    }
+
+    fn fake_install(tag: &str, vm_args_json: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("plz-heap-{}-{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&root);
+        let json_path = install::json_path(&root);
+        fs::create_dir_all(json_path.parent().unwrap()).unwrap();
+        fs::write(&json_path, format!(r#"{{"vmArgs": {vm_args_json}}}"#)).unwrap();
+        root
+    }
+
+    // macOS ships no ProjectZomboid64.json at all, so read/write_heap_mb refuse there by
+    // design (see json_path_opt) -- these round-trip tests only apply to the platforms
+    // that have a file to manage.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn set_heap_mb_replaces_the_existing_entry_in_place() {
+        let root = fake_install(
+            "replace",
+            r#"["-Djava.awt.headless=true", "-Xmx3072m", "-Dzomboid.steam=1"]"#,
+        );
+        assert_eq!(read_heap_mb(&root), Some(3072));
+
+        set_heap_mb(&root, 8192).unwrap();
+        assert_eq!(read_heap_mb(&root), Some(8192));
+
+        let text = fs::read_to_string(install::json_path(&root)).unwrap();
+        assert_eq!(
+            text.matches("-Xmx").count(),
+            1,
+            "must not accumulate old entries: {text}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn set_heap_mb_adds_the_entry_when_none_exists() {
+        let root = fake_install("missing", r#"["-Djava.awt.headless=true"]"#);
+
+        set_heap_mb(&root, 6144).unwrap();
+        assert_eq!(read_heap_mb(&root), Some(6144));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_has_no_manageable_heap_setting() {
+        let root = fake_install("macos-unsupported", r#"["-Xmx3072m"]"#);
+
+        assert_eq!(read_heap_mb(&root), None);
+        assert!(set_heap_mb(&root, 8192).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
