@@ -21,6 +21,7 @@ import zombie.network.IConnection;
 import zombie.network.JSONField;
 import zombie.network.PLZAccounts;
 import zombie.network.PLZQueue;
+import zombie.network.PLZSlots;
 import zombie.network.PacketSetting;
 import zombie.network.ServerOptions;
 import zombie.network.ServerWorldDatabase;
@@ -58,7 +59,13 @@ public class LoginPacket implements INetworkPacket {
                     return null;
                 }
             }
-            return "PLZWrongCharacter##" + bound.get(0);
+            // A name this account does not hold. With a spare character slot that is a new
+            // character being made, so fall through to the mint path below: it is the same one
+            // that created their first, which is why the second gets a clean bank balance, ID,
+            // phone and resettlement package without any of that being special-cased here.
+            if (bound.size() >= PLZSlots.allowed(steamID)) {
+                return "PLZWrongCharacter##" + String.join(", ", bound);
+            }
         }
 
         try {

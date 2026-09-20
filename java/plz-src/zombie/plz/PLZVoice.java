@@ -1,9 +1,49 @@
 package zombie.plz;
 
 import java.util.Arrays;
+import zombie.SandboxOptions;
+import zombie.core.math.PZMath;
 
 public final class PLZVoice {
     private PLZVoice() {
+    }
+
+    /**
+     * Jitter buffer the server hands every client at connect, in bytes.
+     *
+     * <p>The receive loop is polled from the client's update tick, but frames arrive on a fixed
+     * 20 ms cadence whatever the frame rate is. So a client that stutters stops draining, the
+     * native buffer overruns, and the frames are gone - there is no second copy, and there cannot
+     * be: a voice frame that arrives late is unplayable, which is why this is buffered rather than
+     * retransmitted. 8000 bytes at 24 kHz 16-bit mono is about 170 ms of slack, and a frame rate
+     * dip longer than that is audible as a cut.
+     *
+     * <p>UNKNOWN WHETHER THIS IS CAPACITY OR TARGET DEPTH. It is consumed inside the native layer
+     * and the decompiled source does not say. If capacity, raising it is nearly free headroom; if
+     * depth, it is paid as latency on every conversation. That is why it is a sandbox value with
+     * the vanilla number as its default rather than a bigger literal: it can be tried, judged by
+     * ear and put back without a build.
+     */
+    public static final String OPTION_BUFFERING = "PLZVoice.BufferingBytes";
+
+    public static final int DEFAULT_BUFFERING = 8000;
+    public static final int MIN_BUFFERING = 2000;
+    public static final int MAX_BUFFERING = 64000;
+
+    public static int bufferingBytes() {
+        try {
+            SandboxOptions.SandboxOption option = SandboxOptions.instance.getOptionByName(OPTION_BUFFERING);
+            if (option == null) {
+                return DEFAULT_BUFFERING;
+            }
+
+            int value = PZMath.tryParseInt(option.asConfigOption().getValueAsString(), DEFAULT_BUFFERING);
+            return value < MIN_BUFFERING ? MIN_BUFFERING : (value > MAX_BUFFERING ? MAX_BUFFERING : value);
+        } catch (Throwable var2) {
+            // Read at server init, which may run before the sandbox is loaded, and a class-init
+            // failure arrives as an Error. Vanilla's number is the safe answer either way.
+            return DEFAULT_BUFFERING;
+        }
     }
 
     public static final int MODE_WHISPER = 0;
@@ -232,6 +272,66 @@ public final class PLZVoice {
             return 0.0F;
         }
         return clampToMode(theirDistance, maxDistance);
+    }
+
+    /**
+     * How far two characters can have drifted apart since the positions the gate is about to
+     * judge them on were published.
+     *
+     * <p>WHY THIS NUMBER EXISTS AT ALL. The routing entry that decides who is in earshot carries
+     * a POSITION, and that position is refreshed once per
+     * {@code GameClient.updateChannelsRoamingLimit} - 3010 ms of vanilla, which PLZ does not
+     * patch. Both sides of a pair are independently that stale and both are rounded to whole
+     * tiles ({@code RadioData.x/y} are {@code short}). Vanilla never noticed because its default
+     * {@code VoiceMaxDistance} is 100 tiles and three seconds of walking is a rounding error on
+     * it. PLZ runs the server at 8, and {@link #normalFraction} puts ordinary speech at about
+     * nine tiles - so the drift is a FULL RADIUS and the gate flips on and off in three-second
+     * blocks while two people stand and talk. That is what "your voice keeps cutting out" and
+     * "chopped audio" were on the live server.
+     *
+     * <p>THREE SECONDS AT A RUN, FOR BOTH OF THEM, ROUNDED UP. Nothing here needs to be tight -
+     * see {@link #gateRange} for why being generous is free - so the number is deliberately the
+     * pessimistic one rather than the likely one.
+     */
+    /**
+     * SIZED FOR A VEHICLE, NOT A WALKER. 24 tiles covered roughly 8 tiles/s - about 29 km/h - which
+     * is fine on foot and useless in a car: at 130 km/h a speaker moves ~108 tiles inside one
+     * 3010 ms routing republish, and two cars pulling apart double that. Worse, the two routing
+     * entries are published on INDEPENDENT timers, so even two people sharing one vehicle can be a
+     * full interval out of step with each other and chop while sitting side by side.
+     *
+     * <p>250 covers two vehicles diverging at ~130 km/h (assuming the usual 1 tile ~ 1 m). Being
+     * generous costs nothing: the voice stream is decoded either way - the gate only chooses
+     * between the falloff curve and a hard mute - and {@link #volumeFor} still returns exactly 0.0
+     * at the mode's range using LIVE positions, so the audible distance is unchanged.
+     */
+    public static final float ROUTING_DRIFT_TILES = 250.0F;
+
+    /**
+     * The range the ROUTING gate should use, as opposed to {@link #audibleRange}, which is the
+     * range a voice is actually audible over.
+     *
+     * <p>THE TWO ARE NOT THE SAME JOB AND THAT IS THE WHOLE FIX. The gate only decides whether
+     * to bother carrying a voice to this client at all; what a listener HEARS is decided
+     * afterwards by {@link #volumeFor}, which VoiceManager now feeds the live
+     * {@code IsoUtils.DistanceTo} rather than the stale routing distance. {@code volumeFor}
+     * returns exactly {@code 0.0} at and beyond the mode's range, so a speaker who slips out of
+     * earshot goes silent on the falloff curve, smoothly, from positions that are current -
+     * whether or not the gate let them through. Widening the gate therefore cannot make anything
+     * audible that should not be; it can only stop a voice being cut off by arithmetic done on
+     * where somebody was three seconds ago.
+     *
+     * <p>IT MUST NOT WIDEN A ZERO. {@code audibleRange} returns zero for the two cases that are
+     * decisions rather than distances - a different floor, and a private call publishing no
+     * range at all - and both have to stay silent no matter how far the drift allowance would
+     * otherwise reach.
+     */
+    public static float gateRange(int myChannel, int theirChannel, float theirDistance, float maxDistance) {
+        float audible = audibleRange(myChannel, theirChannel, theirDistance, maxDistance);
+        if (!(audible > 0.0F)) {
+            return 0.0F;
+        }
+        return audible + ROUTING_DRIFT_TILES;
     }
 
     public static int bucketMode(float distance, float maxDistance) {

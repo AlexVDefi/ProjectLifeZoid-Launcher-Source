@@ -10,11 +10,45 @@ on:
   push:
     tags: ["v*"]
 
+# write, not read: the bundles are attached to a draft RELEASE rather than uploaded as Actions
+# artifacts. Artifact storage is a per-account quota that silently killed two releases (0.5.5 and
+# the first 0.5.6 run) - both builds succeeded and only the upload failed, and deleting artifacts
+# does not restore the quota for 6-12 hours because the usage figure is cached. Release assets do
+# not count against it.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  # Created once, up front. Both build jobs run in parallel and would otherwise race to create
+  # the same release, and the loser fails.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.draft.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - id: draft
+        name: Open the draft release the bundles attach to
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; the bundles will replace its assets"
+          else
+            # A DRAFT deliberately: a draft does not create the git tag, so this cannot fire the
+            # push:tags trigger above and start the workflow again.
+            gh release create "$tag" --draft --title "$tag" \
+              --notes "Launcher $version. Build output; the published installers are served from the origin."
+          fi
+
   build:
+    needs: prepare
     environment: release
     strategy:
       fail-fast: false
@@ -76,13 +110,22 @@ jobs:
           fi
           echo "signed artifacts:"; echo "$found"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: launcher-${{ matrix.name }}
-          if-no-files-found: error
-          path: |
-            src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.dmg
-            src-tauri/target/**/release/bundle/**/*.sig
-            src-tauri/target/**/release/bundle/**/*.app.tar.gz
+      - name: Attach the bundles to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # No mapfile: the macOS runner's /bin/bash is 3.2. Null-delimited because every bundle
+          # name contains a space.
+          files=()
+          while IFS= read -r -d '' f; do files+=("$f"); done < <(
+            find src-tauri/target -path '*release/bundle/*' \
+              \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \
+                 -o -name '*.sig' -o -name '*.app.tar.gz' \) -print0
+          )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::the build produced no bundles to attach"
+            exit 1
+          fi
+          printf '  %s\n' "${files[@]}"
+          gh release upload "${{ needs.prepare.outputs.tag }}" --clobber "${files[@]}"

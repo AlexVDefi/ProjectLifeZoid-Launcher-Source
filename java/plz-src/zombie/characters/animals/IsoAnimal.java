@@ -109,6 +109,8 @@ import zombie.network.GameServer;
 import zombie.network.PacketTypes.PacketType;
 import zombie.network.packets.INetworkPacket;
 import zombie.plz.PLZAnimalCalm;
+import zombie.plz.PLZAnimalOwner;
+import zombie.plz.PLZAnimalProtect;
 import zombie.popman.animal.AnimalInstanceManager;
 import zombie.popman.animal.AnimalSynchronizationManager;
 import zombie.scripting.objects.ModelAttachment;
@@ -378,6 +380,15 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
    @Override
    public void update() {
+      if (this.adef == null && GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ANIMAL_UPDATE_GUARD)
+         && !plzRecoverOrDetachNullDef()) {
+         return;
+      }
+
+      if (GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ANIMAL_REGISTRY)) {
+         plzEnsureMapEntry();
+      }
+
       if (this.isOnHook()) {
          this.reattachBackToHook();
          this.ensureCorrectSkin();
@@ -563,10 +574,107 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
       return 0.9F + 0.20000005F * IsoUtils.smoothstep(0.9F, 1.1F, this.getNetworkCharacterAI().prediction.speed);
    }
 
+   /**
+    * PLZ: keep one animal with an unresolvable definition from stopping the whole world.
+    *
+    * update() dereferences this.adef unguarded (setTurnDelta(this.adef.turnDelta)). With a null
+    * adef that throws out of MovingObjectUpdateSchedulerUpdateBucket.update, and the catch sits
+    * all the way up at IngameState.updateInternal - so the offending animal is never removed from
+    * the bucket and re-crashes on every single tick. The world stops progressing.
+    *
+    * First try to recover: the type usually still resolves, and a recovered animal carries on as
+    * normal. If it does not resolve, the animal is unrecoverable, so detach it from every
+    * per-tick collection rather than leave it to throw forever.
+    *
+    * @return true when update() should continue normally.
+    */
+   private boolean plzRecoverOrDetachNullDef() {
+      AnimalDefinitions resolved = AnimalDefinitions.getDef(this.getAnimalType());
+      if (resolved != null) {
+         this.adef = resolved;
+         zombie.debug.DebugLog.log("PLZFixes: recovered null adef for animal type=" + this.getAnimalType() + " id=" + this.getAnimalID());
+         zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_UPDATE_GUARD);
+         return true;
+      }
+
+      IsoCell cell = this.getCell();
+      if (cell != null) {
+         cell.getObjectList().remove(this);
+         cell.getAddList().remove(this);
+         cell.getRemoveList().remove(this);
+         zombie.MovingObjectUpdateScheduler.instance.removeObject(this);
+         if (this.getCurrentSquare() != null) {
+            this.getCurrentSquare().getMovingObjects().remove(this);
+         }
+
+         if (this.getLastSquare() != null) {
+            this.getLastSquare().getMovingObjects().remove(this);
+         }
+      }
+
+      zombie.debug.DebugLog.log("PLZFixes: removed animal with unrecognised type=" + this.getAnimalType()
+         + " id=" + this.getAnimalID() + " cellPresent=" + (cell != null));
+      zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_UPDATE_GUARD);
+      return false;
+   }
+
+   /**
+    * PLZ: re-establish AnimalInstanceManager.get(getOnlineID()) == this.
+    *
+    * Animals are registered into the manager's map only by IsoAnimal.init(AnimalBreed) - creation
+    * and load-from-disk - but the real/virtual round trip is asymmetric around that. When an
+    * animal wanders out of the loaded area, AnimalPopulationManager.virtualizeAnimal parks the
+    * SAME instance inside a VirtualAnimal and then calls delete(), which removes it from the map.
+    * Coming back the other way the instance is put back into the world lists without a matching
+    * add(), so it is alive and ticking but unreachable by id: nothing addressed to it arrives.
+    *
+    * Checked at tick entry rather than exit. For an invariant re-tested every tick the two are
+    * equivalent, and entry avoids threading a hook through update()'s many exits.
+    */
+   private void plzEnsureMapEntry() {
+      zombie.popman.animal.AnimalInstanceManager manager = zombie.popman.animal.AnimalInstanceManager.getInstance();
+      if (manager == null) {
+         return;
+      }
+
+      short id = this.getOnlineID();
+      IsoAnimal inMap = manager.get(id);
+      if (inMap == this) {
+         return;
+      }
+
+      // id 1 is "never assigned", -1 is "no free slot"; both need a fresh allocation, as does a
+      // slot already owned by somebody else.
+      if (id == 1 || id == -1 || inMap != null) {
+         short fresh = manager.allocateID();
+         if (fresh == -1) {
+            return;
+         }
+
+         manager.add(this, fresh);
+         zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_REGISTRY);
+         return;
+      }
+
+      manager.add(this, id);
+      zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_REGISTRY);
+   }
+
    private void reattachBackToMom() {
       if (this.attachBackToMother > 0 && this.getVehicle() != null) {
          for (int i = 0; i < this.getVehicle().getAnimals().size(); i++) {
             IsoAnimal mom = this.getVehicle().getAnimals().get(i);
+            // PLZ: a vehicle's animal list legitimately holds nulls - BaseVehicle.update guards
+            // with its own "if (animal != null)" - but this loop dereferenced every slot, so one
+            // empty seat threw "Cannot invoke IsoAnimal.getAnimalID() because mom is null" and
+            // aborted the whole tick. Skipping the slot is enough; unlike Storm we do NOT sweep
+            // nulls out of the vehicle's list, because that list is shared state the vehicle owns
+            // and its nulls are by design.
+            if (mom == null && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ANIMAL_REATTACH)) {
+               zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_REATTACH);
+               continue;
+            }
+
             if (mom.getAnimalID() == this.attachBackToMother) {
                this.setMother(mom);
                break;
@@ -617,6 +725,20 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
          this.zoneCheckTimer = this.zoneCheckTimer - GameTime.getInstance().getMultiplier();
       } else {
          this.zoneCheckTimer = 2000.0F;
+         if (!this.ignoredTrough.isEmpty() && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ANIMAL_TROUGH_EXPIRY)) {
+            // PLZ: vanilla only ever clears ignoredTrough in removeFromWorld, so every failed
+            // approach - arriving farther than distToEat, a failed path, an occupied standing
+            // square - blacklists that trough permanently for the life of the loaded animal. On a
+            // busy server one bad approach means the animal starves or dies of thirst standing
+            // next to a stocked trough.
+            //
+            // checkZone is the right cadence: it is where the animal rebuilds its connected zones
+            // and with them the trough candidate list, so it is the natural moment to give every
+            // trough another chance.
+            this.ignoredTrough.clear();
+            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_TROUGH_EXPIRY);
+         }
+
          DesignationZoneAnimal dZoneCurrent = DesignationZoneAnimal.getZoneF(this.getX(), this.getY(), this.getZ());
          this.setDZone(dZoneCurrent);
          this.connectedDZone.clear();
@@ -1177,6 +1299,15 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
    @Override
    public void hitConsequences(HandWeapon weapon, IsoGameCharacter wielder, boolean bIgnoreDamage, float damage, boolean bRemote) {
+      // PLZ: somebody else's horse cannot be beaten to death. Damage is the one route to an
+      // animal with no Lua seam on it - every other way of taking one is a timed action a
+      // wrapper can refuse - so without this a protected horse would be unrideable by a
+      // stranger and still killable by one. Returns BEFORE the blood, the stress and the
+      // attack-back, so nothing at all happens. See PLZAnimalProtect.
+      if (!PLZAnimalProtect.mayHarm(wielder, this)) {
+         return;
+      }
+
       if (!GameClient.client && !bIgnoreDamage) {
          this.setHealth(this.getHealth() - damage * this.getData().getHealthLoss(0.025F));
       }
@@ -1235,6 +1366,16 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
          for (int i = 0; i < animals.size(); i++) {
             IsoAnimal animal = animals.get(i);
+            // PLZ: butchering ONE animal put Rand(10,30) stress on every animal
+            // sharing its designation zone and forced a flee on anything within
+            // ten tiles of the butcher. Three slaughters cleared 80 on the whole
+            // herd, which is the fence coming down - and slaughtering is not an
+            // accident a farmer can avoid, it is the point of keeping the herd.
+            // The ceiling alone would not have covered the forced flee.
+            if (PLZAnimalCalm.isCalm() && !animal.isWild()) {
+               continue;
+            }
+
             animal.changeStress(Rand.Next(10.0F, 30.0F));
             if (chr != null && animal.DistToProper(chr) < 10.0F) {
                animal.getBehavior().forceFleeFromChr(chr);
@@ -1575,6 +1716,12 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
       this.stressLevel = mod * base * 100.0F;
       this.stressLevel = Math.min(70.0F, this.stressLevel);
+      // PLZ: starting stress is scaled by WORLD AGE - `base` gains 0.005 per day
+      // since the world began - so on a server a few months old every animal
+      // born or bought is pinned at the 70 above, which is already past the
+      // yield penalty and the trusted-player flee. Without this an animal spends
+      // its first couple of hours walking the ceiling down.
+      this.stressLevel = PLZAnimalCalm.cap(this.stressLevel, this.isWild());
    }
 
    private void initTexture() {
@@ -1669,6 +1816,12 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
          DebugType.Animal.debugln("Baby died at birth");
          baby.setHealth(0.0F);
       }
+
+      // PLZ: the newborn takes its mother's farm. Done HERE, before the baby is
+      // placed, because this is the one moment the mother is in hand - `this` IS
+      // her, with no id lookup to get wrong. Every other route to the same answer
+      // has to re-find her through animalId, which collides. See PLZAnimalOwner.
+      PLZAnimalOwner.inherit(this, baby);
 
       if (this.getVehicle() != null) {
          this.getVehicle().addAnimalInTrailer(baby);
@@ -1993,6 +2146,11 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
          egg.setHungChange(baseHung);
          egg.setAnimalHatchBreed(this.getBreed().getName());
          egg.eggGenome = AnimalGene.initGenesFromParents(this.fullGenome, this.getData().maleGenome);
+         // PLZ: the chick is built in Food.checkEggHatch, hours or days from now,
+         // with no reference back to this hen. The egg is the only thing that spans
+         // the two moments, so the farm rides on it. Fertilised only - an egg for
+         // the pan is produce, not livestock.
+         PLZAnimalOwner.stampEgg(this, egg);
       }
 
       if (this.getData().clutchSize > 0) {
@@ -2428,6 +2586,12 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
          this.stressLevel += inc;
          this.stressLevel = Math.min(100.0F, Math.max(0.0F, this.stressLevel));
+         // PLZ: the ceiling. Guarding the individual sources inside this file
+         // only ever reached the ones written in this file - a player sprinting
+         // past the pen and a hen shut in her hutch out of hours raise stress
+         // from BaseAnimalBehavior and IsoHutch, which this patch does not
+         // shadow and should not have to. They all arrive here.
+         this.stressLevel = PLZAnimalCalm.cap(this.stressLevel, this.isWild());
       }
    }
 
@@ -2446,7 +2610,11 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
    }
 
    public void setDebugStress(float stress) {
-      this.stressLevel = stress;
+      // PLZ: the name is a lie and the ceiling has to be here too. Two live
+      // gameplay paths write stress through this rather than changeStress - a
+      // zombie within ten tiles, and the flat +20..40 an animal takes the moment
+      // it is struck - so a ceiling on changeStress alone would leak both.
+      this.stressLevel = PLZAnimalCalm.cap(stress, this.isWild());
    }
 
    public void setDebugAcceptance(IsoPlayer chr, float acceptance) {
@@ -2560,6 +2728,23 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
    public static boolean plzGetAnimalCalm() {
       return PLZAnimalCalm.isCalm();
+   }
+
+   /** PLZ: the Lua bridge for {@link PLZAnimalProtect}, here for the reason above. */
+   public static void plzAnimalProtectEnabled(boolean value) {
+      PLZAnimalProtect.setEnabled(value);
+   }
+
+   public static void plzAnimalProtectBegin() {
+      PLZAnimalProtect.begin();
+   }
+
+   public static void plzAnimalProtectAdd(String username, String ownerKeysCsv) {
+      PLZAnimalProtect.add(username, ownerKeysCsv);
+   }
+
+   public static void plzAnimalProtectApply() {
+      PLZAnimalProtect.apply();
    }
 
    public float getStress() {
@@ -2731,6 +2916,14 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
 
    @Override
    public void pathToLocation(int x, int y, int z) {
+      // PLZ: single entry point every wander, flee, follow and forage target passes through, so
+      // clamping here closes all three holes in wanderIdle()'s advisory zone bias at once.
+      long plzClamped = zombie.plz.PLZAnimalZone.clampTarget(this, x, y, z);
+      if (plzClamped != zombie.plz.PLZAnimalZone.NO_CLAMP) {
+         x = zombie.plz.PLZAnimalZone.unpackX(plzClamped);
+         y = zombie.plz.PLZAnimalZone.unpackY(plzClamped);
+      }
+
       int ropeLength = 15;
       if (this.data.getAttachedPlayer() == null
          || this.data.getAttachedPlayer().getCurrentSquare() == null
@@ -2805,7 +2998,9 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
    }
 
    public boolean shouldBreakObstaclesDuringPathfinding() {
-      return !this.adef.canThump ? false : this.getHunger() > 0.8F || this.getThirst() > 0.8F;
+      // PLZ: a contained animal never asks to break through an obstacle. See PLZAnimalZone.
+      return zombie.plz.PLZAnimalZone.allowObstacleBreaking(
+         this, !this.adef.canThump ? false : this.getHunger() > 0.8F || this.getThirst() > 0.8F);
    }
 
    @Override
@@ -2814,7 +3009,28 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
    }
 
    public boolean animalShouldThump() {
+      // PLZ: same containment gate as shouldBreakObstaclesDuringPathfinding, on the attack side.
+      return zombie.plz.PLZAnimalZone.allowObstacleBreaking(this, this.plzAnimalShouldThump());
+   }
+
+   private boolean plzAnimalShouldThump() {
       if (!this.adef.canThump) {
+         return false;
+      }
+
+      // PLZ: this method IS the break-out. tryThump runs it every update, and a
+      // true here makes the animal pick the fence or gate in front of it as a
+      // thump target and destroy it. Three separate things reach it: stress at
+      // 80, which the ceiling already kills; starving or parched for a further
+      // 20000 ticks; and simply having been hit, which is true the instant a
+      // zombie or a stray shot touches the animal and needs no stress at all.
+      // The ceiling could not have covered the last two, so the gate goes here.
+      //
+      // Of the ten animals PLZ sells, six can thump - cow, bull, sow, boar, ewe,
+      // ram. adef.canThump is false for every chick, calf, lamb and piglet, and
+      // climbOverFence is not a second route out: raccoon is the only B42 animal
+      // with canClimbFences, and it is wild, so that path is already excluded.
+      if (PLZAnimalCalm.isCalm() && !this.isWild()) {
          return false;
       }
 
@@ -3391,6 +3607,17 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
    }
 
    public boolean canClimbStairs() {
+      if (this.adef == null && GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ANIMAL_CLIMB_STAIRS_GUARD)) {
+         // PLZ: postupdate sibling of the update() null-adef guard. The update() guard queues a
+         // null-adef animal for removal at tick end, but the SAME tick's postupdate pass still
+         // runs first: IsoMovingObject.doStairs unconditionally calls canClimbStairs() when this
+         // is an animal, and the unguarded this.adef.canClimbStairs aborts the whole postupdate
+         // iteration. The catch is up at IngameState.updateInternal, so the animal stays in the
+         // bucket and re-crashes every tick - the world stops progressing.
+         zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ANIMAL_CLIMB_STAIRS_GUARD);
+         return false;
+      }
+
       return this.adef.canClimbStairs;
    }
 

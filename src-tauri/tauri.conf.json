@@ -2,7 +2,7 @@
   "$schema": "./gen/schemas/desktop-schema.json",
   "productName": "ProjectLifeZoid Launcher",
   "mainBinaryName": "plz-launcher",
-  "version": "0.5.5",
+  "version": "0.6.1",
   "identifier": "zoid.projectlife.launcher",
   "build": {
     "frontendDist": "../ui"

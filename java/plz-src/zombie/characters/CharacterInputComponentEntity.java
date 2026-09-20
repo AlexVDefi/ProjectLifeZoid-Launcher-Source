@@ -6,6 +6,7 @@ import zombie.characters.ecs.ECSEntity;
 import zombie.core.raknet.VoiceManager;
 import zombie.iso.Vector2;
 import zombie.plz.PLZVoice;
+import zombie.plz.PLZBoneScale;
 import zombie.plz.PLZGrappleEdit;
 import zombie.util.lambda.PZOptional;
 
@@ -335,5 +336,148 @@ public interface CharacterInputComponentEntity extends ECSEntity {
 
     default float plzGrappleKeyValue(String node, String kind, int index) {
         return PLZGrappleEdit.keyValueAt(node, kind, index);
+    }
+
+    /**
+     * PLZ. Per-bone proportions for a named account. The work is in zombie.plz.PLZBoneScale;
+     * these exist because Lua cannot reach that package, and neither AnimationPlayer, where the
+     * rig is read, nor PLZBoneScale itself is exposed. THIS interface is the right home rather
+     * than IsoGameCharacter for the same reason the grapple methods above are here: it ships to
+     * every client (payload.json), which IsoGameCharacter does not, and a body is drawn by
+     * clients.
+     *
+     * <p>The receiver is ignored. The registry is keyed by ACCOUNT rather than by character,
+     * because the client that has to draw a scaled player is somebody else's and it knows them
+     * by username long before it has an IsoPlayer to hang a field on.
+     *
+     * <p>Scalars only, no collections: Kahlua will not marshal a Lua table into a collection
+     * parameter. Probe for them the way PLZGrappleApply.patchAvailable does - Kahlua THROWS on a
+     * missing Java method rather than answering nil.
+     */
+    default void plzBoneScaleSet(String username, String group, float value) {
+        PLZBoneScale.set(username, group, value);
+    }
+
+    default void plzBoneScaleSetAxes(String username, String group, float x, float y, float z) {
+        PLZBoneScale.setAxes(username, group, x, y, z);
+    }
+
+    default float plzBoneScaleGetAxis(String username, String group, int axis) {
+        return PLZBoneScale.getAxis(username, group, axis);
+    }
+
+    default void plzBoneScaleSetOverall(String username, float value) {
+        PLZBoneScale.setOverall(username, value);
+    }
+
+    default float plzBoneScaleGetOverall(String username) {
+        return PLZBoneScale.getOverall(username);
+    }
+
+    default void plzBoneScaleNudge(String username, float x, float y, float z) {
+        PLZBoneScale.setNudge(username, x, y, z);
+    }
+
+    default float plzBoneScaleGet(String username, String group) {
+        return PLZBoneScale.get(username, group);
+    }
+
+    default void plzBoneScaleClear(String username) {
+        PLZBoneScale.clear(username);
+    }
+
+    default void plzBoneScaleClearAll() {
+        PLZBoneScale.clearAll();
+    }
+
+    default boolean plzBoneScaleAllowed(String username) {
+        return PLZBoneScale.isAllowed(username);
+    }
+
+    /** Also the patch probe: an unpatched client throws here rather than answering. */
+    default int plzBoneScaleGroupCount() {
+        return PLZBoneScale.groupCount();
+    }
+
+    default String plzBoneScaleGroupAt(int index) {
+        return PLZBoneScale.groupAt(index);
+    }
+
+    default float plzBoneScaleMinScale() {
+        return PLZBoneScale.MIN_SCALE;
+    }
+
+    default float plzBoneScaleMaxScale() {
+        return PLZBoneScale.MAX_SCALE;
+    }
+
+    default float plzBoneScaleMaxNudge() {
+        return PLZBoneScale.MAX_NUDGE;
+    }
+
+    /**
+     * PLZ. The held-item channel, alongside the body one above. Two calls rather than one taking
+     * all six numbers, because the scale and the offset are edited by different sliders and a
+     * six-float signature is a marshalling risk for no gain.
+     */
+    default void plzBoneScaleSetPropScale(String username, String prop, float x, float y, float z) {
+        PLZBoneScale.setPropScale(username, prop, x, y, z);
+    }
+
+    default void plzBoneScaleSetPropOffset(String username, String prop, float x, float y, float z) {
+        PLZBoneScale.setPropOffset(username, prop, x, y, z);
+    }
+
+    default float plzBoneScaleGetPropScale(String username, String prop, int axis) {
+        return PLZBoneScale.getPropScale(username, prop, axis);
+    }
+
+    default float plzBoneScaleGetPropOffset(String username, String prop, int axis) {
+        return PLZBoneScale.getPropOffset(username, prop, axis);
+    }
+
+    default int plzBoneScalePropCount() {
+        return PLZBoneScale.propCount();
+    }
+
+    default String plzBoneScalePropAt(int index) {
+        return PLZBoneScale.propAt(index);
+    }
+
+    default float plzBoneScaleMaxPropOffset() {
+        return PLZBoneScale.MAX_PROP_OFFSET;
+    }
+
+    /**
+     * PLZ. Where the item worn at one body location sits. A third channel beside the body and the
+     * props, and the only one keyed by something the PLAYER chose rather than by a fixed part of
+     * the rig - see PLZBoneScale.LOCATIONS for why it is the location and not the item.
+     */
+    default void plzBoneScaleSetWornOffset(String username, String location, float x, float y, float z) {
+        PLZBoneScale.setWornOffset(username, location, x, y, z);
+    }
+
+    default float plzBoneScaleGetWornOffset(String username, String location, int axis) {
+        return PLZBoneScale.getWornOffset(username, location, axis);
+    }
+
+    default void plzBoneScaleSetWornScale(String username, String location, float x, float y, float z) {
+        PLZBoneScale.setWornScale(username, location, x, y, z);
+    }
+
+    default float plzBoneScaleGetWornScale(String username, String location, int axis) {
+        return PLZBoneScale.getWornScale(username, location, axis);
+    }
+
+    default int plzBoneScaleLocationCount() {
+        return PLZBoneScale.locationCount();
+    }
+
+    default String plzBoneScaleLocationAt(int index) {
+        return PLZBoneScale.locationAt(index);
+    }
+
+    default float plzBoneScaleMaxWornOffset() {
+        return PLZBoneScale.MAX_WORN_OFFSET;
     }
 }

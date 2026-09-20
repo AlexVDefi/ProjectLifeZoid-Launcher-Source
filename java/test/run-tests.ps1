@@ -40,6 +40,8 @@ New-Item -ItemType Directory -Force $out | Out-Null
 
 $sources = @(
     (Join-Path $src "zombie\network\PLZQueue.java"),
+    (Join-Path $src "zombie\network\PLZSlots.java"),
+    (Join-Path $src "zombie\network\PLZAccounts.java"),
     (Join-Path $src "zombie\network\LoginQueue.java")
 ) + @(Get-ChildItem -Recurse -Path $PSScriptRoot -Filter "*.java" | ForEach-Object { $_.FullName })
 
@@ -54,7 +56,7 @@ if ($code -ne 0) {
 }
 
 $failed = 0
-foreach ($test in @("zombie.network.PLZQueueConfigTest", "zombie.network.LoginQueueReleaseTest")) {
+foreach ($test in @("zombie.network.PLZQueueConfigTest", "zombie.network.PLZSlotsTest", "zombie.network.LoginQueueReleaseTest")) {
     "=== $test ==="
     $ErrorActionPreference = "Continue"
     # -Xmx256m/SerialGC: these tests need almost no heap, and the default G1 reservation fails

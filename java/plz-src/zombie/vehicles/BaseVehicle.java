@@ -2334,6 +2334,28 @@ public final class BaseVehicle
     }
 
     public boolean plzMayTakeSeat(int seat, IsoGameCharacter chr) {
+        if (GameClient.client) {
+            // PLZ: the seat gate stays SERVER-ONLY, deliberately.
+            //
+            // BaseVehicle only started shipping to clients so the two vehicle desync fixes
+            // (vehicleChunkRehome, vehicleSoundsClient) could reach them. Letting this gate run
+            // client-side too would be a separate behaviour change, and a harmful one as things
+            // stand: VehicleAccessClient.lua enables the bridge from local config on
+            // OnCreatePlayer, but a player's granted keys and override only arrive later in the
+            // server's onBegin packet. Between those two points `granted` is empty while the gate
+            // is live, so a player would be refused entry to their own car for the first seconds
+            // after joining.
+            //
+            // Returning true here keeps client behaviour byte-for-byte what it is today: the
+            // server decides, the client does not pre-judge.
+            //
+            // NOTE: that means PLZ's known seat-gate desync is UNCHANGED - a refused passenger is
+            // still seated on every client and on nobody's server. Fixing that properly means
+            // gating the client side on a "grants received" flag rather than on local config, and
+            // it is its own change with its own testing.
+            return true;
+        }
+
         if (!PLZVehicleAccess.isEnabled()) {
             return true;
         }
@@ -2876,6 +2898,23 @@ public final class BaseVehicle
         int pos = output.position();
         output.putInt(0);
         int posStart = output.position();
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VEHICLE_SAVE_ANIMALS) && this.animals.remove(null)) {
+            // PLZ: this writes animals.size() as the count prefix and then calls save() on every
+            // entry with no null check, while BaseVehicle.update guards the same list with
+            // "if (animal != null)" - so nulls are legitimate and save just forgot the guard. One
+            // empty slot threw "Cannot invoke IsoAnimal.save because ArrayList.get(int) is null"
+            // and took down the whole vehicle-DB save.
+            //
+            // Swept in place, and deliberately BEFORE the count prefix below, so the count and the
+            // iterated entries stay self-consistent for load() to read back. Unlike the
+            // reattachBackToMom guard this does mutate the list, because a null that reaches a
+            // PERSISTED count is corruption rather than an expected empty seat.
+            while (this.animals.remove(null)) {
+            }
+
+            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.VEHICLE_SAVE_ANIMALS);
+        }
+
         if (this.animals.isEmpty()) {
             output.put((byte)0);
         } else {
@@ -3326,8 +3365,85 @@ public final class BaseVehicle
         }
     }
 
+    /**
+     * PLZ: re-file a vehicle whose home chunk unloaded while a local player was still aboard.
+     *
+     * When that chunk scrolls out of the client's loaded area, IsoChunk.removeFromWorld calls
+     * removeFromWorld(), which REFUSES to delete an occupied vehicle - but the unload has already
+     * nulled the vehicle's current square and dropped the chunk from the chunk map. Every
+     * subsequent update() then takes the "!GameServer.server && chunk.refs.isEmpty()" branch,
+     * calls removeFromWorld() again (still a no-op) and returns before super.update(), so the
+     * vehicle permanently stops moving, interpolating and simulating ON THAT CLIENT while the
+     * server keeps driving it. The player aboard is blind to their real position and usually dies.
+     * Fingerprint: "IsoChunk.removeFromWorld: vehicle wasn't removed from world id=N".
+     *
+     * Vanilla's own re-home block later in update() can never run, because it needs the already
+     * nulled current square. Restoring that square first is what lets the normal bookkeeping work
+     * again. The chunk at the vehicle's real position is loaded in practice, since the chunk map
+     * is centred on the aboard player.
+     */
+    private void plzRehomeIfStranded() {
+        try {
+            if (this.isRemovedFromWorld()) {
+                return;
+            }
+
+            IsoChunk home = this.chunk;
+            if (home == null || !home.refs.isEmpty() || !plzHasLocalPlayerAboard()) {
+                return;
+            }
+
+            this.setCurrentSquareFromPosition();
+            IsoGridSquare square = this.getCurrentSquare();
+            if (square == null) {
+                return;
+            }
+
+            IsoChunk fresh = square.getChunk();
+            if (fresh == null || fresh == home || fresh.refs.isEmpty()) {
+                return;
+            }
+
+            home.vehicles.remove(this);
+            if (!fresh.vehicles.contains(this)) {
+                fresh.vehicles.add(this);
+            }
+
+            this.chunk = fresh;
+            IsoChunk.addFromCheckedVehicles(this);
+            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.VEHICLE_CHUNK_REHOME);
+            zombie.debug.DebugLog.log("PLZFixes: re-homed vehicle id=" + this.getId()
+                + " with a local player aboard from unloaded chunk " + home.wx + "," + home.wy
+                + " to " + fresh.wx + "," + fresh.wy);
+        } catch (Throwable failure) {
+            zombie.debug.DebugLog.log("PLZFixes: vehicle chunk re-home failed: " + failure);
+        }
+    }
+
+    private boolean plzHasLocalPlayerAboard() {
+        int seats = this.getMaxPassengers();
+        for (int seat = 0; seat < seats; seat++) {
+            BaseVehicle.Passenger passenger = this.getPassenger(seat);
+            if (passenger == null || passenger.character == null) {
+                continue;
+            }
+
+            for (int i = 0; i < IsoPlayer.players.length; i++) {
+                if (passenger.character == IsoPlayer.players[i]) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     @Override
     public void update() {
+        if (GameClient.client && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VEHICLE_CHUNK_REHOME)) {
+            plzRehomeIfStranded();
+        }
+
         if (!this.removedFromWorld) {
             if (!this.getCell().vehicles.contains(this)) {
                 this.getCell().getRemoveList().add(this);
@@ -7945,6 +8061,26 @@ public final class BaseVehicle
         if (!GameClient.client && !GameServer.server && this.vehicleSounds == null) {
             this.vehicleSounds = new VehicleSounds();
             this.vehicleSounds.setOwner(this);
+            return;
+        }
+
+        if (GameClient.client && this.vehicleSounds == null
+            && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VEHICLE_SOUNDS_CLIENT)) {
+            // PLZ: vanilla only creates VehicleSounds in single player, yet the client branch of
+            // onEngineStateChanged calls this and then dereferences getVehicleSounds()
+            // unconditionally. On an MP client the sounds object is normally attached later by the
+            // vehicle-network-sound VehicleState, but only once the vehicle is in cell.vehicles -
+            // an engine-state change arriving in that gap NPEs inside VehicleEngine.parse, which
+            // aborts VehicleUpdatePacket.parse MID-BODY ("Unexpected buffer position") and
+            // silently discards every field after the engine section, INCLUDING the authoritative
+            // passenger/seat list. Making this method live up to its name closes the gap; the
+            // network-sound handover replaces the instance cleanly later.
+            try {
+                this.setVehicleSounds(new VehicleSounds());
+                zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.VEHICLE_SOUNDS_CLIENT);
+            } catch (Throwable failure) {
+                zombie.debug.DebugLog.log("PLZFixes: client VehicleSounds create failed: " + failure);
+            }
         }
     }
 

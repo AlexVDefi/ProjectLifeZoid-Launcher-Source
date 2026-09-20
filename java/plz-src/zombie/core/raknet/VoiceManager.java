@@ -34,9 +34,12 @@ import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.ServerOptions;
+import zombie.plz.PLZChannelProbe;
+import zombie.plz.PLZFixes;
 import zombie.plz.PLZVoice;
 import zombie.plz.PLZVoiceChanger;
 import zombie.radio.devices.DeviceData;
+import zombie.vehicles.BaseVehicle;
 import zombie.vehicles.VehiclePart;
 
 public class VoiceManager {
@@ -610,6 +613,7 @@ public class VoiceManager {
                         VoiceManagerData.RadioData them = theirs.radioData.get(0);
                         VoiceManagerData.RadioData us = mine.radioData.get(0);
                         float allowed = PLZVoice.audibleRange(us.freq, them.freq, them.distance, maxDistance);
+                        float gate = PLZVoice.gateRange(us.freq, them.freq, them.distance, maxDistance);
                         float dx = us.x - them.x;
                         float dy = us.y - them.y;
                         float apart = (float)Math.sqrt(dx * dx + dy * dy);
@@ -622,6 +626,17 @@ public class VoiceManager {
                         info.rawset("apart", (double)apart);
                         info.rawset("allowed", (double)allowed);
                         info.rawset("wouldHear", apart < allowed);
+
+                        // TWO ANSWERS, BECAUSE THERE ARE NOW TWO TESTS. allowed/wouldHear are the
+                        // AUDIBLE range - what the falloff will do with this speaker, and what
+                        // every existing assertion in the MP suite is about, so neither moved.
+                        // gate/wouldRoute are what checkForNearbyRadios actually decides on, which
+                        // is deliberately wider by PLZVoice.ROUTING_DRIFT_TILES. A run where
+                        // wouldRoute is true and wouldHear is false is the normal, healthy case
+                        // for somebody who has just walked out of earshot: still carried, already
+                        // silent, and silent on a curve rather than a cliff.
+                        info.rawset("gate", (double)gate);
+                        info.rawset("wouldRoute", apart < gate);
 
                         int floor = PLZVoice.floorForChannel(them.freq);
                         info.rawset("hasFloor", floor != PLZVoice.NO_FLOOR);
@@ -695,7 +710,7 @@ public class VoiceManager {
         // PLZ VOICE CHANGER. Two functions, because Lua has exactly two questions to ask:
         // what may I do, and do this. The gate is answered by Java rather than worked out in
         // Lua so the row in the management window and the shifter itself can never disagree
-        // about who is allowed - see PLZVoiceChanger.ALLOWED_ACCOUNT.
+        // about who is allowed - see PLZVoiceChanger.ALLOWED_ACCOUNTS.
         //
         // get(0), NOT get(1). LuaCallFrame is zero-based; see setRadioPttBinding above for what
         // that cost the last time it was got wrong.
@@ -733,6 +748,18 @@ public class VoiceManager {
             }
         });
         environment.rawset("VoiceManager", table);
+    }
+
+    // Two people in one car are unambiguously in earshot, and the routing gate cannot know it:
+    // their entries publish on independent timers, so at speed the positions it subtracts are a
+    // full interval of travel apart, and a z that rounds differently between the two zeroes
+    // audibleRange outright - a mute no drift allowance can reach.
+    private static boolean plzSharesVehicle(IsoPlayer me, IsoPlayer them) {
+        if (me == null || them == null) {
+            return false;
+        }
+        BaseVehicle mine = me.getVehicle();
+        return mine != null && mine == them.getVehicle();
     }
 
     private static int plzSpeakerMode(VoiceManagerData speaker) {
@@ -1144,6 +1171,9 @@ public class VoiceManager {
                         while (RakVoice.ReceiveFrame(player.getOnlineID(), this.buf)) {
                             d.voicetimeout = 10L;
                             plzCountFrame(player.getOnlineID());
+                            if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
+                                PLZChannelProbe.observe(d.userplaychannel);
+                            }
                             if (!d.userplaymute) {
                                 float range = IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY());
                                 if (me.canHearAll()) {
@@ -1151,14 +1181,18 @@ public class VoiceManager {
                                     javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                     this.setUserPlaySound(d.userplaychannel, this.getCanHearAllVolume(range));
                                 } else {
+                                    boolean plzSameVehicle = plzSharesVehicle(me, player);
                                     VoiceManagerData.RadioData rdata = this.checkForNearbyRadios(d);
-                                    if (rdata != null && rdata.deviceData != null) {
+                                    if (rdata != null && rdata.deviceData != null && !plzSameVehicle) {
                                         javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                         javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                         this.setUserPlaySound(d.userplaychannel, rdata.deviceData.getDeviceVolume());
                                         rdata.deviceData.doReceiveMPSignal(rdata.lastReceiveDistance);
                                     } else {
-                                        if (rdata == null) {
+                                        if (rdata == null && !plzSameVehicle) {
+                                            // The one silent mute in the path. A frame arrived, was
+                                            // decoded, and is dropped with nothing said - so say it.
+                                            plzLogMute(me, player, d, range);
                                             javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                             javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                             javafmod.FMOD_Channel_SetVolume(d.userplaychannel, 0.0F);
@@ -1174,10 +1208,21 @@ public class VoiceManager {
                                             }
 
                                             int speakerMode = plzSpeakerMode(d);
+                                            // range, NOT rdata.lastReceiveDistance. The mode comes
+                                            // off the routing entry and has to - it is the only
+                                            // thing carrying it - but the DISTANCE does not, and
+                                            // taking it from there made loudness a staircase: the
+                                            // routing entry refreshes every 3010 ms and holds whole
+                                            // tiles, so a voice jumped between volume steps instead
+                                            // of fading. range is IsoUtils.DistanceTo on live
+                                            // positions, computed a few lines above for the
+                                            // hear-all branch, and it is what makes the falloff
+                                            // smooth AND makes it - rather than the routing gate -
+                                            // the thing that decides where a voice stops.
                                             this.setUserPlaySound(
                                                 d.userplaychannel,
                                                 PLZVoice.volumeFor(
-                                                    speakerMode, rdata.lastReceiveDistance, minDistance, maxDistance
+                                                    speakerMode, range, minDistance, maxDistance
                                                 )
                                             );
 
@@ -1312,6 +1357,48 @@ public class VoiceManager {
         }
     }
 
+    private static long plzMuteLogMs;
+
+    // Names WHICH test killed the frame. Every voice diagnosis so far has been inferred backwards
+    // from logs that answer a different question; this one answers it directly.
+    private static void plzLogMute(IsoPlayer me, IsoPlayer player, VoiceManagerData speaker, float range) {
+        long now = System.currentTimeMillis();
+        if (now < plzMuteLogMs) {
+            return;
+        }
+
+        plzMuteLogMs = now + 3000L;
+
+        String why;
+        int myFreq = PLZVoice.entryChannel(me.getZi());
+        int theirFreq = Integer.MIN_VALUE;
+        float theirRange = -1.0F;
+
+        synchronized (speaker.radioData) {
+            if (speaker.radioData.isEmpty()) {
+                why = "speaker has published no routing entry yet";
+            } else {
+                theirFreq = speaker.radioData.get(0).freq;
+                theirRange = speaker.radioData.get(0).distance;
+                if (!(theirRange > 0.0F)) {
+                    why = "speaker publishes range 0 (private call, or no range)";
+                } else if (PLZVoice.isFloorsEnabled() && myFreq != theirFreq) {
+                    why = "floor mismatch";
+                } else {
+                    why = "routing distance past the gate";
+                }
+            }
+        }
+
+        DebugType.Multiplayer
+            .warn(
+                String.format(
+                    "PLZ voice MUTED \"%s\" -> \"%s\": %s (live range=%.1f, myFreq=%d, theirFreq=%d, theirRange=%.1f)",
+                    player.getUsername(), me.getUsername(), why, range, myFreq, theirFreq, theirRange
+                )
+            );
+    }
+
     private static void logFrame(IsoPlayer me, IsoPlayer player, float distance) {
         long currentTime = System.currentTimeMillis();
         if (currentTime > timestamp) {
@@ -1369,7 +1456,13 @@ public class VoiceManager {
                     float dx = myRadioData.radioData.get(0).x - radioData.radioData.get(0).x;
                     float dy = myRadioData.radioData.get(0).y - radioData.radioData.get(0).y;
                     myRadioData.radioData.get(0).lastReceiveDistance = (float)Math.sqrt(dx * dx + dy * dy);
-                    float plzAudible = PLZVoice.audibleRange(
+                    // gateRange, NOT audibleRange. Both positions in that subtraction came off a
+                    // routing entry that is republished once every 3010 ms and stored in whole
+                    // tiles, so at PLZ's eight-tile VoiceMaxDistance the error is a full speech
+                    // radius and a tight test here chops a standing conversation into three-second
+                    // pieces. The drift allowance costs nothing, because the RANGE is enforced
+                    // downstream by PLZVoice.volumeFor on the live distance - see PLZVoice.gateRange.
+                    float plzAudible = PLZVoice.gateRange(
                         myRadioData.radioData.get(0).freq,
                         radioData.radioData.get(0).freq,
                         radioData.radioData.get(0).distance,
@@ -1497,7 +1590,7 @@ public class VoiceManager {
             24000,
             20,
             5,
-            8000,
+            PLZVoice.bufferingBytes(),
             ServerOptions.instance.voiceMinDistance.getValue(),
             ServerOptions.instance.voiceMaxDistance.getValue(),
             ServerOptions.instance.voice3d.getValue()

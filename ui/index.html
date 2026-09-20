@@ -59,11 +59,13 @@
                     <div class="identity-row" id="identity-view">
                         <span class="identity-label">Username</span>
                         <span class="identity-name" id="identity-name">Not chosen</span>
+                        <select class="identity-select" id="identity-picker" hidden></select>
+                        <span class="identity-lock" id="identity-locked" hidden>Locked</span>
                         <button class="btn btn-ghost" id="btn-edit-name">Choose</button>
                     </div>
                     <form class="identity-row" id="identity-edit" hidden>
                         <label class="identity-label" for="name-input">Username</label>
-                        <input id="name-input" type="text" maxlength="20" spellcheck="false"
+                        <input id="name-input" type="text" maxlength="50" spellcheck="false"
                                autocomplete="off" placeholder="Your username" />
                         <button class="btn btn-secondary" type="submit">Save</button>
                         <button class="btn btn-ghost" type="button" id="btn-cancel-name">Cancel</button>
@@ -187,6 +189,56 @@
                     <button class="btn btn-secondary" id="btn-ov-apply">Apply</button>
                     <button class="btn btn-secondary" id="btn-ov-clear">Use normal server</button>
                 </details>
+            </section>
+            <section>
+                <h3>Characters</h3>
+                <dl id="d-characters"></dl>
+                <p class="hint">
+                    Your username locks to this Steam account the first time you join with it.
+                    Only an admin can change it, through the Discord bot, and only while the
+                    server is stopped. Once one tells you yours is done, put the new name in
+                    here.
+                </p>
+                <p class="hint">
+                    Used any earlier the server turns you away, and on an account with a spare
+                    character slot it makes a brand new character instead of moving you.
+                </p>
+                <button class="btn btn-secondary" id="btn-change-username">Change username</button>
+                <p class="hint">
+                    A second character needs a character slot. Staff hand those out. If you have
+                    been given one, you can make your second character here. Without one the
+                    server will turn the new name away when you press Play.
+                </p>
+                <button class="btn btn-secondary" id="btn-new-character">New character</button>
+            </section>
+            <section>
+                <h3>Character bodies</h3>
+                <label class="toggle">
+                    <input type="checkbox" id="body-override" />
+                    <span>Use Tomb's body overhaul</span>
+                </label>
+                <p class="hint">
+                    The server ships a replacement body model, skin textures and re-fitted
+                    clothing. Turn this off to see the vanilla ones instead. It changes only what
+                    <b>you</b> see, on every character in the world, and applies the next time you
+                    connect.
+                </p>
+            </section>
+            <section>
+                <h3>Performance mode</h3>
+                <label class="toggle">
+                    <input type="checkbox" id="performance-mode" />
+                    <span>Turn down the expensive graphics settings</span>
+                </label>
+                <p class="hint">
+                    For frame rate trouble, especially in rain and while driving. It lowers
+                    puddle detail, water, texture size and a few effects, and leaves your
+                    resolution, frame rate cap and 3D ground items exactly as they are. Ground
+                    items stay 3D. Turning it off puts your old settings back, except for
+                    anything you have changed yourself in the game's own options since. Takes
+                    effect the next time you press Play.
+                </p>
+                <p class="hint" id="performance-mode-note" hidden></p>
             </section>
             <section>
                 <h3>Debug mode</h3>

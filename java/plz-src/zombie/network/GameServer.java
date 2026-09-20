@@ -199,6 +199,7 @@ import zombie.network.statistics.data.NetworkStatistic;
 import zombie.pathfind.nativeCode.PathfindNative;
 import zombie.popman.NetworkZombieManager;
 import zombie.popman.PoolCaps;
+import zombie.plz.PLZChunkCrc;
 import zombie.plz.PLZConnectWatch;
 import zombie.plz.PLZDisconnectWatch;
 import zombie.popman.ZombiePopulationManager;
@@ -726,6 +727,10 @@ public class GameServer {
 
             ZipBackup.onStartup();
             ZipBackup.onVersion();
+            // PLZ: repair chunk files whose header checksum was written by two threads at once,
+            // before anything loads one and blams it. Deliberately after the startup backup, so
+            // that backup holds the files as they were. See zombie.plz.PLZChunkCrc.
+            PLZChunkCrc.repairSaveDir(serverName);
             int updateDBCount = 0;
 
             try {
@@ -832,8 +837,14 @@ public class GameServer {
                 DebugType.DetailedInfo.trace("##########\nServer Steam ID " + SteamGameServer.GetSteamID() + "\n##########");
             }
 
-            UpdateLimit serverUpdateLimiter = new UpdateLimit(100L);
-            PerformanceSettings.setLockFPS(10);
+            // PLZ: the main-loop gate and what the rest of the engine believes the rate is, both
+            // hardcoded to 10 in vanilla and both driven from one knob here. Defaults to 10, so
+            // this is byte-equivalent to vanilla until somebody raises it. See PLZTickRate for why
+            // the gate must never be raised without lockFPS and the physics fps moving with it.
+            UpdateLimit plzVoiceRoutingLimiter = new UpdateLimit(zombie.plz.PLZVoiceRouting.REFRESH_MS);
+            UpdateLimit serverUpdateLimiter = new UpdateLimit(zombie.plz.PLZTickRate.initialTickIntervalMs());
+            zombie.plz.PLZTickRate.register(serverUpdateLimiter);
+            PerformanceSettings.setLockFPS(zombie.plz.PLZTickRate.serverFps());
             IngameState state = new IngameState();
             float averageFPS = PerformanceSettings.getLockFPS();
             long serverCycle = System.currentTimeMillis();
@@ -961,6 +972,10 @@ public class GameServer {
                     } else {
                         IsoCamera.frameState.frameCount++;
                         IsoCamera.frameState.updateUnPausedAccumulator();
+                        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VOICE_ROUTING_SLACK)
+                            && plzVoiceRoutingLimiter.Check()) {
+                            zombie.plz.PLZVoiceRouting.refresh();
+                        }
 
                         try (AbstractPerformanceProfileProbe var107 = zombie.network.GameServer.s_performance.frameStep.profile()) {
                             timeSinceKeepAlive = timeSinceKeepAlive + GameTime.getInstance().getMultiplier();
@@ -1259,6 +1274,10 @@ public class GameServer {
     }
 
     private static void launchCommandHandler() {
+        // PLZ: called once per tick from the main loop (the body below only launches once), so
+        // this is a free per-tick hook on the server main thread - which is where the reap has to
+        // run, because GameServer.disconnect must not be called off-thread.
+        zombie.plz.PLZStalledConnections.sweep();
         if (!launched) {
             launched = true;
             new Thread(ThreadGroups.Workers, () -> {
@@ -1311,6 +1330,16 @@ public class GameServer {
             if (!connection.isCoopHost) {
                 accessLevel = connection.getRole();
             }
+        }
+
+        // PLZ character slots. Handled here rather than as a CommandBase subclass because that
+        // registry is a hardcoded Class[] array, and shadowing a 400-line vanilla class to append
+        // one entry is a worse trade than four lines here. This is also the single dispatch point
+        // for RCON, the server console and a staff slash command, so one hook covers all three.
+        // handleCommand returns null for anything not ours, leaving vanilla dispatch untouched.
+        String plzSlots = PLZSlots.handleCommand(input, adminUsername, accessLevel);
+        if (plzSlots != null) {
+            return plzSlots;
         }
 
         Class<?> cls = CommandBase.findCommandCls(input);
@@ -1698,6 +1727,14 @@ public class GameServer {
     }
 
     static void receivePlayerStartPMChat(ByteBufferReader bb, UdpConnection connection, short packetType) {
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.PM_CHAT_START)) {
+            // PLZ: this is the only place the sending UdpConnection is available, and the author
+            // must be resolved from it rather than from the client-supplied name. See
+            // ChatServer.plzProcessPlayerStartWhisperChatPacket.
+            ChatServer.getInstance().plzProcessPlayerStartWhisperChatPacket(bb, connection);
+            return;
+        }
+
         ChatServer.getInstance().processPlayerStartWhisperChatPacket(bb);
     }
 
@@ -2293,6 +2330,14 @@ public class GameServer {
 
         if (player == null) {
             DebugLog.log("receiveClientCommand: player is null");
+        } else if (zombie.plz.PLZChatRecovery.MODULE.equals(module)) {
+            // Answered here rather than through OnClientCommand: the repair is pure engine
+            // state and no Lua listens for it.
+            if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CHAT_JOIN_RECOVERY)
+                && zombie.plz.PLZChatRecovery.serverMayServe(player.getOnlineID())) {
+                ChatServer.getInstance()
+                    .plzResendJoins(player.getOnlineID(), zombie.plz.PLZChatRecovery.COMMAND_REINIT.equals(command));
+            }
         } else {
             zombie.network.GameServer.CCFilter ccf = ccFilters.get(module);
             if (ccf == null || ccf.passes(command)) {
@@ -2844,16 +2889,37 @@ public class GameServer {
                     SteamGameServer.AddPlayer(player);
                 }
 
+                // PLZ: sendPlayerExtraInfo ignores its connection argument and broadcasts to every
+                // connection, so calling it once per connection made a join N*N ExtraInfo packets.
+                boolean plzOneExtraInfo = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
+
                 for (int n = 0; n < udpEngine.connections.size(); n++) {
                     UdpConnection c = udpEngine.connections.get(n);
                     sendPlayerConnected(player, c);
-                    sendPlayerExtraInfo(player, c, true);
+                    if (!plzOneExtraInfo) {
+                        sendPlayerExtraInfo(player, c, true);
+                    }
+                }
+
+                if (plzOneExtraInfo) {
+                    zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
+                    sendPlayerExtraInfo(player, null, true);
+                }
+
+                // PLZ: sendPlayerConnected already ran setCustomVariables for the same player and
+                // connection, so every synced variable reached the joiner twice.
+                boolean plzVariableSyncOnce = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
+                if (plzVariableSyncOnce) {
+                    zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
                 }
 
                 for (IsoPlayer isoPlayer : IDToPlayerMap.values()) {
                     if (isoPlayer.getOnlineID() != player.getOnlineID() && isoPlayer.isAlive()) {
                         sendPlayerConnected(isoPlayer, connection);
-                        setCustomVariables(isoPlayer, connection);
+                        if (!plzVariableSyncOnce) {
+                            setCustomVariables(isoPlayer, connection);
+                        }
+
                         isoPlayer.getNetworkCharacterAI().getState().sync(connection);
                         INetworkPacket.send(connection, PacketType.PlayerInjuries, isoPlayer);
                     }
@@ -3067,6 +3133,9 @@ public class GameServer {
         }
 
         if (server) {
+            // Drop the voice-routing speed sample with the connection, so a reconnecting player is
+            // not credited with the apparent speed of the gap between sessions.
+            zombie.plz.PLZVoiceRouting.forget(connection.getConnectedGUID());
             ConnectionManager.log("disconnect", description, connection);
             EventManager.instance().report("[" + connection.getUserName() + "] disconnected from server");
             WorldMapVisitedServer.getInstance().unloadUser(connection.getUserName());
@@ -3251,7 +3320,19 @@ public class GameServer {
                 radioData[i] = bb.getInt();
             }
 
-            RakVoice.SetChannelsRouting(connection.getConnectedGUID(), isCanHearAll, radioData, (short)radioDataSize);
+            // PLZ: this table is republished only every 3010 ms and the native voice server routes
+            // from it, so a speaker who has moved since their last publish is simply not
+            // transmitted - which is why voice cuts out in a moving car. PLZVoiceRouting overwrites
+            // the positions from the server's own authoritative characters and keeps re-pushing
+            // them, rather than paying for the staleness with range. Safe to mutate: the
+            // rebroadcast below writes the ORIGINAL bb bytes, not this array, so listeners still
+            // get the true ranges and still read the right speaker mode off them.
+            if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VOICE_ROUTING_SLACK)) {
+                zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.VOICE_ROUTING_SLACK);
+                zombie.plz.PLZVoiceRouting.publish(connection, isCanHearAll, radioData, radioDataSize);
+            } else {
+                RakVoice.SetChannelsRouting(connection.getConnectedGUID(), isCanHearAll, radioData, (short)radioDataSize);
+            }
 
             for (UdpConnection c : udpEngine.connections) {
                 if (c != connection && connection.players[0] != null) {

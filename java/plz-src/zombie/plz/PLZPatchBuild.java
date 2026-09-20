@@ -5,7 +5,7 @@ public final class PLZPatchBuild {
     private PLZPatchBuild() {
     }
 
-    public static final String BUILT_AT = "2026-09-11";
+    public static final String BUILT_AT = "2026-09-20";
     public static final String JAR_SHA256 = "80E405A4BFC42F6072E75B3735F458A6514143DA011D3226007DED305A442F44";
     public static final String SHADOWED_CLASS_SHA256 = "CF5EF9005829D258F6EF28394A9F514350FA8FA1EA5F6209CC7836A656F0B0EB";
 }

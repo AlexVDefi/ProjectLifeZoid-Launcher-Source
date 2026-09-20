@@ -28,7 +28,7 @@ const ICON = {
     link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 9.5 9.5 6.5M5.2 11.8l-1 .1a2.8 2.8 0 0 1-2.1-4.8l2.2-2.2a2.8 2.8 0 0 1 4.4.55M10.8 4.2l1-.1a2.8 2.8 0 0 1 2.1 4.8l-2.2 2.2a2.8 2.8 0 0 1-4.4-.55"/></svg>',
 };
 
-const state = { playing: false, editingName: false, joinError: null, status: null, server: null, mods: null, startedAt: 0, timer: null };
+const state = { playing: false, editingName: false, nameMode: null, joinError: null, status: null, server: null, mods: null, startedAt: 0, timer: null };
 
 function toast(title, sub, bad) {
     const el = $("toast");
@@ -249,34 +249,79 @@ function setIdentityHelp(text, bad) {
 
 function paintIdentity(st) {
     const name = st.accountUsername;
+    const names = st.accountNames || [];
+    // One character is the ordinary case and stays a plain label. The picker only appears for
+    // an account that bought a slot and filled it, so nobody else sees a dropdown of one.
+    const many = names.length > 1;
+    const picker = $("identity-picker");
+
+    $("identity-name").hidden = many;
     $("identity-name").textContent = name || "Not chosen";
     $("identity-name").classList.toggle("unset", !name);
+
+    picker.hidden = !many;
+    if (many) {
+        picker.innerHTML = "";
+        for (const known of names) {
+            const option = document.createElement("option");
+            option.value = known;
+            option.textContent = known;
+            option.selected = known === name;
+            picker.appendChild(option);
+        }
+    }
+
+    // Once the name is locked in, the front page offers no route to a second character. That
+    // lives in the Details drawer instead, so staff point the people who have a slot at it
+    // rather than every player finding it here and asking why the server turned them away.
     $("btn-edit-name").hidden = st.accountConfirmed;
     $("btn-edit-name").textContent = name ? "Change" : "Choose";
+    $("identity-locked").hidden = !st.accountConfirmed;
+
     if (state.editingName) return;
     if (state.joinError) return setIdentityHelp(state.joinError, true);
     setIdentityHelp(
-        st.accountConfirmed
-            ? "Locked to this Steam account. An admin can change it."
-            : name
-                ? "Locks in the first time you join."
-                : "The name other players will see."
+        many
+            ? "Pick the character you want to play, then press Play."
+            : st.accountConfirmed
+                ? "Locked to this Steam account. An admin can change it."
+                : name
+                    ? "Locks in the first time you join."
+                    : "The name other players will see."
     );
 }
 
-function startEditingName() {
+// "add" makes a second character, "rename" adopts a name an admin has already changed on the
+// server, and "choose" is the first name of all. Only the mode decides which, never the
+// confirmed flag: an account is confirmed for both of the first two.
+function startEditingName(mode) {
+    const chosen = mode || (state.status?.accountConfirmed ? "add" : "choose");
     state.editingName = true;
+    state.nameMode = chosen;
     state.joinError = null;
     $("identity-view").hidden = true;
     $("identity-edit").hidden = false;
-    $("name-input").value = state.status?.accountUsername || "";
+    $("name-input").value = chosen === "add" ? "" : (state.status?.accountUsername || "");
     $("name-input").focus();
     $("name-input").select();
-    setIdentityHelp("Max 20 characters. Your in-game character can use your full name.");
+    setIdentityHelp(nameModeHelp(chosen));
+}
+
+function nameModeHelp(mode) {
+    if (mode === "add") {
+        return "The name for a new character. It is permanent, other players see it, and the "
+            + "server refuses it unless staff have given you a character slot.";
+    }
+    if (mode === "rename") {
+        return "The new name an admin has given your account. Only save it once they have said "
+            + "the rename is done, or the server turns you away.";
+    }
+    return "Max 50 characters. Your in-game character can use your full name.";
 }
 
 function stopEditingName() {
     state.editingName = false;
+    state.nameMode = null;
     $("identity-edit").hidden = true;
     $("identity-view").hidden = false;
     if (state.status) paintIdentity(state.status);
@@ -473,6 +518,18 @@ function paintDrawer(st, s) {
     ];
     if (s) for (const [k, v] of Object.entries(s.rules)) rows.push([k, v || "(empty)"]);
     defList($("d-server"), rows);
+
+    const characters = st.accountNames || [];
+    defList($("d-characters"), [
+        ["Playing as", st.accountUsername || "Not chosen"],
+        ["On this account", characters.length ? characters.join(", ") : "None yet"],
+    ]);
+    // Before the first join the front page still owns choosing a name, so there is nothing to
+    // add to yet.
+    $("btn-new-character").disabled = !st.accountConfirmed;
+    // Before the first join the name is still unlocked on the front page, so there is nothing
+    // an admin could have renamed and no second route to offer.
+    $("btn-change-username").disabled = !st.accountConfirmed;
 
     const ovBanner = $("server-override-banner");
     ovBanner.hidden = !st.serverOverridden;
@@ -739,18 +796,108 @@ $("play").addEventListener("click", async () => {
     }
 });
 
-$("btn-edit-name").addEventListener("click", startEditingName);
+$("btn-edit-name").addEventListener("click", () => startEditingName("choose"));
+
+$("btn-new-character").addEventListener("click", () => {
+    setDrawer(false);
+    startEditingName("add");
+});
+
+$("btn-change-username").addEventListener("click", () => {
+    setDrawer(false);
+    startEditingName("rename");
+});
+
+$("identity-picker").addEventListener("change", async (e) => {
+    const chosen = e.target.value;
+    try {
+        await invoke("set_account_username", { name: chosen });
+        await refreshStatus();
+        toast("Character switched", "Press Play to join as " + chosen + ".");
+    } catch (err) {
+        setIdentityHelp(String(err), true);
+    }
+});
 $("btn-cancel-name").addEventListener("click", stopEditingName);
 
 $("identity-edit").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const renaming = state.nameMode === "rename";
     try {
-        await invoke("set_account_username", { name: $("name-input").value });
+        await invoke(renaming ? "rename_account_username" : "set_account_username",
+                     { name: $("name-input").value });
         stopEditingName();
         await refreshStatus();
-        toast("Username saved", "Press Play to join as " + state.status.accountUsername + ".");
+        toast(renaming ? "Username changed" : "Username saved",
+              "Press Play to join as " + state.status.accountUsername + ".");
     } catch (err) {
         setIdentityHelp(String(err), true);
+    }
+});
+
+// Read straight off the file the java patch reads, rather than out of launcher State: there is
+// no second copy to drift. A failure leaves the box ticked, which is what the patch defaults to.
+async function loadBodyOverride() {
+    try {
+        $("body-override").checked = await invoke("get_body_override");
+    } catch {
+        $("body-override").checked = true;
+    }
+}
+
+$("body-override").addEventListener("change", async (e) => {
+    try {
+        await invoke("set_body_override", { enabled: e.target.checked });
+        toast(
+            e.target.checked ? "Tomb bodies on" : "Tomb bodies off",
+            "Applies the next time you connect. It only changes what you see."
+        );
+    } catch (err) {
+        e.target.checked = !e.target.checked;
+        toast("Could not change that", String(err), true);
+    }
+});
+
+// Read off options.ini every time rather than trusting a stored flag: the player can undo the
+// preset by hand in the game's own options screen, and the box has to follow the file.
+async function loadPerformanceMode() {
+    const note = $("performance-mode-note");
+    try {
+        const s = await invoke("get_performance_mode");
+        $("performance-mode").checked = s.enabled;
+        $("performance-mode").disabled = !s.canChange;
+        if (!s.canChange) {
+            note.textContent =
+                "Project Zomboid is running. Quit it before changing this — the game " +
+                "rewrites its settings file when it closes and would overwrite the change.";
+            note.hidden = false;
+        } else {
+            note.hidden = true;
+        }
+    } catch {
+        $("performance-mode").checked = false;
+        note.hidden = true;
+    }
+}
+
+$("performance-mode").addEventListener("change", async (e) => {
+    const wanted = e.target.checked;
+    e.target.disabled = true;
+    try {
+        const s = await invoke("set_performance_mode", { enabled: wanted });
+        e.target.checked = s.enabled;
+        toast(
+            s.enabled ? "Performance mode on" : "Performance mode off",
+            s.enabled
+                ? s.keyCount + " graphics settings lowered. Press Play to apply them."
+                : "Your previous graphics settings are back. Press Play to apply them."
+        );
+    } catch (err) {
+        e.target.checked = !wanted;
+        toast("Could not change that", String(err), true);
+    } finally {
+        e.target.disabled = false;
+        loadPerformanceMode();
     }
 });
 
@@ -1044,6 +1191,8 @@ $("log").innerHTML = '<div class="empty">No activity yet</div>';
 $("memory-warn").innerHTML = ICON.alert;
 refreshStatus();
 loadServerOverride();
+loadBodyOverride();
+loadPerformanceMode();
 refreshServer();
 refreshCommunity();
 checkForUpdate(true);

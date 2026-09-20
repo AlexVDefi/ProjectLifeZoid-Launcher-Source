@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -49,6 +50,7 @@ import zombie.modding.ActiveModsFile;
 import zombie.network.CoopMaster;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
+import zombie.plz.PLZBodyOverride;
 import zombie.plz.PLZAssetRefusals;
 import zombie.plz.PLZModFolderBaseline;
 import zombie.plz.PLZPrefixRetry;
@@ -69,6 +71,20 @@ public final class ZomboidFileSystem {
     private static final long[] PLZ_SHORT_WALK_BACKOFF_MS = {250L, 1000L, 3000L};
     private int plzBestModFolderCount;
     public final HashMap<String, String> activeFileMap = new HashMap<>();
+
+    /**
+     * What the mods in PLZBodyOverride put into activeFileMap, so it can be taken back out.
+     *
+     * <p>modId -> list of {relative path, value before that mod wrote it, value it wrote}. Only
+     * the tracked mods are recorded, so this costs a few hundred entries rather than a second
+     * copy of the 70k-file map. Insertion-ordered because the undo runs in REVERSE load order:
+     * two of these mods can touch the same path, and unwinding them out of order would restore
+     * the wrong one.
+     */
+    private final LinkedHashMap<String, ArrayList<String[]>> plzTrackedFiles = new LinkedHashMap<>();
+
+    /** The answer the last loadMods acted on, or null before the first one in this process. */
+    private Boolean plzBodyOverrideApplied;
     private final HashSet<String> allAbsolutePaths = new HashSet<>();
     private final ResettableLazyValue<List<Path>> allowedPrefixes = new ResettableLazyValue<>(() -> {
         List<String> knownBases = new ArrayList<>();
@@ -390,6 +406,7 @@ public final class ZomboidFileSystem {
         this.modIdToDir.clear();
         this.modDirToMod.clear();
         this.mods.clear();
+        this.plzTrackedFiles.clear();
         // Under the lock for the same reason resetModFolders is: a walk already running holds it
         // and would otherwise publish its result on top of this null, losing the reset.
         synchronized (this.modFoldersLock) {
@@ -743,6 +760,7 @@ public final class ZomboidFileSystem {
             }
 
             DebugType.Mod.println("loading " + modId);
+            boolean plzTrack = !GameServer.server && PLZBodyOverride.isTracked(modId);
             ChooseGameInfo.Mod mod = this.getModInfoForDir(this.getModDir(modId));
             this.loadList.clear();
             File modPathbase = new File(mod.getCommonDir().toLowerCase(Locale.ENGLISH));
@@ -757,6 +775,10 @@ public final class ZomboidFileSystem {
                 }
 
                 String absPath = new File(this.loadList.get(n)).getAbsolutePath();
+                if (plzTrack) {
+                    this.plzRecord(modId, rel, this.activeFileMap.get(rel), absPath);
+                }
+
                 this.activeFileMap.put(rel, absPath);
                 this.allAbsolutePaths.add(absPath);
             }
@@ -774,6 +796,10 @@ public final class ZomboidFileSystem {
                 }
 
                 String absPath = new File(this.loadList.get(n)).getAbsolutePath();
+                if (plzTrack) {
+                    this.plzRecord(modId, rel, this.activeFileMap.get(rel), absPath);
+                }
+
                 this.activeFileMap.put(rel, absPath);
                 this.allAbsolutePaths.add(absPath);
             }
@@ -954,6 +980,7 @@ public final class ZomboidFileSystem {
 
     public void loadMods(ArrayList<String> toLoad) {
         this.mods.clear();
+        this.plzTrackedFiles.clear();
 
         for (String modId : toLoad) {
             this.loadModAndRequired(modId, this.mods);
@@ -962,6 +989,103 @@ public final class ZomboidFileSystem {
         for (String modId : this.mods) {
             this.loadMod(modId);
         }
+
+        this.plzApplyBodyOverride();
+    }
+
+    /**
+     * Honour the player's body-mod choice, once the whole mod list is in the map.
+     *
+     * <p>Here rather than anywhere earlier because a mod that loads AFTER one of the body mods
+     * and overrides the same file has to be allowed to win first; only then is it possible to
+     * say which paths the body mods are actually still holding. Everything downstream reads
+     * activeFileMap and so needs no idea a choice was made.
+     */
+    private void plzApplyBodyOverride() {
+        if (GameServer.server) {
+            return;
+        }
+
+        boolean enabled = PLZBodyOverride.isEnabled();
+        if (!enabled) {
+            int undone = this.plzUndoTrackedMods();
+            DebugType.Mod.println("PLZ: body mods off by client choice; " + undone + " file override(s) undone");
+        }
+
+        // Textures are cached by NAME in Texture.s_sharedTextureTable and Core.ResetLua never
+        // clears it, so a reconnect inside one session would otherwise keep whichever body skins
+        // were resolved first. Only worth the hitch when the answer actually moved - on the first
+        // loadMods of a process nothing body-related has been asked for yet. setTexturePackLookup,
+        // not onTexturePacksChanged: the latter empties the caches without rebuilding
+        // GameWindow.texturePackTextures, and every name then misses and lands in nullTextures.
+        if (this.plzBodyOverrideApplied != null && this.plzBodyOverrideApplied != enabled) {
+            GameWindow.setTexturePackLookup();
+            DebugType.Mod.println("PLZ: body override changed to " + enabled + "; texture caches dropped");
+        }
+
+        this.plzBodyOverrideApplied = enabled;
+    }
+
+    private void plzRecord(String modId, String rel, String before, String after) {
+        if (!plzIsRevertable(rel)) {
+            return;
+        }
+
+        this.plzTrackedFiles.computeIfAbsent(modId, id -> new ArrayList<>()).add(new String[] { rel, before, after });
+    }
+
+    /**
+     * The only files the body opt-out is allowed to take back out of activeFileMap.
+     *
+     * <p>The multiplayer Lua/script checksum is computed over the files resolved THROUGH
+     * activeFileMap, so anything removed here that the server still counts diverges the client's
+     * total and the anti-cheat kicks them: `lua=none script=none` in the server log, then
+     * ChecksumPacket.parseServer scheduling a disconnect. That is not a theoretical risk - it
+     * shipped. TombBodyCustom is the only one of the four tracked mods that carries Lua at all (3
+     * .lua and 3 scripts against none in the other three), which is exactly why a feature that
+     * looks purely cosmetic managed to break joining.
+     *
+     * <p>An ALLOWLIST rather than a denylist of lua/scripts/anims, deliberately: a denylist has to
+     * name every checksummed category correctly forever, and silently stops protecting the moment
+     * one is missed or added. This names the two things a body mod actually replaces, so anything
+     * unforeseen is left alone by default and the checksum stays byte-identical.
+     */
+    private static boolean plzIsRevertable(String rel) {
+        return rel.startsWith("media/models_x/") || rel.startsWith("media/models/") || rel.startsWith("media/textures/");
+    }
+
+    /**
+     * Undo the tracked mods' writes, newest first, and report how many entries moved.
+     *
+     * <p>A record is skipped when the path is no longer holding the value that mod wrote: some
+     * later mod overrode the same file, and it would still have done so had the body mod never
+     * loaded. Restoring the remembered predecessor there would take the later mod out with it -
+     * TombBodyCompat and several clothing mods do collide on the same vanilla meshes.
+     */
+    private int plzUndoTrackedMods() {
+        ArrayList<String> order = new ArrayList<>(this.plzTrackedFiles.keySet());
+        int undone = 0;
+
+        for (int i = order.size() - 1; i >= 0; i--) {
+            ArrayList<String[]> records = this.plzTrackedFiles.get(order.get(i));
+
+            for (int n = records.size() - 1; n >= 0; n--) {
+                String[] record = records.get(n);
+                if (!record[2].equals(this.activeFileMap.get(record[0]))) {
+                    continue;
+                }
+
+                if (record[1] == null) {
+                    this.activeFileMap.remove(record[0]);
+                } else {
+                    this.activeFileMap.put(record[0], record[1]);
+                }
+
+                undone++;
+            }
+        }
+
+        return undone;
     }
 
     public ArrayList<String> getModIDs() {

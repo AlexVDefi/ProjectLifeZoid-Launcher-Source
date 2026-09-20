@@ -85,6 +85,17 @@ pub enum Error {
     )]
     GameNeverStarted(u64),
 
+    #[error(
+        "The patch cannot be handed to the game from this folder:\n\
+         {path}\n\
+         Project Zomboid's own launcher passes that path on to Java in your system's ANSI \
+         codepage, so the accented character in it would arrive mangled and the patch would be \
+         skipped without a word. The launcher normally works around that with the plain-ASCII \
+         short name Windows keeps for such folders, but this drive has short names switched off.\n\
+         Please report this with your Windows username -- it needs a fix on our side, not yours."
+    )]
+    PathNotAscii { path: String },
+
     #[error("ProjectZomboid64.json is not valid JSON: {0}")]
     MalformedJson(String),
 

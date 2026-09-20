@@ -168,11 +168,20 @@ import zombie.tileDepth.CutawayAttachedModifier;
 import zombie.tileDepth.TileDepthMapManager;
 import zombie.tileDepth.TileSeamModifier;
 import zombie.plz.PLZAssetRefusals;
+import zombie.chat.ChatManager;
+import zombie.plz.PLZChannelProbe;
+import zombie.plz.PLZSoundProbe;
+import zombie.plz.PLZSoundPriority;
 import zombie.plz.PLZTextureRepair;
 import zombie.plz.PLZBarrierGrid;
 import zombie.plz.PLZDoorAccess;
 import zombie.plz.PLZGatedGrid;
 import zombie.plz.PLZObjectDamage;
+import zombie.plz.PLZMapPin;
+import zombie.plz.PLZFlightRecorder;
+import zombie.plz.PLZLuaProfile;
+import zombie.plz.PLZItemWeightCache;
+import zombie.plz.PLZSyncWatch;
 import zombie.util.CappedConcurrentQueue;
 import zombie.util.StringUtils;
 import zombie.util.Type;
@@ -7980,6 +7989,101 @@ public final class IsoGridSquare {
         return PLZAssetRefusals.getModList();
     }
 
+    // Same reason as the refusal report above: PLZSoundProbe is not on LuaManager's whitelist, so
+    // the client reaches it through statics on a class that is.
+    public static void plzSoundSample() {
+        PLZSoundProbe.sample();
+    }
+
+    public static boolean plzSoundProbeAvailable() {
+        return PLZSoundProbe.isAvailable();
+    }
+
+    public static String plzSoundProbeFailure() {
+        return PLZSoundProbe.getFailure();
+    }
+
+    public static int plzSoundInstances() {
+        return PLZSoundProbe.getTotal();
+    }
+
+    public static int plzSoundStarting() {
+        return PLZSoundProbe.getStarting();
+    }
+
+    public static int plzSoundPlaying() {
+        return PLZSoundProbe.getPlaying();
+    }
+
+    public static int plzSoundStateCount(int state) {
+        return PLZSoundProbe.getStateCount(state);
+    }
+
+    public static String plzSoundWorstEvent() {
+        return PLZSoundProbe.getWorstEvent();
+    }
+
+    public static int plzSoundWorstCount() {
+        return PLZSoundProbe.getWorstCount();
+    }
+
+    // Same whitelist reason as the sound probe above.
+    public static boolean plzChannelProbeAvailable() {
+        return PLZChannelProbe.isAvailable();
+    }
+
+    public static String plzChannelProbeFailure() {
+        return PLZChannelProbe.getFailure();
+    }
+
+    public static int plzVoiceVirtualFrames() {
+        return (int)PLZChannelProbe.getVirtualFrames();
+    }
+
+    public static int plzVoiceRealFrames() {
+        return (int)PLZChannelProbe.getRealFrames();
+    }
+
+    public static int plzVoiceVirtualPercent() {
+        return PLZChannelProbe.getVirtualPercent();
+    }
+
+    public static int plzVoiceSinceVirtualMs() {
+        return (int)PLZChannelProbe.sinceLastVirtualMs();
+    }
+
+    public static void plzVoiceVirtualReset() {
+        PLZChannelProbe.reset();
+    }
+
+    // ChatManager is not on LuaManager's whitelist either, so the client's poll reaches it here.
+    public static void plzChatHealthCheck() {
+        ChatManager manager = ChatManager.getInstance();
+        if (manager != null) {
+            manager.plzHealthCheck();
+        }
+    }
+
+    public static void plzApplySoundPriority() {
+        PLZSoundPriority.apply();
+    }
+
+    public static boolean plzSoundPriorityRan() {
+        return PLZSoundPriority.hasRun();
+    }
+
+    public static int plzSoundPriorityApplied() {
+        return PLZSoundPriority.getApplied();
+    }
+
+    public static int plzSoundPriorityScanned() {
+        return PLZSoundPriority.getScanned();
+    }
+
+    public static String plzSoundPriorityFailure() {
+        return PLZSoundPriority.getFailure();
+    }
+
     public static int plzNullTextureCount() {
         return PLZTextureRepair.deadCount();
     }
@@ -8090,6 +8194,124 @@ public final class IsoGridSquare {
         }
 
         return touched;
+    }
+
+    // HOLDING A PIECE OF THE MAP LOADED, so a server-side job can reach something nobody is
+    // standing next to. Reached from Lua here rather than on zombie.plz.PLZMapPin for the reason
+    // every block above is: the exposer is a whitelist and zombie.plz is not on it.
+    //
+    // plzPinArea RETURNS WHETHER THE PIN EXISTS AND THE CALLER MUST BRANCH ON IT. False is not an
+    // error, it is the engine being busier than the reserve allows, and the Lua side answers it by
+    // falling back to the deferral it was already using. See PLZMapPin for the ten-second lease and
+    // for why the unload half needs no call.
+    public static boolean plzPinArea(double x, double y) {
+        return PLZMapPin.pin(x, y);
+    }
+
+    public static boolean plzAreaIsPinned(double x, double y) {
+        return PLZMapPin.isPinned(x, y);
+    }
+
+    public static int plzPinnedAreaCount() {
+        return PLZMapPin.pinnedCount();
+    }
+
+    public static int plzPinAreaBudget() {
+        return PLZMapPin.budget();
+    }
+
+    public static String plzMapPinStatus() {
+        return PLZMapPin.status();
+    }
+
+    // PERFORMANCE INSTRUMENTATION. Same door as every block above: LuaManager's exposer is a
+    // whitelist and zombie.plz is not on it.
+    public static boolean plzJfrAvailable() {
+        return PLZFlightRecorder.available();
+    }
+
+    public static String plzJfrStatus() {
+        return PLZFlightRecorder.status();
+    }
+
+    public static String plzJfrDump(String label, double minutes) {
+        return PLZFlightRecorder.dump(label, (int)Math.floor(minutes));
+    }
+
+    public static boolean plzLuaProfileEnabled() {
+        return PLZLuaProfile.isEnabled();
+    }
+
+    public static void plzLuaProfileSetEnabled(boolean enabled) {
+        PLZLuaProfile.setEnabled(enabled);
+    }
+
+    public static void plzLuaProfileReset() {
+        PLZLuaProfile.reset();
+    }
+
+    public static String plzLuaProfileReport(double topN) {
+        return PLZLuaProfile.report((int)Math.floor(topN));
+    }
+
+    public static String plzLuaProfileStatus() {
+        return PLZLuaProfile.status();
+    }
+
+    public static boolean plzSyncWatchEnabled() {
+        return PLZSyncWatch.isEnabled();
+    }
+
+    public static void plzSyncWatchSetEnabled(boolean enabled) {
+        PLZSyncWatch.setEnabled(enabled);
+    }
+
+    public static void plzSyncWatchReset() {
+        PLZSyncWatch.reset();
+    }
+
+    public static String plzSyncWatchReport(double topN) {
+        return PLZSyncWatch.report((int)Math.floor(topN));
+    }
+
+    public static String plzSyncWatchStatus() {
+        return PLZSyncWatch.status();
+    }
+
+    public static String plzSyncWatchSummary() {
+        return PLZSyncWatch.summary();
+    }
+
+    public static boolean plzItemWeightCacheEnabled() {
+        return PLZItemWeightCache.isEnabled();
+    }
+
+    public static void plzItemWeightCacheSetEnabled(boolean enabled) {
+        PLZItemWeightCache.setEnabled(enabled);
+    }
+
+    public static void plzItemWeightCacheClear() {
+        PLZItemWeightCache.clear();
+    }
+
+    public static String plzItemWeightCacheStatus() {
+        return PLZItemWeightCache.status();
+    }
+
+    public static void plzItemWeightCacheSetVerifying(boolean on) {
+        PLZItemWeightCache.setVerifying(on);
+    }
+
+    public static double plzItemWeightCacheWeightOf(String fullType) {
+        return PLZItemWeightCache.weightOf(fullType);
+    }
+
+    public static boolean plzSyncRelayFilter() {
+        return PLZSyncWatch.isRelevantOnly();
+    }
+
+    public static void plzSyncSetRelayFilter(boolean on) {
+        PLZSyncWatch.setRelevantOnly(on);
     }
 
     public void RecalcPropertiesIfNeeded() {
@@ -9965,8 +10187,51 @@ public final class IsoGridSquare {
         return this.properties;
     }
 
+    // PLZ: Lua reaches zombie.plz through an exposed class because LuaManager's exposer is a
+    // whitelist and zombie.plz is not on it - same door PLZMapPin uses. Server-side only; the
+    // setter is a no-op before the main loop registers its limiter.
+
+    /** @return the tick rate actually applied after clamping to 1..60. */
+    public static double plzSetServerFps(double fps) {
+        return zombie.plz.PLZTickRate.apply((int)Math.floor(fps));
+    }
+
+    public static double plzGetServerFps() {
+        return zombie.plz.PLZTickRate.serverFps();
+    }
+
+    public static String plzTickRateStatus() {
+        return zombie.plz.PLZTickRate.status();
+    }
+
     public IsoRoom getRoom() {
-        return this.roomId == -1L ? null : this.room;
+        if (this.roomId == -1L) {
+            return null;
+        }
+
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.GRID_SQUARE_ROOM_GUARD)
+            && this.room != null
+            && this.room.getRoomDef() == null) {
+            // PLZ: do not hand out a gutted room husk.
+            //
+            // Every build change makes WorldRegionToMetaGrid tear down and rebuild the cell's
+            // user-defined buildings. removeIsoRoom guts the live IsoRoom in place (def = null,
+            // building/squares/rects cleared) while IsoGridSquare.room references to it survive:
+            // the re-stamp sweep only covers dirty chunks in current players' chunk maps, and the
+            // room's squares back-ref list is only populated on chunk load. Any square the sweep
+            // misses keeps roomId != -1 plus the husk, and getRoom() serves it to every consumer.
+            // Those that skip vanilla's own hasRoomDef()-style check - ParameterFirearmRoomSize is
+            // recomputed every tick for the local player - then NPE on getRoomDef().getArea(), and
+            // the catch in IngameState.updateInternal exits the world. Observed as a kick to menu
+            // while building a plank floor on a second storey.
+            //
+            // roomId is deliberately left alone: the next rebuild re-stamps it, and clearing it
+            // here would fight that sweep.
+            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.GRID_SQUARE_ROOM_GUARD);
+            return null;
+        }
+
+        return this.room;
     }
 
     public void setRoom(IsoRoom room) {

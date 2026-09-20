@@ -115,7 +115,36 @@ public final class ActionGroup {
         return this.name;
     }
 
+    /**
+     * PLZ: guards the two static entry points that mutate s_actionGroupMap.
+     *
+     * getActionGroup is get-then-put on a plain HashMap. The SPVThread reaches it through
+     * IsoAnimal.init -> initType while loading animal-carrying vehicles, while the main thread
+     * calls it per zombie per tick from IsoZombie.updateInternal and at every character creation.
+     * That is the same unsynchronised-map race that corrupts the animation asset table.
+     *
+     * A private lock rather than marking the methods synchronized: the fidelity gate compares
+     * javap output including modifiers, so adding "synchronized" to the signature reads as a
+     * changed member and fails the build. Lock order is consistent with the AnimationSet lock -
+     * a group load may reach an anim set, never the reverse - so the two cannot deadlock.
+     *
+     * Cost on the server JVM is ~3 ns uncontended, roughly 25 us/tick at 5,000 loaded zombies,
+     * which is noise against a 70 ms tick.
+     */
+    private static final Object PLZ_GROUP_MAP_LOCK = new Object();
+
     public static ActionGroup getActionGroup(String groupName) {
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ACTION_GROUP_SYNC)) {
+            synchronized (PLZ_GROUP_MAP_LOCK) {
+                zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ACTION_GROUP_SYNC);
+                return plzGetActionGroup(groupName);
+            }
+        }
+
+        return plzGetActionGroup(groupName);
+    }
+
+    private static ActionGroup plzGetActionGroup(String groupName) {
         groupName = groupName.toLowerCase();
         ActionGroup grp = s_actionGroupMap.get(groupName);
         if (grp == null && !s_actionGroupMap.containsKey(groupName)) {
@@ -136,6 +165,17 @@ public final class ActionGroup {
     }
 
     public static void reloadAll() {
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ACTION_GROUP_SYNC)) {
+            synchronized (PLZ_GROUP_MAP_LOCK) {
+                plzReloadAll();
+                return;
+            }
+        }
+
+        plzReloadAll();
+    }
+
+    private static void plzReloadAll() {
         for (Entry<String, ActionGroup> entry : s_actionGroupMap.entrySet()) {
             ActionGroup actionGroup = entry.getValue();
 

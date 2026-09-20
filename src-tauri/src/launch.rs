@@ -113,17 +113,132 @@ pub fn wait_for_start(timeout_secs: u64) -> Result<()> {
     Err(Error::GameNeverStarted(timeout_secs))
 }
 
-pub fn wait_for_exit() {
-    wait_for_exit_with(|| {});
+/// How long the game process has to stay missing before the session counts as over.
+pub const GONE_CONFIRM_SECS: u64 = 20;
+
+/// How long after firing the launch a missing process is refused as evidence of anything.
+///
+/// Steam does not hand the game over in one step. On a warm machine a process can appear,
+/// exit and be replaced seconds later, and the launcher used to read the gap as the player
+/// having quit: it stopped waiting for the stamp, restored ProjectZomboid64.json, and the
+/// real game then started against the restored file and ran vanilla all session. Nothing
+/// good happens inside the first minute and a half of a launch, so nothing is decided there.
+pub const SESSION_FLOOR_SECS: u64 = 90;
+
+/// The whole rule, separated from the clock so it can be tested.
+pub fn session_over(since_launch: Duration, absent_for: Option<Duration>) -> bool {
+    let Some(absent) = absent_for else {
+        return false;
+    };
+    since_launch.as_secs() >= SESSION_FLOOR_SECS && absent.as_secs() >= GONE_CONFIRM_SECS
+}
+
+/// Tracks whether the game is really gone, as opposed to between processes.
+pub struct SessionWatch {
+    launched: Instant,
+    absent_since: Option<Instant>,
+}
+
+impl SessionWatch {
+    pub fn started_now() -> Self {
+        Self {
+            launched: Instant::now(),
+            absent_since: None,
+        }
+    }
+
+    /// True while the game process is missing but the session is still being given the benefit
+    /// of the doubt. Worth telling the player about: it is the one moment the launcher looks
+    /// stuck for a reason that is not a problem.
+    pub fn is_absent(&self) -> bool {
+        self.absent_since.is_some()
+    }
+
+    /// True once the game has been absent long enough, late enough, to believe it.
+    pub fn is_over(&mut self) -> bool {
+        let now = Instant::now();
+        if is_game_running() {
+            if let Some(since) = self.absent_since.take() {
+                crate::session_log::log(
+                    "process",
+                    &format!(
+                        "the game process is back after {:.1}s; that gap was a relaunch, not the end of the session",
+                        now.duration_since(since).as_secs_f32()
+                    ),
+                );
+            }
+            return false;
+        }
+        if self.absent_since.is_none() {
+            self.absent_since = Some(now);
+            crate::session_log::log(
+                "process",
+                "no game process found; holding the patch in place to see whether it comes back",
+            );
+        }
+        let over = session_over(
+            now.duration_since(self.launched),
+            self.absent_since.map(|t| now.duration_since(t)),
+        );
+        if over {
+            crate::session_log::log(
+                "process",
+                &format!(
+                    "the game has been gone for {}s, {}s after the launch; treating the session as over",
+                    GONE_CONFIRM_SECS,
+                    now.duration_since(self.launched).as_secs()
+                ),
+            );
+        }
+        over
+    }
 }
 
 // The join result lands while the game is still up: the bootstrap Lua writes it the moment
 // OnConnectFailed fires. Giving the caller a tick here is what lets a refusal be reported
 // then, instead of sitting unread until the player gives up and quits.
-pub fn wait_for_exit_with(mut tick: impl FnMut()) {
-    while is_game_running() {
+pub fn wait_for_exit_with(watch: &mut SessionWatch, mut tick: impl FnMut()) {
+    while !watch.is_over() {
         tick();
         std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+#[cfg(test)]
+mod session_rules {
+    use super::*;
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn a_running_game_is_never_over() {
+        assert!(!session_over(secs(6_000), None));
+    }
+
+    #[test]
+    fn the_gap_that_broke_raffys_launch_is_not_the_end_of_a_session() {
+        // Patched at launch, process seen, process gone three seconds later. The old code
+        // restored here, and the real game started four seconds after that.
+        assert!(!session_over(secs(3), Some(secs(3))));
+        assert!(!session_over(secs(7), Some(secs(4))));
+    }
+
+    #[test]
+    fn a_long_absence_still_waits_out_the_floor() {
+        assert!(!session_over(secs(45), Some(secs(45))));
+    }
+
+    #[test]
+    fn a_brief_blip_late_in_a_session_is_not_the_end_either() {
+        assert!(!session_over(secs(7_200), Some(secs(19))));
+    }
+
+    #[test]
+    fn a_real_quit_ends_the_session() {
+        assert!(session_over(secs(7_200), Some(secs(20))));
+        assert!(session_over(secs(90), Some(secs(90))));
     }
 }
 

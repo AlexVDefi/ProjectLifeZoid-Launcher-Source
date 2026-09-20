@@ -1,5 +1,12 @@
 [
     {
+        "title": "Launcher 0.6.1",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-09-20",
+        "tag": "Update",
+        "excerpt": "If there is an accent in your Windows username - Usário, Cárdenas, anything that is not a plain English letter - the patch was never reaching your game. The launcher writes the path to the patch into one of the game's own files, and Project Zomboid's launcher hands that file to Java in a different text encoding than the one it was written in, so the path arrived scrambled and Java ignored it without saying so. The game started, you played unpatched, and the launcher could only report that it could not confirm the patch. It now writes a plain-ASCII form of the path that survives the trip. Nothing to do beyond updating."
+    },
+    {
         "title": "Launcher 0.5.0",
         "url": "https://projectlifezoid.com",
         "date": "2026-08-29",

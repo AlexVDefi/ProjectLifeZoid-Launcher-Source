@@ -75,6 +75,24 @@ public final class PLZDowned {
         }
     }
 
+    // SEEN_HEALTHY is empty at every boot, so a player who comes back already hurt
+    // would never be eligible for the downed state until they healed past the mark.
+    public static void markLive(IsoGameCharacter character) {
+        if (!(character instanceof IsoPlayer player)) {
+            return;
+        }
+
+        String username = player.getUsername();
+        if (username == null || username.isEmpty()) {
+            return;
+        }
+
+        BodyDamage damage = character.getBodyDamage();
+        if (damage != null && damage.getOverallBodyHealth() > 0.0F && character.getHealth() > 0.0F) {
+            SEEN_HEALTHY.add(username);
+        }
+    }
+
     public static void enforce(IsoGameCharacter character) {
         if (!(character instanceof IsoPlayer player)) {
             return;
@@ -82,6 +100,12 @@ public final class PLZDowned {
 
         String username = player.getUsername();
         if (username == null || username.isEmpty()) {
+            return;
+        }
+
+        // Hands off entirely, downed or not: the floor below runs whatever DOWNED says,
+        // and the staff retirement needs the server's copy to stay dead for a tick.
+        if (ALLOW_DEATH.contains(username)) {
             return;
         }
 
@@ -94,7 +118,7 @@ public final class PLZDowned {
         }
 
         if (!DOWNED.contains(username)) {
-            if (!autoDown || ALLOW_DEATH.contains(username) || !isLethal(character)) {
+            if (!autoDown || !isLethal(character)) {
                 return;
             }
             if (!SEEN_HEALTHY.contains(username)) {
@@ -142,10 +166,13 @@ public final class PLZDowned {
             return computed;
         }
 
-        if (SEEN_HEALTHY.contains(username)) {
-            DOWNED.add(username);
+        // Same gate as enforce. Flooring somebody this patch has never seen alive
+        // makes them unkillable without ever putting them in the downed state.
+        if (!SEEN_HEALTHY.contains(username)) {
+            return computed;
         }
 
+        DOWNED.add(username);
         return computed < OVERALL_FLOOR ? OVERALL_FLOOR : computed;
     }
 

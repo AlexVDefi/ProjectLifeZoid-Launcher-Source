@@ -391,11 +391,22 @@ Only the built-in `admin` role carries ConnectWithDebug. moderator and gm do not
                     Err(e) => Err(e),
                 },
                 None => {
+                    // Read before the move below, and worth printing: a support ticket about a
+                    // second character is answered by which names this account actually holds.
+                    let characters = st.known_names();
                     line(
                         "username",
                         st.account_username.unwrap_or("NOT SET".into()),
                     );
                     line("confirmed", st.account_confirmed);
+                    line(
+                        "characters",
+                        if characters.is_empty() {
+                            "none confirmed".to_string()
+                        } else {
+                            characters.join(", ")
+                        },
+                    );
                     line(
                         "steam account",
                         st.identity_steam_id

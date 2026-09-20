@@ -55,6 +55,16 @@ pub fn server_list_db() -> PathBuf {
     zomboid_home().join("db").join("ServerListSteam.db")
 }
 
+/// The Tomb body opt-out, shared with the java patch.
+///
+/// zombie.plz.PLZBodyOverride reads this exact path inside ZomboidFileSystem.loadMods.
+/// It resolves it as getCacheDir() + "/Lua", and getCacheDir() is user.home + "/Zomboid",
+/// which is what zomboid_home() is. Keep the two in step or the toggle writes a setting
+/// nothing reads.
+pub fn body_override_path() -> PathBuf {
+    zomboid_home().join("Lua").join("PLZBodyOverride.ini")
+}
+
 pub fn join_intent_path() -> PathBuf {
     zomboid_home()
         .join("Lua")
@@ -78,4 +88,13 @@ pub fn role_path() -> PathBuf {
 
 pub fn launcher_mod_dir() -> PathBuf {
     zomboid_home().join("mods").join("PLZLauncher").join("42")
+}
+
+/// The game's video/audio settings file.
+///
+/// Core.saveOptions() rewrites this whole file from its in-memory option set every time the
+/// player hits Apply on the options screen, so anything written here only survives if the
+/// game has loaded it first. Write it with the game closed, never while it runs.
+pub fn options_ini_path() -> PathBuf {
+    zomboid_home().join("options.ini")
 }

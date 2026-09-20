@@ -3,13 +3,18 @@ pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod install;
+pub mod jvmpath;
 pub mod launch;
+pub mod linuxfix;
 pub mod news;
 pub mod patch;
 pub mod payload;
+pub mod perfmode;
+pub mod perfmode_commands;
 pub mod query;
 pub mod selfupdate;
 pub mod serverlist;
+pub mod session_log;
 pub mod state;
 pub mod steam;
 pub mod workshop;
@@ -44,6 +49,7 @@ pub struct Status {
     pub steam_id: Option<String>,
     pub account_username: Option<String>,
     pub account_confirmed: bool,
+    pub account_names: Vec<String>,
     pub server_host: Option<String>,
     pub server_connect_port: Option<u16>,
     pub server_query_port: Option<u16>,
@@ -95,13 +101,27 @@ pub fn load_state_for_active_account() -> State {
 pub fn choose_username(raw: &str) -> Result<String> {
     let name = account::validate(raw)?;
     let mut st = load_state_for_active_account();
-    if st.account_confirmed && st.account_username.as_deref() != Some(name.as_str()) {
-        return Err(Error::Other(
-            "This Steam account already exists on the server under its current username. Ask an admin to rename it."
-                .into(),
-        ));
-    }
-    st.account_username = Some(name.clone());
+    // Switching between characters this account already holds is always fine. A name it does
+    // not hold is an attempt to make another character, and the launcher has no way to know
+    // whether the account has a spare slot, so it lets the attempt through and lets the server
+    // answer. Refusing here, which is what this used to do, would make a bought slot unusable.
+    //
+    // switch_to_name banks the name being replaced, so the character you are leaving stays in
+    // the picker rather than being forgotten the moment you type the new one.
+    st.switch_to_name(&name);
+    st.save()?;
+    Ok(name)
+}
+
+/// Adopt a name an admin has already renamed this account to on the server.
+///
+/// Deliberately not `choose_username`: that banks the name it replaces, and after a rename the
+/// old one no longer exists server-side, so the player would be left with a dead character in
+/// the picker forever. Unconfirmed on purpose - the next join is what proves the rename landed.
+pub fn rename_username(raw: &str) -> Result<String> {
+    let name = account::validate(raw)?;
+    let mut st = load_state_for_active_account();
+    st.rename_active_name(&name);
     st.save()?;
     Ok(name)
 }
@@ -120,9 +140,24 @@ async fn get_status() -> Result<Status> {
 
 pub async fn status() -> Result<Status> {
     let mut st = load_state_for_active_account();
-    let repaired = patch::repair(&mut st).unwrap_or(false);
 
     let mut problems: Vec<String> = Vec::new();
+
+    // A repair that fails here used to be dropped on the floor, which left the launcher
+    // looking healthy while every setting that needs a clean install refused to move -- and
+    // the only thing the player saw was one of those settings blaming a game that was not
+    // running. Pushed first on purpose: the notice bar shows problems[0] and nothing else.
+    // A patch in place while the game is up is the normal state mid-session, not a problem.
+    let repaired = match patch::repair(&mut st) {
+        Ok(did) => did,
+        Err(Error::GameAlreadyRunning) => false,
+        Err(e) => {
+            problems.push(format!(
+                "Your game install is still patched from the last session and the launcher could not put it back: {e} Until that is fixed, the memory setting, the install folder and launcher updates all stay locked."
+            ));
+            false
+        }
+    };
 
     let install_dir = match install::find_install(st.install_dir.as_deref()) {
         Ok(p) => Some(p),
@@ -242,6 +277,7 @@ pub async fn status() -> Result<Status> {
         steam_id: steam_id.map(|id| id.to_string()),
         account_username: st.account_username.clone(),
         account_confirmed: st.account_confirmed,
+        account_names: st.known_names(),
         server_host: manifest.as_ref().map(|m| effective_server(m, &st).host),
         server_connect_port: manifest.as_ref().map(|m| effective_server(m, &st).connect_port),
         server_query_port: manifest.as_ref().map(|m| effective_server(m, &st).query_port),
@@ -262,19 +298,56 @@ async fn server_status() -> Result<query::ServerStatus> {
     query::query(&sv.host, sv.query_port, 3000).await
 }
 
-fn wait_for_stamp(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Option<patch::Stamp> {
+/// Long enough to cover Steam handing the game over more than once. The shadow class writes the
+/// stamp as it loads, so a wait this long only ever ends in a real answer.
+const STAMP_WAIT_SECS: u64 = 180;
+
+/// Why the stamp never arrived, which is the difference between a patch that did not load and a
+/// game that was not there to load it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NoStamp {
+    /// The game stayed up and never wrote one.
+    TimedOut,
+    /// The game went away and stayed away.
+    GameGone,
+}
+
+fn wait_for_stamp(
+    progress: &(dyn Fn(&str, &str) + Send + Sync),
+    watch: &mut launch::SessionWatch,
+) -> std::result::Result<patch::Stamp, NoStamp> {
     progress("running", "Game running. Waiting for the patch stamp");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(STAMP_WAIT_SECS);
+    let mut said_absent = false;
     while std::time::Instant::now() < deadline {
         if let Some(s) = patch::read_stamp() {
-            return Some(s);
+            session_log::log("stamp", &format!("stamp written by {}", s.origin));
+            return Ok(s);
         }
-        if !launch::is_game_running() {
-            return None;
+        if watch.is_over() {
+            session_log::log("stamp", "gave up: the game is gone for good");
+            return Err(NoStamp::GameGone);
+        }
+        // Steam can take the game away and bring it back while it finishes starting. Saying so
+        // is the difference between a launcher that looks wedged and one that looks patient.
+        if watch.is_absent() != said_absent {
+            said_absent = watch.is_absent();
+            progress(
+                "running",
+                if said_absent {
+                    "Waiting for Steam to finish starting the game. Holding the patch in place"
+                } else {
+                    "Game running. Waiting for the patch stamp"
+                },
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(750));
     }
-    None
+    session_log::log(
+        "stamp",
+        &format!("gave up: {STAMP_WAIT_SECS}s passed with the game still running and no stamp"),
+    );
+    Err(NoStamp::TimedOut)
 }
 
 fn parse_plzpatch(text: &str) -> Option<u64> {
@@ -374,6 +447,16 @@ async fn play(app: AppHandle) -> Result<PlayResult> {
 }
 
 pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<PlayResult> {
+    session_log::start(&format!(
+        "launcher {} play run",
+        env!("CARGO_PKG_VERSION")
+    ));
+    let logged = |step: &str, detail: &str| {
+        session_log::log(step, detail);
+        progress(step, detail);
+    };
+    let progress: &(dyn Fn(&str, &str) + Send + Sync) = &logged;
+
     let mut notes: Vec<String> = Vec::new();
     let mut st = load_state_for_active_account();
 
@@ -559,7 +642,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
     progress("patch", "Patching the launch configuration");
     patch::apply(&mut st, &install_dir, m.build)?;
 
-    let outcome = (|| -> Result<Option<patch::Stamp>> {
+    let outcome = (|| -> Result<std::result::Result<patch::Stamp, NoStamp>> {
         progress("account", "Preparing your Steam-bound game account");
         bootstrap::install()?;
         bootstrap::clear_join_result();
@@ -576,22 +659,24 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
             },
         );
         launch::launch(&steam, debug_args)?;
+        let mut watch = launch::SessionWatch::started_now();
         launch::wait_for_start(120)?;
+        session_log::log("launch", "a game process exists");
 
-        let stamp = wait_for_stamp(progress);
+        let stamp = wait_for_stamp(progress, &mut watch);
 
         progress(
             "playing",
             match stamp {
-                Some(_) => "Patch active. Enjoy. Restoring on exit",
-                None => "Playing. The patch could not be verified. Restoring on exit",
+                Ok(_) => "Patch active. Enjoy. Restoring on exit",
+                Err(_) => "Playing. The patch could not be verified. Restoring on exit",
             },
         );
         // The last code reported, not merely "have we reported". A session writes "OK" the
         // moment the join lands, and an idle kick overwrites it two hours later - latching on
         // the first result would swallow every mid-session result there will ever be.
         let mut last_code: Option<String> = None;
-        launch::wait_for_exit_with(|| {
+        launch::wait_for_exit_with(&mut watch, || {
             let Some(result) = bootstrap::read_join_result() else {
                 return;
             };
@@ -628,8 +713,15 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
     let mut bound_username = None;
     let join_error = match &join {
         Some(r) if r.code == "OK" || r.code == "AFKKick" => {
+            let mut dirty = false;
             if !st.account_confirmed {
                 st.account_confirmed = true;
+                dirty = true;
+            }
+            if let Some(name) = st.account_username.clone() {
+                dirty |= st.remember_name(&name);
+            }
+            if dirty {
                 st.save()?;
             }
             bootstrap::explain(r)
@@ -645,29 +737,57 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
             if matches!(
                 r.code.as_str(),
                 "PLZNameTaken" | "InvalidUsername" | "DuplicateAccount" | "InvalidUsernamePassword"
-            ) && st.account_confirmed
-            {
-                st.account_confirmed = false;
-                st.save()?;
+            ) {
+                let mut dirty = false;
+                if st.account_confirmed {
+                    st.account_confirmed = false;
+                    dirty = true;
+                }
+                if let Some(name) = st.account_username.clone() {
+                    dirty |= st.forget_name(&name);
+                }
+                if dirty {
+                    st.save()?;
+                }
             }
             if r.code == "PLZWrongCharacter" && !r.detail.is_empty() {
-                bound_username = Some(r.detail.clone());
-                st.account_username = Some(r.detail.clone());
-                st.account_confirmed = true;
-                st.save()?;
+                // The server sends every name this account holds, comma separated. An account
+                // with a character slot has more than one, and the player needs to see all of
+                // them to work out which they meant to type.
+                let names: Vec<String> = r
+                    .detail
+                    .split(',')
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                if let Some(first) = names.first() {
+                    bound_username = Some(first.clone());
+                    st.account_username = Some(first.clone());
+                    st.account_names = names;
+                    st.account_confirmed = true;
+                    st.save()?;
+                }
             }
             bootstrap::explain(r)
         }
         None => None,
     };
 
-    let stamp = outcome?;
-    if stamp.is_none() {
-        notes.push(
-            "The game started but never wrote a patch stamp, so the shadow classes may not \
-             have loaded. Report this."
+    let outcome = outcome?;
+    let stamp = outcome.as_ref().ok().cloned();
+    match &outcome {
+        Ok(_) => {}
+        Err(NoStamp::GameGone) => notes.push(
+            "Project Zomboid closed before it loaded the ProjectLifeZoid patch, so nothing was \
+             verified this session."
                 .into(),
-        );
+        ),
+        Err(NoStamp::TimedOut) => notes.push(format!(
+            "The game ran for {} minutes without loading the shadow classes, so this session was \
+             unpatched. Report this and send an admin the log at {}.",
+            STAMP_WAIT_SECS / 60,
+            config::app_dir().join("runtime").join("session.log").display()
+        )),
     }
 
     Ok(PlayResult {
@@ -687,6 +807,11 @@ async fn set_account_username(name: String) -> Result<String> {
 }
 
 #[tauri::command]
+async fn rename_account_username(name: String) -> Result<String> {
+    rename_username(&name)
+}
+
+#[tauri::command]
 async fn set_allow_debug(allowed: bool) -> Result<bool> {
     let mut st = State::load();
     st.allow_debug = allowed;
@@ -699,6 +824,46 @@ async fn set_launch_debug(enabled: bool) -> Result<bool> {
     let mut st = State::load();
     st.launch_debug = enabled;
     st.save()?;
+    Ok(enabled)
+}
+
+/// Whether the player wants the Tomb body overhaul.
+///
+/// Deliberately NOT kept in the launcher State: the file IS the setting. The java patch re-reads
+/// it on every connect, so a second copy here could only ever drift from it. Missing or
+/// unparseable means ON, matching the java default - the mods are in the server list, and
+/// dropping them because a settings file could not be read would be the stranger outcome.
+fn read_body_override() -> bool {
+    let text = match std::fs::read_to_string(config::body_override_path()) {
+        Ok(text) => text,
+        Err(_) => return true,
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_ascii_lowercase().starts_with("enabled=") {
+            // Byte slice is safe: the prefix just matched and is pure ASCII.
+            let value = trimmed["enabled=".len()..].trim();
+            return !value.eq_ignore_ascii_case("false") && value != "0";
+        }
+    }
+
+    true
+}
+
+#[tauri::command]
+async fn get_body_override() -> Result<bool> {
+    Ok(read_body_override())
+}
+
+#[tauri::command]
+async fn set_body_override(enabled: bool) -> Result<bool> {
+    let path = config::body_override_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&path, format!("enabled={}\r\n", enabled))?;
     Ok(enabled)
 }
 
@@ -750,27 +915,43 @@ async fn set_memory_mb(mb: u32) -> Result<()> {
             "Choose a memory amount between 1 GB and 64 GB.".into(),
         ));
     }
-    let st = State::load();
-    if st.active_patch.is_some() {
-        return Err(Error::Other(
-            "Quit Project Zomboid first. This session's patch is still in place, and \
-             changing the memory setting needs a clean copy of ProjectZomboid64.json."
-                .into(),
-        ));
-    }
+    let mut st = State::load();
+    clear_session_patch(
+        &mut st,
+        "changing the memory setting needs a clean copy of ProjectZomboid64.json",
+    )?;
     let install_dir = install::find_install(st.install_dir.as_deref())?;
     patch::set_heap_mb(&install_dir, mb)
 }
 
-fn guard_install_change(st: &State) -> Result<()> {
-    if st.active_patch.is_some() {
-        return Err(Error::Other(
-            "Quit Project Zomboid first. This session's patch is still in place, and the \
-             launcher has to put your game files back before the folder can change."
-                .into(),
-        ));
+/// Put the install back before a setting edits the file a session's patch is sitting on.
+///
+/// This used to be a bare "is a patch recorded?" refusal telling the player to quit the game.
+/// The record outlives the session whenever the restore could not run -- the game left a
+/// process behind, the install moved, a drive was not mounted -- and status() swallowed that
+/// failure, so all the player ever saw was a launcher telling them to quit a game that was
+/// not running. Retry the repair here and report what actually went wrong.
+fn clear_session_patch(st: &mut State, why: &str) -> Result<()> {
+    if st.active_patch.is_none() {
+        return Ok(());
     }
-    Ok(())
+    patch::repair(st).map(|_| ()).map_err(|e| match e {
+        Error::GameAlreadyRunning => Error::Other(format!(
+            "Quit Project Zomboid first -- it is still running. This session's patch is still \
+             in place, and {why}."
+        )),
+        other => Error::Other(format!(
+            "The launcher could not put your game install back after the last session, so \
+             {why}. {other}"
+        )),
+    })
+}
+
+fn guard_install_change(st: &mut State) -> Result<()> {
+    clear_session_patch(
+        st,
+        "the launcher has to put your game files back before the folder can change",
+    )
 }
 
 #[tauri::command]
@@ -783,7 +964,7 @@ async fn set_install_dir(path: String) -> Result<String> {
     let resolved = install::resolve_chosen(Path::new(cleaned))?;
 
     let mut st = State::load();
-    guard_install_change(&st)?;
+    guard_install_change(&mut st)?;
     st.install_dir = Some(resolved.clone());
     st.jar = None;
     st.save()?;
@@ -793,7 +974,7 @@ async fn set_install_dir(path: String) -> Result<String> {
 #[tauri::command]
 async fn clear_install_dir() -> Result<Option<String>> {
     let mut st = State::load();
-    guard_install_change(&st)?;
+    guard_install_change(&mut st)?;
     st.install_dir = None;
     st.jar = None;
     st.save()?;
@@ -971,6 +1152,7 @@ fn soften_webkit_rendering() {}
 
 pub fn run() {
     soften_webkit_rendering();
+    linuxfix::apply();
     tauri::Builder::default()
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -986,6 +1168,7 @@ pub fn run() {
             server_status,
             play,
             set_account_username,
+            rename_account_username,
             set_allow_debug,
             set_launch_debug,
             restore_now,
@@ -1005,6 +1188,10 @@ pub fn run() {
             set_steam_account,
             set_server_override,
             get_server_override,
+            set_body_override,
+            get_body_override,
+            perfmode_commands::get_performance_mode,
+            perfmode_commands::set_performance_mode,
             fit_window
         ])
         .run(tauri::generate_context!())

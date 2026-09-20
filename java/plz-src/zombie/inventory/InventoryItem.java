@@ -90,6 +90,7 @@ import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
 import zombie.plz.PLZItemBlob;
+import zombie.plz.PLZItemWeightCache;
 import zombie.radio.ZomboidRadio;
 import zombie.radio.media.MediaData;
 import zombie.scripting.ScriptManager;
@@ -440,30 +441,85 @@ public class InventoryItem extends GameEntity {
         return this.table;
     }
 
+    /** PLZ: ceiling for the grow-on-overflow retry below, mirroring PLZItemBlob's own cap. */
+    private static final int PLZ_MAX_ITEM_BYTES = 8388608;
+
     public void storeInByteData(IsoObject o) {
-        tempBuffer.clear();
+        ByteBuffer buffer = tempBuffer;
+        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CORPSE_ITEM_BYTES)) {
+            // PLZ: vanilla serialises into a static 20 KB tempBuffer and lets
+            // BufferOverflowException escape - it is a RuntimeException, so the catch (IOException)
+            // below never sees it. IsoDeadBody.getItem() throws before assigning createdCorpseItem,
+            // so the failure is PERMANENT for that corpse: every retry re-serialises and re-throws,
+            // and the corpse can never be picked up, dragged or stored by anyone. The client just
+            // logs "setJobType of non-table: null" from ISGrabCorpseAction.
+            //
+            // It is reachable because IsoDeadBody inherits the dead character's whole mod-data
+            // table (LuaManager.copyTable in its constructor) and IsoMovingObject.save writes that
+            // first - on a heavily modded server one player's mod data alone can exceed 20 KB.
+            //
+            // Grow and retry rather than widening the shared static: the static stays 20 KB for
+            // every ordinary item, and only an oversized object pays for a bigger local buffer.
+            buffer = plzSerialiseGrowing(o);
+        } else {
+            tempBuffer.clear();
 
-        try {
-            o.save(tempBuffer, false);
-        } catch (IOException e) {
-            DebugType.General.printException(e, LogSeverity.Error);
+            try {
+                o.save(tempBuffer, false);
+            } catch (IOException e) {
+                DebugType.General.printException(e, LogSeverity.Error);
+            }
         }
 
-        tempBuffer.flip();
-        if (this.byteData == null || this.byteData.capacity() < tempBuffer.limit() - 2 + 8) {
-            this.byteData = ByteBuffer.allocate(tempBuffer.limit() - 2 + 8);
+        buffer.flip();
+        if (this.byteData == null || this.byteData.capacity() < buffer.limit() - 2 + 8) {
+            this.byteData = ByteBuffer.allocate(buffer.limit() - 2 + 8);
         }
 
-        tempBuffer.get();
-        tempBuffer.get();
+        buffer.get();
+        buffer.get();
         this.byteData.clear();
         this.byteData.put((byte)87);
         this.byteData.put((byte)86);
         this.byteData.put((byte)69);
         this.byteData.put((byte)82);
         this.byteData.putInt(249);
-        this.byteData.put(tempBuffer);
+        this.byteData.put(buffer);
         this.byteData.flip();
+    }
+
+    /**
+     * PLZ: serialise o into the shared temp buffer, growing a private copy if it will not fit.
+     *
+     * Returns the buffer actually written to, positioned as vanilla leaves it (pre-flip). An
+     * IOException is reported and swallowed exactly as vanilla does, so whatever was written so
+     * far still goes through.
+     */
+    private static ByteBuffer plzSerialiseGrowing(IsoObject o) {
+        ByteBuffer buffer = tempBuffer;
+
+        while (true) {
+            buffer.clear();
+
+            try {
+                o.save(buffer, false);
+                return buffer;
+            } catch (IOException e) {
+                DebugType.General.printException(e, LogSeverity.Error);
+                return buffer;
+            } catch (java.nio.BufferOverflowException overflow) {
+                int capacity = buffer.capacity() * 4;
+                if (capacity > PLZ_MAX_ITEM_BYTES) {
+                    zombie.debug.DebugLog.log("PLZFixes: object too large to store in byte data even at "
+                        + PLZ_MAX_ITEM_BYTES + " bytes; leaving it unserialised");
+                    buffer.clear();
+                    return buffer;
+                }
+
+                zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CORPSE_ITEM_BYTES);
+                buffer = ByteBuffer.allocate(capacity);
+            }
+        }
     }
 
     public ByteBuffer getByteData() {
@@ -3542,10 +3598,7 @@ public class InventoryItem extends GameEntity {
         float extraWeight = 0.0F;
 
         for (int i = 0; i < this.extraItems.size(); i++) {
-            InventoryItem item = InventoryItemFactory.CreateItem(this.extraItems.get(i));
-            if (item != null && item.getActualWeight() > 0.0F) {
-                extraWeight += item.getActualWeight();
-            }
+            extraWeight += PLZItemWeightCache.weightOf(this.extraItems.get(i));
         }
 
         return extraWeight * 0.6F;

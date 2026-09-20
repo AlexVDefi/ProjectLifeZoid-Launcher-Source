@@ -196,7 +196,8 @@ body {
     border-radius: 6px;
 }
 
-.memory-select {
+.memory-select,
+.identity-select {
     font: inherit;
     font-family: var(--mono);
     font-size: 11px;
@@ -207,12 +208,14 @@ body {
     cursor: pointer;
 }
 
-.memory-select:disabled {
+.memory-select:disabled,
+.identity-select:disabled {
     color: var(--faint);
     cursor: not-allowed;
 }
 
-.memory-select option {
+.memory-select option,
+.identity-select option {
     background-color: var(--raised);
     color: var(--text);
 }
@@ -581,6 +584,22 @@ h1 {
 
 .identity-name.unset {
     color: var(--faint);
+}
+
+.identity-lock {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+}
+
+.identity-select {
+    flex: 1;
+    min-width: 0;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
 }
 
 #name-input {

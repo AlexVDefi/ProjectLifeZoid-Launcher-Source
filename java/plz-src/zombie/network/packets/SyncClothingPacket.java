@@ -24,6 +24,7 @@ import zombie.network.PacketSetting;
 import zombie.network.PacketTypes;
 import zombie.network.ServerGUI;
 import zombie.network.fields.character.PlayerID;
+import zombie.plz.PLZWornLock;
 import zombie.scripting.objects.ItemBodyLocation;
 import zombie.scripting.objects.ResourceLocation;
 import zombie.util.Type;
@@ -173,8 +174,28 @@ public class SyncClothingPacket implements INetworkPacket {
             this.playerId.getPlayer().getItemVisuals().clear();
         }
 
+        // PLZ: STAMP WHOSE LIST THIS IS BEFORE ANYTHING REBUILDS IT.
+        //
+        // This method is how a REMOTE character's worn items are assembled, on every client and on
+        // the server, and it does it by replaying WornItems.setItem for each entry in the packet -
+        // so the exclusivity rules run again here, and a locked location has to be recognised on a
+        // machine that never ran the Lua that locked it. WornItems carries no owner of its own;
+        // this is the one place on that path that knows one. See zombie.plz.PLZWornLock.
+        IsoPlayer plzPlayer = this.playerId.getPlayer();
+        if (plzPlayer.getWornItems() != null) {
+            plzPlayer.getWornItems().plzSetOwner(plzPlayer.getUsername());
+        }
+
         ArrayList<InventoryItem> itemsForDelete = new ArrayList<>();
         this.playerId.getPlayer().getWornItems().forEach(itemx -> {
+            // PLZ: a locked entry is never dropped for being absent from the packet. A client that
+            // has not caught up yet - it evicted the piece locally a frame before the server said
+            // no - would otherwise talk the server out of the lock with its own stale list.
+            if (itemx.getLocation() != null
+                && PLZWornLock.isLocked(plzPlayer.getUsername(), itemx.getLocation().getTranslationName())) {
+                return;
+            }
+
             if (!this.isItemsContains(itemx.getItem().getID(), itemx.getLocation())) {
                 itemsForDelete.add(itemx.getItem());
             }

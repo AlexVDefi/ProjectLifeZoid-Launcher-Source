@@ -22,7 +22,7 @@ public final class PLZAccounts {
             return names;
         }
 
-        Connection conn = ServerWorldDatabase.instance.conn;
+        Connection conn = ServerWorldDatabase.instance == null ? null : ServerWorldDatabase.instance.conn;
         if (conn == null) {
             return names;
         }
@@ -44,6 +44,40 @@ public final class PLZAccounts {
         }
 
         return names;
+    }
+
+    /**
+     * The SteamID an account name belongs to, or null when this server has never seen it.
+     *
+     * The inverse of boundUsernames, and the only way to answer "who is this player really" for
+     * somebody who is offline: the Lua global getSteamIDFromUsername needs a live client and
+     * returns null for everybody else.
+     */
+    public static String steamIdForUsername(String username) {
+        if (username == null || username.isEmpty()) {
+            return null;
+        }
+
+        Connection conn = ServerWorldDatabase.instance == null ? null : ServerWorldDatabase.instance.conn;
+        if (conn == null) {
+            return null;
+        }
+
+        try (PreparedStatement stat = conn.prepareStatement(
+                "SELECT steamid FROM whitelist WHERE username = ? AND world = ?")) {
+            stat.setString(1, username);
+            stat.setString(2, Core.gameSaveWorld);
+            try (ResultSet rs = stat.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                String id = rs.getString("steamid");
+                return id == null || id.isEmpty() ? null : id;
+            }
+        } catch (Exception e) {
+            DebugType.Multiplayer.printException(e, "PLZAccounts.steamIdForUsername failed", LogSeverity.Error);
+            return null;
+        }
     }
 
     public static void adoptCredential(String username, String credential) {

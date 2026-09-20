@@ -7,7 +7,7 @@ const MOD_INFO: &str = "name=PLZ Launcher Bootstrap\nid=PLZLauncher\ndescription
 
 const REASON_TRANSLATIONS: &str = r#"{
   "UI_OnConnectFailed_PLZNameTaken": "That username is already taken on this server. Pick a different one in the ProjectLifeZoid Launcher.",
-  "UI_OnConnectFailed_PLZWrongCharacter": "This Steam account already plays on ProjectLifeZoid as %1",
+  "UI_OnConnectFailed_PLZWrongCharacter": "This Steam account already plays on ProjectLifeZoid as %1. Ask staff about another character slot.",
   "UI_OnConnectFailed_PLZNotApproved": "This Steam account has not been approved for ProjectLifeZoid yet. Ask an admin to add you."
 }
 "#;
@@ -553,11 +553,31 @@ pub fn explain(result: &JoinResult) -> Option<String> {
             "That username is already taken on the server. Choose a different one and press Play again."
                 .into(),
         ),
-        "PLZWrongCharacter" if !result.detail.is_empty() => Some(format!(
-            "This Steam account already plays on the server as \"{}\". \
-             The launcher has switched to it. Press Play to continue, or ask an admin if you want it renamed.",
-            result.detail
-        )),
+        "PLZWrongCharacter" if !result.detail.is_empty() => {
+            // The detail is every character this account holds, comma separated. One name is
+            // the ordinary case; more than one means the account has a slot and has filled it.
+            let names: Vec<&str> = result
+                .detail
+                .split(',')
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .collect();
+            if names.len() > 1 {
+                Some(format!(
+                    "This Steam account already has every character its slots allow: {}. \
+                     The launcher has switched to the first one. Pick the character you meant, \
+                     or ask an admin about another character slot.",
+                    names.join(", ")
+                ))
+            } else {
+                Some(format!(
+                    "This Steam account already plays on the server as \"{}\". \
+                     The launcher has switched to it. Press Play to continue, ask an admin if \
+                     you want it renamed, or ask about a second character slot.",
+                    result.detail
+                ))
+            }
+        }
         "PLZWrongCharacter" => Some(
             "This Steam account already plays on the server under a different username. \
              Ask an admin to tell you the name, or to rename it."
@@ -608,7 +628,7 @@ pub fn explain(result: &JoinResult) -> Option<String> {
                 .into(),
         ),
         "InvalidUsername" => Some(
-            "The server refused that username. Try a different one -- 2 to 20 plain characters, \
+            "The server refused that username. Try a different one -- 2 to 50 plain characters, \
              and a word filter applies."
                 .into(),
         ),
@@ -851,6 +871,39 @@ mod tests {
         assert!(
             !explained.starts_with("The server refused the connection:"),
             "the idle kick must not fall through to the raw echo"
+        );
+    }
+
+    #[test]
+    fn one_bound_character_still_reads_as_a_single_name() {
+        let r = parse_join_result("PLZWrongCharacter
+Dave
+").unwrap();
+        let explained = explain(&r).expect("a refusal always explains itself");
+        assert!(
+            explained.contains("\"Dave\""),
+            "the single case must quote the one name, got: {explained}"
+        );
+        assert!(
+            explained.contains("switched to it"),
+            "the launcher still switches to the only character, got: {explained}"
+        );
+    }
+
+    #[test]
+    fn a_full_set_of_characters_names_all_of_them() {
+        // The server comma-separates every name the account holds once it has a slot.
+        let r = parse_join_result("PLZWrongCharacter
+Dave, Erin
+").unwrap();
+        let explained = explain(&r).expect("a refusal always explains itself");
+        assert!(
+            explained.contains("Dave, Erin"),
+            "both characters must be named, got: {explained}"
+        );
+        assert!(
+            explained.contains("character slot"),
+            "it must point at how to get another, got: {explained}"
         );
     }
 

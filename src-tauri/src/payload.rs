@@ -67,6 +67,15 @@ pub struct Manifest {
     pub news_url: String,
     #[serde(default)]
     pub links: Links,
+
+    /// Optional override for the launcher's Performance mode preset, as raw options.ini
+    /// key/value pairs. Absent or empty means the launcher uses its baked profile, so every
+    /// manifest published before this field existed keeps working untouched.
+    ///
+    /// It lives in the manifest so the preset can be retuned from the origin without
+    /// shipping a launcher build to every player.
+    #[serde(rename = "performanceProfile", default)]
+    pub performance_profile: std::collections::BTreeMap<String, String>,
 }
 
 fn manifest_url() -> String {

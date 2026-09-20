@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 
 pub const MIN_LEN: usize = 2;
-pub const MAX_LEN: usize = 20;
+// 50 needs PLZ's ServerWorldDatabase shadow on the server. Vanilla refuses over 20 at login.
+pub const MAX_LEN: usize = 50;
 
 const FORBIDDEN: &[char] = &[';', '@', '$', ',', '\\', '/', '.', '\'', '?', '"', '#'];
 
@@ -19,7 +20,7 @@ pub fn validate(raw: &str) -> Result<String> {
         return Err(reject("That name is too short. Use at least 2 characters."));
     }
     if name.chars().count() > MAX_LEN {
-        return Err(reject("That name is too long. Use at most 20 characters."));
+        return Err(reject("That name is too long. Use at most 50 characters."));
     }
     if !name.is_ascii() {
         return Err(reject(
@@ -53,8 +54,8 @@ mod tests {
     #[test]
     fn enforces_the_server_length_bounds() {
         assert!(validate("D").is_err());
-        assert!(validate(&"D".repeat(20)).is_ok());
-        assert!(validate(&"D".repeat(21)).is_err());
+        assert!(validate(&"D".repeat(50)).is_ok());
+        assert!(validate(&"D".repeat(51)).is_err());
     }
 
     #[test]

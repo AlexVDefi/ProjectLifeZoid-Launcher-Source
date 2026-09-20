@@ -3435,6 +3435,15 @@ public abstract class IsoGameCharacter
     }
 
     public void setWornItem(ItemBodyLocation location, InventoryItem item, boolean forceDropTooHeavy) {
+        // PLZ: a locked body location refuses the change down in WornItems.setItem, which is where
+        // every route that takes a worn item off meets - but the rest of THIS method would still
+        // run against an item that never moved, and its force-drop branch would take the piece out
+        // of the inventory and leave it on the floor while the character is still wearing it.
+        // Leave before any of that. See zombie.plz.PLZWornLock.
+        if (this.plzRefusesWornChange(location, item)) {
+            return;
+        }
+
         InventoryItem itemCur = this.wornItems.getItem(location);
         if (item != itemCur) {
             IsoCell cell = IsoWorld.instance.currentCell;
@@ -3500,6 +3509,30 @@ public abstract class IsoGameCharacter
     @Override
     public void removeWornItem(InventoryItem item, boolean forceDropTooHeavy) {
         this.setWornItem(this.wornItems.getLocation(item), null, forceDropTooHeavy);
+    }
+
+    /**
+     * PLZ. Whether a locked location is being emptied or overwritten. Mirrors the guard in
+     * {@code WornItems.setItem}; this one exists so the caller can leave before the rest of
+     * {@link #setWornItem} runs against an item that is not going to move.
+     */
+    private boolean plzRefusesWornChange(ItemBodyLocation location, InventoryItem item) {
+        // ONLY AN EMPTYING. Putting something ELSE on at a locked location is allowed: WornItems
+        // treats a locked location as multi-item and stacks it, so several head pieces are worn and
+        // drawn at once. Refusing an add here would undo that before it got there.
+        if (item != null) {
+            return false;
+        }
+        if (!zombie.plz.PLZWornLock.isActive() || location == null || this.wornItems == null) {
+            return false;
+        }
+        if (!(this instanceof IsoPlayer player)) {
+            return false;
+        }
+        if (this.wornItems.getItem(location) == null) {
+            return false;
+        }
+        return zombie.plz.PLZWornLock.isLocked(player.getUsername(), location.getTranslationName());
     }
 
     @Override
@@ -8350,11 +8383,17 @@ public abstract class IsoGameCharacter
     private boolean helmetFallFromWornItems(boolean hitHead) {
         if (this.getWornItems() != null && !this.getWornItems().isEmpty()) {
             boolean removed = false;
+            IsoPlayer plzPlayer = this instanceof IsoPlayer ? (IsoPlayer)this : null;
 
             for (int i = 0; i < this.getWornItems().size(); i++) {
                 WornItem wornItem = this.getWornItems().get(i);
                 InventoryItem item = wornItem.getItem();
                 if (item instanceof Clothing clothing) {
+                    if (plzPlayer != null && zombie.plz.PLZWornLock.isActive()
+                        && zombie.plz.PLZWornLock.isLocked(plzPlayer.getUsername(), wornItem.getLocation().getTranslationName())) {
+                        continue;
+                    }
+
                     int chanceToFall = clothing.getChanceToFall();
                     if (hitHead) {
                         chanceToFall += 40;
@@ -10162,61 +10201,25 @@ public abstract class IsoGameCharacter
                 )
             );
         float hungerMult = this.getAppetiteMultiplier();
-        if ((!(this instanceof IsoPlayer) || !((IsoPlayer)this).IsRunning() || !this.isPlayerMoving()) && !this.isCurrentState(SwipeStatePlayer.instance())) {
-            if (this.moodles.getMoodleLevel(MoodleType.FOOD_EATEN) == 0) {
-                this.stats
-                    .add(
-                        CharacterStat.HUNGER,
-                        (float)(
-                            ZomboidGlobals.hungerIncrease
-                                * SandboxOptions.instance.getStatsDecreaseMultiplier()
-                                * hungerMult
-                                * GameTime.instance.getMultiplier()
-                                * GameTime.instance.getDeltaMinutesPerDay()
-                                * this.getHungerMultiplier()
-                        )
-                    );
-            } else {
-                this.stats
-                    .add(
-                        CharacterStat.HUNGER,
-                        (float)(
-                            ZomboidGlobals.hungerIncreaseWhenWellFed
-                                * SandboxOptions.instance.getStatsDecreaseMultiplier()
-                                * GameTime.instance.getMultiplier()
-                                * GameTime.instance.getDeltaMinutesPerDay()
-                                * this.getHungerMultiplier()
-                        )
-                    );
-            }
-        } else if (this.moodles.getMoodleLevel(MoodleType.FOOD_EATEN) == 0) {
-            this.stats
-                .add(
-                    CharacterStat.HUNGER,
-                    (float)(
-                        ZomboidGlobals.hungerIncreaseWhenExercise
-                            / 3.0
-                            * SandboxOptions.instance.getStatsDecreaseMultiplier()
-                            * hungerMult
-                            * GameTime.instance.getMultiplier()
-                            * GameTime.instance.getDeltaMinutesPerDay()
-                            * this.getHungerMultiplier()
-                    )
-                );
-        } else {
-            this.stats
-                .add(
-                    CharacterStat.HUNGER,
-                    (float)(
-                        ZomboidGlobals.hungerIncreaseWhenExercise
-                            * SandboxOptions.instance.getStatsDecreaseMultiplier()
-                            * hungerMult
-                            * GameTime.instance.getMultiplier()
-                            * GameTime.instance.getDeltaMinutesPerDay()
-                            * this.getHungerMultiplier()
-                    )
-                );
-        }
+        // PLZ: ONE rate for every state, replacing vanilla's four-way branch on jogging and Well
+        // Fed. Those four disagreed with each other: standing still after a meal was free, the
+        // jogging branch divided its own constant by three so a jog cost LESS than standing still,
+        // and the well-fed branch dropped the appetite multiplier entirely. Diet pacing has to be
+        // predictable per in-game day, so the rate cannot depend on what a character is doing.
+        // The value itself still comes from Lua (ZomboidGlobals), so it stays tunable from the
+        // sandbox without a payload rebuild.
+        this.stats
+            .add(
+                CharacterStat.HUNGER,
+                (float)(
+                    ZomboidGlobals.hungerIncrease
+                        * SandboxOptions.instance.getStatsDecreaseMultiplier()
+                        * hungerMult
+                        * GameTime.instance.getMultiplier()
+                        * GameTime.instance.getDeltaMinutesPerDay()
+                        * this.getHungerMultiplier()
+                )
+            );
 
         this.updateIdleSquareTime();
         if (this.isInCombat()) {
@@ -10275,14 +10278,20 @@ public abstract class IsoGameCharacter
         }
     }
 
+    // PLZ: the two appetite traits are flattened from vanilla's 1.5 / 0.75. At the retuned hunger
+    // rate the vanilla swing was punishing at one end and let the other opt out of the three-meal
+    // rhythm the diet system is built around; both traits still mean what a player bought them for.
+    public static final float PLZ_HEARTY_APPETITE = 1.25F;
+    public static final float PLZ_LIGHT_EATER = 0.85F;
+
     protected float getAppetiteMultiplier() {
         float hungerMult = 1.0F - this.stats.get(CharacterStat.HUNGER);
         if (this.characterTraits.get(CharacterTrait.HEARTY_APPETITE)) {
-            hungerMult *= 1.5F;
+            hungerMult *= PLZ_HEARTY_APPETITE;
         }
 
         if (this.characterTraits.get(CharacterTrait.LIGHT_EATER)) {
-            hungerMult *= 0.75F;
+            hungerMult *= PLZ_LIGHT_EATER;
         }
 
         return hungerMult;
@@ -12112,18 +12121,31 @@ public abstract class IsoGameCharacter
 
     @Override
     public void setInvisible(boolean b) {
+        // PLZ: becoming visible again has to replay this character's action state
+        // to the people near them, or a state entered while invisible - sitting
+        // down, most visibly - never reaches their screens at all. The edge is
+        // read here because this is the only place that knows the value before
+        // and after. See zombie.plz.PLZVisibilityResync.
+        boolean plzWasInvisible = this.isInvisible();
         if (!Role.hasCapability(this, Capability.ToggleInvisibleHimself)) {
             this.getCheats().set(CheatType.INVISIBLE, false);
         } else {
             this.getCheats().set(CheatType.INVISIBLE, b);
         }
+
+        zombie.plz.PLZVisibilityResync.onVisibilityChanged(this, plzWasInvisible, this.isInvisible());
     }
 
     public void setInvisible(boolean b, boolean isForced) {
         if (!isForced) {
             this.setInvisible(b);
         } else {
+            // PLZ: the forced branch writes the cheat directly rather than going
+            // through setInvisible, so it needs its own edge check - without this
+            // an admin tool that forces visibility skips the resync entirely.
+            boolean plzWasInvisible = this.isInvisible();
             this.getCheats().set(CheatType.INVISIBLE, b);
+            zombie.plz.PLZVisibilityResync.onVisibilityChanged(this, plzWasInvisible, this.isInvisible());
         }
     }
 
@@ -17545,6 +17567,15 @@ public abstract class IsoGameCharacter
                         }
                     }
 
+                    // PLZ: eating well makes training work, and eating badly wastes it. Fitness and
+                    // Strength only - the two skills that are about the body. Reads a mirror of the
+                    // diet score off player modData; absent reads as neutral and multiplies by
+                    // exactly 1.0, so a server without the diet system behaves as vanilla.
+                    if ((perk.getType() == PerkFactory.Perks.Fitness || perk.getType() == PerkFactory.Perks.Strength)
+                            && this.chr instanceof IsoPlayer) {
+                        amount *= zombie.plz.PLZDietScore.multiplierFor(this.chr);
+                    }
+
                     float oldXP = this.getXP(type);
                     float maxXP = perk.getTotalXpForLevel(10);
                     if (!(amount >= 0.0F) || !(oldXP >= maxXP)) {
@@ -17860,6 +17891,10 @@ public abstract class IsoGameCharacter
 
     public static void plzSetAllowDeath(String username, boolean value) {
         zombie.plz.PLZDowned.setAllowDeath(username, value);
+    }
+
+    public static void plzMarkLive(IsoGameCharacter character) {
+        zombie.plz.PLZDowned.markLive(character);
     }
 
     public static String plzListDowned() {

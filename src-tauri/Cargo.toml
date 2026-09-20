@@ -1,6 +1,6 @@
 [package]
 name = "plz-launcher"
-version = "0.5.5"
+version = "0.6.1"
 description = "ProjectLifeZoid Launcher"
 authors = ["AlexVDefi"]
 edition = "2021"
@@ -46,6 +46,7 @@ winreg = "0.52"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
 ] }
 
 [profile.release]

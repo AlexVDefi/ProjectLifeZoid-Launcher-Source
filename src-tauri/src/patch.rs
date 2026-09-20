@@ -1,7 +1,9 @@
 use crate::config;
 use crate::error::{Error, Result};
 use crate::install;
+use crate::jvmpath;
 use crate::launch;
+use crate::session_log;
 use crate::state::{self, ActivePatch, State};
 use crate::workshop_override;
 use serde_json::Value;
@@ -15,6 +17,13 @@ const PROP_WORKSHOP_SESSION: &str = "-Dplz.workshopSession=";
 
 /// Steam's shipped default across the client, dedicated server and Linux copies alike.
 pub const DEFAULT_HEAP_MB: u32 = 3072;
+
+/// True when the install a patch was applied to is not there to restore into. Both halves
+/// matter: a missing file inside a folder that exists is a file to put back, while a missing
+/// folder is an install that moved, was uninstalled, or lives on a drive that is not mounted.
+fn install_is_unreachable(json_path: &Path) -> bool {
+    !json_path.is_file() && !json_path.parent().is_some_and(Path::is_dir)
+}
 
 pub fn repair(st: &mut State) -> Result<bool> {
     if launch::is_game_running()
@@ -38,7 +47,14 @@ pub fn repair(st: &mut State) -> Result<bool> {
         active.backup_path.as_deref(),
         active.original_sha256.as_deref(),
     ) {
-        if backup_path.is_file() {
+        if install_is_unreachable(json_path) {
+            // The install this patch was applied to is gone -- uninstalled, moved, or on a
+            // drive that is not mounted. There is nothing left to put back, and refusing here
+            // every time would keep the record forever: the memory setting, the install folder
+            // and every launcher update are gated on it, with nothing in the UI the player
+            // could use to clear it. apply() strips any leftovers it finds, so a drive that
+            // comes back later still ends up with a clean file.
+        } else if backup_path.is_file() {
             fs::copy(backup_path, json_path)?;
             let actual = install::sha256_file(json_path)?;
             if actual != original {
@@ -187,6 +203,17 @@ pub fn apply(st: &mut State, install_dir: &Path, build: u64) -> Result<()> {
 
     #[cfg(not(target_os = "macos"))]
     {
+    // Before anything is banked or activated: a path the JVM cannot read back is the end of
+    // this launch, and unwinding a half-applied patch is worse than never starting one.
+    let patch_str = jvmpath::for_jvm(&config::patch_dir(build))?;
+    let stamp = jvmpath::for_jvm(&config::stamp_path())?;
+    if !config::app_dir().to_string_lossy().is_ascii() {
+        session_log::log(
+            "patch",
+            &format!("the launcher's folder has a non-ASCII name; handing the game {patch_str}"),
+        );
+    }
+
     let json_path = install::json_path(install_dir);
     let original_bytes = fs::read(&json_path)?;
     if original_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -196,8 +223,19 @@ pub fn apply(st: &mut State, install_dir: &Path, build: u64) -> Result<()> {
                 .into(),
         ));
     }
-    let original_sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&original_bytes));
     let mut json: Value = serde_json::from_slice(&original_bytes)?;
+
+    // A json that still carries our entries is not an original. That happens whenever a
+    // session's restore could not run, and banking it as-is would make the leftovers
+    // permanent -- every restore after it would put them back. Bank the cleaned form.
+    let untouched = json.clone();
+    strip_our_entries(&mut json, "ProjectLifeZoidLauncher");
+    let original_bytes = if json == untouched {
+        original_bytes
+    } else {
+        (serde_json::to_string_pretty(&json)? + "\n").into_bytes()
+    };
+    let original_sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&original_bytes));
 
     let backup_path = config::backup_dir().join("ProjectZomboid64.json");
     fs::create_dir_all(config::backup_dir())?;
@@ -226,17 +264,12 @@ pub fn apply(st: &mut State, install_dir: &Path, build: u64) -> Result<()> {
         }
     };
 
-    let patch_dir = config::patch_dir(build);
-    let patch_str = patch_dir.to_string_lossy().replace('\\', "/");
-    strip_our_entries(&mut json, "ProjectLifeZoidLauncher");
-
     let cp = json
         .get_mut("classpath")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| Error::MalformedJson("no classpath array".into()))?;
     cp.insert(0, Value::String(patch_str));
 
-    let stamp = config::stamp_path().to_string_lossy().replace('\\', "/");
     let vm = json
         .get_mut("vmArgs")
         .and_then(Value::as_array_mut)
@@ -244,7 +277,7 @@ pub fn apply(st: &mut State, install_dir: &Path, build: u64) -> Result<()> {
     vm.push(Value::String(format!("{PROP_STAMP}{stamp}")));
     vm.push(Value::String(format!("{PROP_BUILD}{build}")));
     if let Some(receipt) = workshop_receipt {
-        let state_path = receipt.path.to_string_lossy().replace('\\', "/");
+        let state_path = jvmpath::for_jvm(&receipt.path)?;
         let session = receipt
             .session
             .ok_or_else(|| Error::Other("active Workshop receipt has no session".into()))?;
@@ -329,6 +362,49 @@ pub fn read_stamp() -> Option<Stamp> {
         origin: v.get("origin")?.as_str().unwrap_or("").to_string(),
         classpath: v.get("classpath")?.as_str().unwrap_or("").to_string(),
     })
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+
+    #[test]
+    fn an_install_that_still_has_its_folder_is_reachable() {
+        let root = std::env::temp_dir().join(format!("plz-reach-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let json = root.join("ProjectZomboid64.json");
+        assert!(install_is_unreachable(&root.join("gone").join("ProjectZomboid64.json")));
+        // The folder is there, so the file is one to put back rather than an install that left.
+        assert!(!install_is_unreachable(&json));
+
+        fs::write(&json, "{}").unwrap();
+        assert!(!install_is_unreachable(&json));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stripping_leaves_a_json_that_apply_can_bank_as_an_original() {
+        let mut json: Value = serde_json::from_str(
+            r#"{
+                "classpath": ["C:/x/ProjectLifeZoidLauncher/patch/36", "zombie.jar"],
+                "vmArgs": ["-Xmx8192m", "-Dplz.build=36", "-Dplz.stampFile=C:/x/stamp.json"]
+            }"#,
+        )
+        .unwrap();
+        let untouched = json.clone();
+        strip_our_entries(&mut json, "ProjectLifeZoidLauncher");
+
+        assert_ne!(json, untouched, "a patched json must not be banked as-is");
+        assert_eq!(json["classpath"].as_array().unwrap().len(), 1);
+        assert_eq!(json["vmArgs"].as_array().unwrap(), &vec![Value::from("-Xmx8192m")]);
+
+        let clean = json.clone();
+        strip_our_entries(&mut json, "ProjectLifeZoidLauncher");
+        assert_eq!(json, clean, "a clean json is banked byte for byte");
+    }
 }
 
 #[cfg(test)]

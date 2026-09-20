@@ -149,6 +149,7 @@ import zombie.iso.sprite.shapers.WallShaperW;
 import zombie.iso.sprite.shapers.WallShaperWhole;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
+import zombie.plz.PLZSyncWatch;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
 import zombie.scripting.ScriptManager;
@@ -900,22 +901,63 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
                 this.syncIsoObjectSend(b);
                 PacketTypes.PacketType.SyncIsoObject.send(GameClient.connection);
             } else if (GameServer.server && !bRemote) {
+                int plzSent = 0;
+                int plzSkipped = 0;
+
                 for (UdpConnection connection : GameServer.udpEngine.connections) {
+                    if (PLZSyncWatch.enabled && !connection.isRelevantTo(this.square.x, this.square.y)) {
+                        plzSkipped++;
+                    }
+
                     ByteBufferWriter b = connection.startPacket();
                     PacketTypes.PacketType.SyncIsoObject.doPacket(b);
                     this.syncIsoObjectSend(b);
                     PacketTypes.PacketType.SyncIsoObject.send(connection);
+                    plzSent++;
+                }
+
+                if (PLZSyncWatch.enabled) {
+                    PLZSyncWatch.record(
+                        this.getClass().getSimpleName() + " (server, unfiltered)",
+                        this.square.getX(),
+                        this.square.getY(),
+                        this.square.getZ(),
+                        plzSent,
+                        plzSkipped,
+                        null
+                    );
                 }
             } else if (bRemote) {
                 this.syncIsoObjectReceive(bb);
                 if (GameServer.server) {
+                    int plzSent = 0;
+                    int plzSkipped = 0;
+
                     for (UdpConnection connection : GameServer.udpEngine.connections) {
                         if (source != null && connection.getConnectedGUID() != source.getConnectedGUID()) {
+                            if (PLZSyncWatch.relevantOnly && !connection.isRelevantTo(this.square.x, this.square.y)) {
+                                plzSkipped++;
+                                continue;
+                            }
+
                             ByteBufferWriter b = connection.startPacket();
                             PacketTypes.PacketType.SyncIsoObject.doPacket(b);
                             this.syncIsoObjectSend(b);
                             PacketTypes.PacketType.SyncIsoObject.send(connection);
+                            plzSent++;
                         }
+                    }
+
+                    if (PLZSyncWatch.enabled) {
+                        PLZSyncWatch.record(
+                            this.getClass().getSimpleName(),
+                            this.square.getX(),
+                            this.square.getY(),
+                            this.square.getZ(),
+                            plzSent,
+                            plzSkipped,
+                            source
+                        );
                     }
                 }
             }
@@ -4815,6 +4857,26 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
     }
 
     public void transmitUpdatedSpriteToClients(UdpConnection connection) {
+        if (GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.SPRITE_TRANSMIT_GUARD)
+            && !plzSpriteIsResolvableByClients()) {
+            // PLZ: do not broadcast a sprite the receiver cannot resolve.
+            //
+            // This sends (sprite.id, spriteName) and the client's receiveUpdateItemSprite assigns
+            // o.sprite = getSprite(id) unconditionally, falling back to the name only when it is
+            // non-empty. When the server object's sprite is runtime-created - unregistered id,
+            // null name, which is every IsoWorldInventoryObject - the receiving object's sprite
+            // becomes permanently null, and the unguarded deref in IsoWorldInventoryObject.render
+            // then throws EVERY FRAME, killing that client's whole FBORenderCell tile pass for the
+            // rest of the session. Only a reconnect rebuilds the object. Reported live as "game
+            // break when chopping logs".
+            //
+            // Suppressing at the sender protects vanilla clients too, and incidentally removes a
+            // server-side NPE: getSprite().id below is dereferenced AFTER startPacket(), so a null
+            // sprite leaves a half-written packet on the wire.
+            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.SPRITE_TRANSMIT_GUARD);
+            return;
+        }
+
         if (GameServer.server) {
             for (int n = 0; n < GameServer.udpEngine.connections.size(); n++) {
                 UdpConnection c = GameServer.udpEngine.connections.get(n);
@@ -4849,6 +4911,25 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
 
     public void transmitUpdatedSpriteToClients() {
         this.transmitUpdatedSpriteToClients(null);
+    }
+
+    /**
+     * PLZ: can a receiving client turn this object's sprite back into a real sprite?
+     *
+     * Either the id is registered with IsoSpriteManager, or the name is usable as the fallback.
+     * Neither means the client would assign null and then throw on every render.
+     */
+    private boolean plzSpriteIsResolvableByClients() {
+        IsoSprite sprite = this.sprite;
+        if (sprite == null) {
+            return false;
+        }
+
+        if (IsoSpriteManager.instance != null && IsoSpriteManager.instance.getSprite(sprite.id) != null) {
+            return true;
+        }
+
+        return this.spriteName != null && !this.spriteName.isEmpty();
     }
 
     public void transmitUpdatedSprite() {
