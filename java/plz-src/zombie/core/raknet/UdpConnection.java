@@ -210,7 +210,7 @@ public class UdpConnection extends PacketsCache implements IConnection {
 
     @Override
     public boolean isRelevantTo(float x, float y) {
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE) && !this.isFullyConnected()) {
+        if (!this.isFullyConnected() && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE)) {
             // PLZ: a connection's releventPos[0] starts as a fresh Vector3 with relevantRange 0,
             // so until the client's first PlayerPacket - typically 30+ seconds into the world
             // download - its stored "player position" is exactly (0,0,0). ServerMap's relevance
@@ -248,7 +248,7 @@ public class UdpConnection extends PacketsCache implements IConnection {
     }
 
     public float getRelevantAndDistance(float x, float y, float z) {
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE) && !this.isFullyConnected()) {
+        if (!this.isFullyConnected() && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE)) {
             // PLZ: a connection's releventPos[0] starts as a fresh Vector3 with relevantRange 0,
             // so until the client's first PlayerPacket - typically 30+ seconds into the world
             // download - its stored "player position" is exactly (0,0,0). ServerMap's relevance
@@ -275,7 +275,7 @@ public class UdpConnection extends PacketsCache implements IConnection {
     }
 
     public boolean RelevantToPlayerIndex(int n, float x, float y) {
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE) && !this.isFullyConnected()) {
+        if (!this.isFullyConnected() && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE)) {
             // PLZ: a connection's releventPos[0] starts as a fresh Vector3 with relevantRange 0,
             // so until the client's first PlayerPacket - typically 30+ seconds into the world
             // download - its stored "player position" is exactly (0,0,0). ServerMap's relevance
@@ -307,7 +307,7 @@ public class UdpConnection extends PacketsCache implements IConnection {
     }
 
     public boolean RelevantTo(float x, float y, float radius) {
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE) && !this.isFullyConnected()) {
+        if (!this.isFullyConnected() && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.HANDSHAKE_RELEVANCE)) {
             // PLZ: a connection's releventPos[0] starts as a fresh Vector3 with relevantRange 0,
             // so until the client's first PlayerPacket - typically 30+ seconds into the world
             // download - its stored "player position" is exactly (0,0,0). ServerMap's relevance

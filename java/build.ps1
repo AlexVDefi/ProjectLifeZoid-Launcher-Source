@@ -209,6 +209,14 @@ Fix it one of two ways, both deliberate:
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 $javacVersion = (& $javac -version 2>&1 | Out-String).Trim()
+$jdk = ""
+$javaExe = Join-Path (Split-Path $javac) $(if ($env:OS -eq 'Windows_NT') { "java.exe" } else { "java" })
+if (Test-Path -LiteralPath $javaExe) {
+    $props = (& $javaExe -XshowSettings:properties -version 2>&1 | Out-String)
+    $vendor = ([regex]::Match($props, '(?m)^\s*java\.vendor = (.+)$')).Groups[1].Value.Trim()
+    $runtime = ([regex]::Match($props, '(?m)^\s*java\.runtime\.version = (.+)$')).Groups[1].Value.Trim()
+    $jdk = "$vendor $runtime".Trim()
+}
 $javacOutput = & $javac --release $release -nowarn -cp $pzJar -d $outDir @sources 2>&1
 $javacExit = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
@@ -269,7 +277,8 @@ $meta = [ordered]@{
     builtAtUtc         = (Get-Date).ToUniversalTime().ToString("o")
     classReleaseTarget = $release
     javacVersion       = $javacVersion
-    javacFlags         = "--release $release -nowarn"
+    jdk                = $jdk
+    javacFlags        = "--release $release -nowarn"
     sourceCommit       = $sourceCommit
     sourceDirty        = $sourceDirty
     builtAgainst       = [ordered]@{

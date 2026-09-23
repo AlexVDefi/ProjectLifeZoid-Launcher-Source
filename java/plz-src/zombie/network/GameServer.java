@@ -2804,6 +2804,12 @@ public class GameServer {
     }
 
     public static void setCustomVariables(IsoPlayer p, IConnection c) {
+        // PLZ: the player-update relay calls this per observer per update, resending every listed
+        // variable as a RELIABLE packet. A change already reaches everyone through VariableSync.
+        if (!zombie.plz.PLZVariableSync.shouldSend(c.getConnectedGUID(), p.getOnlineID())) {
+            return;
+        }
+
         for (String key : VariableSyncPacket.syncedVariables) {
             if (p.getVariable(key) != null) {
                 INetworkPacket.send(c, PacketType.VariableSync, p, key, p.getVariableString(key));
@@ -2815,6 +2821,7 @@ public class GameServer {
         if (p != null) {
             boolean reply = PlayerToAddressMap.get(p) != null && c.getConnectedGUID() == PlayerToAddressMap.get(p) && !isDelayedDisconnect(p);
             INetworkPacket.send(c, PacketType.ConnectedPlayer, p, reply);
+            zombie.plz.PLZVariableSync.force(c.getConnectedGUID(), p.getOnlineID());
             setCustomVariables(p, c);
             if (!reply) {
                 INetworkPacket.send(c, PacketType.Equip, p);
@@ -3136,6 +3143,7 @@ public class GameServer {
             // Drop the voice-routing speed sample with the connection, so a reconnecting player is
             // not credited with the apparent speed of the gap between sessions.
             zombie.plz.PLZVoiceRouting.forget(connection.getConnectedGUID());
+            zombie.plz.PLZVariableSync.forget(connection.getConnectedGUID());
             ConnectionManager.log("disconnect", description, connection);
             EventManager.instance().report("[" + connection.getUserName() + "] disconnected from server");
             WorldMapVisitedServer.getInstance().unloadUser(connection.getUserName());

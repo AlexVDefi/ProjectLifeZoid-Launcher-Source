@@ -180,8 +180,12 @@ import zombie.plz.PLZObjectDamage;
 import zombie.plz.PLZMapPin;
 import zombie.plz.PLZFlightRecorder;
 import zombie.plz.PLZLuaProfile;
+import zombie.plz.PLZEventSkip;
 import zombie.plz.PLZItemWeightCache;
 import zombie.plz.PLZSyncWatch;
+import zombie.plz.PLZObjectUpdate;
+import zombie.plz.PLZRemoteHeal;
+import zombie.plz.PLZVariableSync;
 import zombie.util.CappedConcurrentQueue;
 import zombie.util.StringUtils;
 import zombie.util.Type;
@@ -8306,12 +8310,76 @@ public final class IsoGridSquare {
         return PLZItemWeightCache.weightOf(fullType);
     }
 
+    public static void plzEventSkipAdd(String event, String filePart) {
+        PLZEventSkip.skip(event, filePart);
+    }
+
+    public static void plzEventSkipClear() {
+        PLZEventSkip.clear();
+    }
+
+    public static void plzEventSkipRefresh() {
+        PLZEventSkip.refresh();
+    }
+
+    public static String plzEventSkipStatus() {
+        return PLZEventSkip.status();
+    }
+
     public static boolean plzSyncRelayFilter() {
         return PLZSyncWatch.isRelevantOnly();
     }
 
     public static void plzSyncSetRelayFilter(boolean on) {
         PLZSyncWatch.setRelevantOnly(on);
+    }
+
+    public static String plzObjectUpdateStatus() {
+        return PLZObjectUpdate.status();
+    }
+
+    public static boolean plzObjectUpdateSkipIdle() {
+        return PLZObjectUpdate.isSkipIdle();
+    }
+
+    public static void plzObjectUpdateSetSkipIdle(boolean on) {
+        PLZObjectUpdate.setSkipIdle(on);
+    }
+
+    public static void plzObjectUpdateReset() {
+        PLZObjectUpdate.reset();
+    }
+
+    public static String plzVariableSyncStatus() {
+        return PLZVariableSync.status();
+    }
+
+    public static boolean plzVariableSyncThrottle() {
+        return PLZVariableSync.isThrottle();
+    }
+
+    public static void plzVariableSyncSetThrottle(boolean on) {
+        PLZVariableSync.setThrottle(on);
+    }
+
+    public static void plzVariableSyncReset() {
+        PLZVariableSync.reset();
+    }
+
+    public static String plzRemoteHealStatus() {
+        return PLZRemoteHeal.status();
+    }
+
+    public static boolean plzRemoteHealEnabled() {
+        return PLZRemoteHeal.isEnabled();
+    }
+
+    public static void plzRemoteHealSetEnabled(boolean on) {
+        PLZRemoteHeal.setEnabled(on);
+    }
+
+    public static void plzRemoteHealReset() {
+        PLZRemoteHeal.reset();
     }
 
     public void RecalcPropertiesIfNeeded() {

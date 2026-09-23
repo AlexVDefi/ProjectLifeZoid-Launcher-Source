@@ -1,6 +1,7 @@
 package zombie.plz;
 
 import se.krka.kahlua.vm.KahluaTable;
+import se.krka.kahlua.vm.KahluaTableIterator;
 import zombie.characters.animals.IsoAnimal;
 import zombie.inventory.InventoryItem;
 
@@ -163,4 +164,83 @@ public final class PLZAnimalOwner {
         } catch (Throwable ignored) {
         }
     }
+
+    /** Every key this mod writes onto an animal shares this prefix, which is what makes
+     * {@link #carryOver} self-maintaining: a PLZ key added later needs no edit here. */
+    public static final String MD_PREFIX = "PLZ_";
+
+    /** Whether the table holds anything of ours, asked before a target table is ever created. */
+    public static boolean hasPlzData(KahluaTable table) {
+        if (table == null) {
+            return false;
+        }
+
+        KahluaTableIterator it = table.iterator();
+        while (it.advance()) {
+            if (it.getKey() instanceof String key && key.startsWith(MD_PREFIX)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Copy every PLZ key across, overwriting. Unlike {@link #copyOwner} this is not an
+     * inheritance: the target IS the source, rebuilt, so refusing an occupied field would
+     * be wrong and there is no birth stamp to add.
+     *
+     * @return how many keys were copied
+     */
+    public static int copyPlzKeys(KahluaTable from, KahluaTable to) {
+        if (from == null || to == null || from == to) {
+            return 0;
+        }
+
+        int copied = 0;
+        KahluaTableIterator it = from.iterator();
+        while (it.advance()) {
+            if (it.getKey() instanceof String key && key.startsWith(MD_PREFIX)) {
+                // The value is shared, not cloned - PLZ_sharedWith is a table. Sound only
+                // because every caller deletes the source animal immediately afterwards.
+                to.rawset(key, it.getValue());
+                copied++;
+            }
+        }
+        return copied;
+    }
+
+    /**
+     * A growth stage keeps the farm it belonged to.
+     *
+     * <p><b>Why this exists.</b> {@code AnimalData.grow} does not age an animal in place - it
+     * builds a WHOLE NEW {@code IsoAnimal} of the next stage, copies a hand-picked list of
+     * fields onto it (age, genome, name, stress, acceptance, animalId) and deletes the old
+     * one. ModData is not on that list, so every calf that became a cow, every chick that
+     * became a hen, silently stopped belonging to anybody. Nothing logs it and the animal
+     * looks untouched, so a farm only finds out when it tries to act on its own stock.
+     *
+     * <p>Like {@link #inherit} this is exact by construction: the old animal is the argument,
+     * so there is no id to resolve and nothing to resolve wrongly.
+     *
+     * <p>hasPlzData on the SOURCE first, for the reason spelled out on {@link #inherit} -
+     * {@code getModData()} CREATES the table, and most animals that grow up on a live server
+     * are wild.
+     */
+    public static void carryOver(IsoAnimal from, IsoAnimal to) {
+        try {
+            if (from == null || to == null || !from.hasModData()) {
+                return;
+            }
+
+            KahluaTable source = from.getModData();
+            if (!hasPlzData(source)) {
+                return;
+            }
+            copyPlzKeys(source, to.getModData());
+        } catch (Throwable ignored) {
+            // Losing the tag is what would have happened anyway. It must never take the
+            // growth down with it and strand the animal mid-stage.
+        }
+    }
+
 }

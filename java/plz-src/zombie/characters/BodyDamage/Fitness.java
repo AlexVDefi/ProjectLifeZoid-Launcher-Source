@@ -138,7 +138,7 @@ public final class Fitness {
 
         // Names the exercise the map does not hold. Without this the guard above is silent and
         // the actual cause - which type, from where - stays unknown.
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE) && this.currentExe == null) {
+        if (this.currentExe == null && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE)) {
             zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE);
             zombie.debug.DebugLog.log("PLZFixes.fitnessCurrentExercise: no exercise named '" + type
                 + "' (" + this.exercises.size() + " known), currentExe left null");
@@ -156,7 +156,7 @@ public final class Fitness {
         // On a dedicated server the throw happens inside StatePacket.processServer, which is
         // called from mainLoopDealWithNetData: the exception aborts the packet, so the sending
         // player's exercise is silently discarded. Observed 2,209 times in 4.72 h on live.
-        if (zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE) && this.currentExe == null) {
+        if (this.currentExe == null && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE)) {
             zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.FITNESS_CURRENT_EXERCISE);
             return;
         }

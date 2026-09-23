@@ -33,6 +33,51 @@ if (builtAgainst.client.length === 0 || builtAgainst.server.length === 0) {
     process.exit(1);
 }
 
+const allowUnverified = process.argv.includes("--allow-unverified");
+let provenance = null;
+let attestedSums = null;
+try {
+    provenance = JSON.parse(readFileSync(join(distDir, "provenance.json"), "utf8").replace(/^﻿/, ""));
+    attestedSums = new Map(
+        readFileSync(join(distDir, "payload-sha256sums.txt"), "utf8")
+            .split(/\r?\n/)
+            .filter((l) => l.trim())
+            .map((l) => {
+                const m = l.match(/^([0-9a-f]{64}) [ *]?(.+)$/);
+                if (!m) throw new Error(`bad sums line: ${l}`);
+                return [m[2], m[1]];
+            }),
+    );
+} catch {
+    provenance = null;
+}
+if (!provenance && !allowUnverified) {
+    console.error("java/dist holds no CI provenance, so nobody could check these classes against public source.");
+    console.error("Fetch the attested build with: .\\tools\\ci-payload.ps1 -Build <n>");
+    console.error("Pass --allow-unverified only for a local test build that will never be published.");
+    process.exit(1);
+}
+if (provenance && (Number(builtAgainst.sourceDirty ?? 0) !== 0 || builtAgainst.sourceCommit !== provenance.commit)) {
+    console.error("java/dist/built-against.json does not describe the attested commit; re-run tools/ci-payload.ps1");
+    process.exit(1);
+}
+if (provenance) {
+    const unattested = [...builtAgainst.client, ...builtAgainst.server].filter((rel) => {
+        let bytes;
+        try {
+            bytes = readFileSync(join(distDir, rel.split("/").join(sep)));
+        } catch {
+            return true;
+        }
+        return attestedSums.get(rel) !== createHash("sha256").update(bytes).digest("hex");
+    });
+    if (unattested.length) {
+        console.error(`${unattested.length} class file(s) in java/dist are not the ones CI attested, e.g. ${unattested[0]}`);
+        console.error("Something rebuilt java/dist after the fetch. Re-run tools/ci-payload.ps1.");
+        process.exit(1);
+    }
+}
+
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, "files"), { recursive: true });
 
@@ -167,10 +212,21 @@ const manifest = {
     builtAgainstJarSha256: builtAgainst.builtAgainst.jarSha256,
     classReleaseTarget: builtAgainst.classReleaseTarget,
     javacVersion: String(builtAgainst.javacVersion ?? ""),
+    jdk: String(builtAgainst.jdk ?? ""),
     javacFlags: String(builtAgainst.javacFlags ?? ""),
-    sourceRepo: String(contentCfg.sourceRepo ?? ""),
+    sourceRepo: provenance ? `https://github.com/${provenance.repo}` : String(contentCfg.sourceRepo ?? ""),
     sourceCommit: String(builtAgainst.sourceCommit ?? ""),
     sourceDirty: Number(builtAgainst.sourceDirty ?? 0),
+    provenance: provenance
+        ? {
+              repo: provenance.repo,
+              commit: provenance.commit,
+              workflow: provenance.workflow,
+              run: provenance.run,
+              release: provenance.release,
+              sums: provenance.sums,
+          }
+        : null,
     server,
     requiredServerBuild: build,
     files,
@@ -206,6 +262,7 @@ console.log(`build            ${build}`);
 console.log(`client files     ${files.length}`);
 console.log(`server files     ${serverFiles.length}`);
 console.log(`builtAgainstJar  ${manifest.builtAgainstJarSha256}`);
+console.log(`provenance       ${provenance ? `${provenance.repo}@${provenance.commit.slice(0, 12)} ${provenance.release}` : "NONE (unverified local build)"}`);
 console.log(`mods             ${mods.length}${manifest.collectionId ? "" : "  (no collectionId set)"}`);
 const stamped = collectionMods.filter((m) => m.timeUpdated).length;
 console.log(`collection mods  ${collectionMods.length}${collectionMods.length ? "" : "  (collection cannot be verified)"}`);

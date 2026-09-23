@@ -39,13 +39,20 @@ macOS has no `ProjectZomboid64.json`, so there the payload is copied into the ap
 
 ## Verify it yourself
 
+Nothing players run is compiled on a maintainer's machine. The Java payload and the launcher
+installers are both built by GitHub Actions in this repository, from a public commit, and each
+build carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
+signed by GitHub naming the commit and workflow that produced it.
+
 **1. Check the installer you downloaded**
 
 ```powershell
-Get-FileHash ProjectLifeZoid-Launcher-<version>-setup.exe -Algorithm SHA256
+gh attestation verify ProjectLifeZoid-Launcher-<version>-setup.exe --repo AlexVDefi/ProjectLifeZoid-Launcher-Source
 ```
 
-Compare against `SHA256SUMS.txt`, published beside the download.
+This proves `.github/workflows/build.yml` built that exact file from a commit in this repository.
+Without the GitHub CLI, compare its SHA-256 against `SHA256SUMS.txt`, published beside the
+download, which only proves you got the file that was published.
 
 **2. Check every file against the signed manifest**
 
@@ -66,7 +73,19 @@ was not signed.
 
 **3. Prove those class files came from this source**
 
-A signature proves who published a file, not what is in it. This closes that gap:
+A signature proves who published a file, not what is in it. The quickest way to close that gap
+needs only Node and the GitHub CLI:
+
+```bash
+node tools/verify-provenance.mjs
+```
+
+It checks the manifest signature, then follows the manifest's `provenance` block to the
+`payload-build-<n>` release in this repository, confirms GitHub attests that
+`.github/workflows/payload.yml` produced that release's `payload-sha256sums.txt` from the commit
+the manifest names, and checks every class the manifest lists against it.
+
+To trust nothing but your own compiler, rebuild it instead:
 
 ```powershell
 .\tools\reproduce-payload.ps1
@@ -92,8 +111,9 @@ signature. The tool tells you to `git checkout` that commit if you are on a diff
 non-zero `sourceDirty` is an admission that the release was signed from a tree with
 uncommitted changes, and that the commit does not fully describe what shipped.
 
-The manifest records `javacVersion` and `javacFlags` for exactly this reason. A different JDK
-build can emit different bytecode from identical source, so the tool warns when yours differs.
+The manifest records `jdk` and `javacFlags` for exactly this reason. CI compiles with Temurin
+25.0.4+7; Oracle JDK 25 has produced identical classes, but the tool warns when yours differs.
+Builds made through CI are always `sourceDirty: 0`.
 
 **4. Read what a class actually does**
 
@@ -110,10 +130,10 @@ on trust. Classes that do not exist in vanilla are reported as additions and pri
 
 **What these checks do not prove**
 
-**The Java payload reproduces from source. The launcher executable does not.** Rust, Tauri and
-NSIS do not produce byte-identical binaries across machines, so for the installer itself the
-SHA-256 in step 1 tells you that you got the file that was published, not that it was built
-from this source. Building it yourself with `tools/package.ps1` is the stronger check there.
+**An attestation proves where a file was built, not that the source is harmless.** It rules out
+a maintainer shipping something other than what is published here; judging what is published is
+still up to you. The launcher executable does not reproduce byte-for-byte (Rust, Tauri and NSIS
+do not), so for the installer the attestation is the check.
 
 **The server's Workshop mod is not in this repository.** This repo covers the launcher and the
 Java patch it installs. The Lua content the server runs ships through Steam and is not

@@ -1,0 +1,137 @@
+name: payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Payload build number
+        required: true
+      commit:
+        description: The commit this build must be made from. Any other fails the run.
+        required: true
+      jar_sha256:
+        description: SHA-256 of the projectzomboid.jar the payload compiles against
+        required: true
+      publish:
+        description: Publish the result as the payload-build-N release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: payload-${{ inputs.build }}
+  cancel-in-progress: false
+
+jobs:
+  payload:
+    if: github.repository == 'AlexVDefi/ProjectLifeZoid-Launcher-Source'
+    runs-on: ubuntu-24.04
+    env:
+      BUILD: ${{ inputs.build }}
+      WANT_COMMIT: ${{ inputs.commit }}
+      JAR_SHA256: ${{ inputs.jar_sha256 }}
+      JDK_VERSION: 25.0.4+7
+    steps:
+      - name: Check the inputs
+        run: |
+          [[ "$BUILD" =~ ^[0-9]+$ ]] || { echo "::error::build must be a number, got '$BUILD'"; exit 1; }
+          [[ "$WANT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-character sha"; exit 1; }
+          [[ "$JAR_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::jar_sha256 must be 64 hex characters"; exit 1; }
+          if [ "$GITHUB_SHA" != "$WANT_COMMIT" ]; then
+            echo "::error::this run is on $GITHUB_SHA, not the requested $WANT_COMMIT. The attestation names the commit the run was dispatched on, so it must be that one."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - id: jar
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: pzjar/projectzomboid.jar
+          key: pz-jar-${{ inputs.jar_sha256 }}
+
+      - name: Download projectzomboid.jar from the dedicated server (anonymous Steam)
+        if: steps.jar.outputs.cache-hit != 'true'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lib32gcc-s1 >/dev/null
+          mkdir -p steamcmd pzds pzjar
+          curl -sSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz -C steamcmd
+          # First run only self-updates; the second does the install.
+          ./steamcmd/steamcmd.sh +quit || true
+          ./steamcmd/steamcmd.sh +force_install_dir "$PWD/pzds" +login anonymous +app_update 380870 validate +quit
+          cp pzds/java/projectzomboid.jar pzjar/projectzomboid.jar
+          rm -rf pzds
+
+      - name: Check the jar is the one the payload targets
+        run: |
+          got=$(sha256sum pzjar/projectzomboid.jar | cut -d' ' -f1)
+          if [ "$got" != "$JAR_SHA256" ]; then
+            echo "::error::Steam's dedicated server ships projectzomboid.jar $got, not $JAR_SHA256. The game updated; rebuild the payload against the new jar."
+            exit 1
+          fi
+          echo "projectzomboid.jar $got"
+
+      - if: steps.jar.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: pzjar/projectzomboid.jar
+          key: pz-jar-${{ inputs.jar_sha256 }}
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VERSION }}
+
+      - name: Compile the payload
+        shell: pwsh
+        run: ./java/build.ps1 -Build $env:BUILD -PzInstallDir "$PWD/pzjar" -JavacPath "$env:JAVA_HOME/bin/javac"
+
+      - name: Check the build describes this commit and nothing else
+        run: |
+          meta=java/dist/built-against.json
+          commit=$(jq -r .sourceCommit "$meta")
+          dirty=$(jq -r .sourceDirty "$meta")
+          jar=$(jq -r .builtAgainst.jarSha256 "$meta")
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::built-against.json names $commit"; exit 1; }
+          [ "$dirty" = "0" ] || { echo "::error::the checkout had $dirty uncommitted change(s)"; exit 1; }
+          [ "$jar" = "$JAR_SHA256" ] || { echo "::error::built against $jar"; exit 1; }
+
+      - name: Package
+        run: |
+          (cd java/dist && find . -name '*.class' -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum) > payload-sha256sums.txt
+          (cd java/dist && zip -qrX "../../payload-build-$BUILD.zip" .)
+          wc -l < payload-sha256sums.txt
+          sha256sum payload-sha256sums.txt "payload-build-$BUILD.zip"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            payload-sha256sums.txt
+            payload-build-${{ inputs.build }}.zip
+
+      - name: Publish the payload-build-N release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="payload-build-$BUILD"
+          gh release delete "$tag" --cleanup-tag --yes >/dev/null 2>&1 || true
+          cat > notes.md <<EOF
+          Java payload build $BUILD, compiled by this repository's \`payload\` workflow from $GITHUB_SHA
+          with Temurin $JDK_VERSION against projectzomboid.jar \`$JAR_SHA256\`.
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Check that these are the files the launcher installs: \`node tools/verify-provenance.mjs\`
+          EOF
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Payload build $BUILD" \
+            --notes-file notes.md --latest=false \
+            payload-sha256sums.txt "payload-build-$BUILD.zip"

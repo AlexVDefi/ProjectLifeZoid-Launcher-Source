@@ -539,6 +539,26 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
         packet.variables.apply(this.player);
         this.setPressedMovement(false);
         this.setPressedCancelAction(false);
+        this.plzHealIfStuck();
+    }
+
+    /** A seated player has no bit in booleanVariables, so a client that missed the one-shot state
+     *  sync walks at the seat forever; a locked door defeats the pathfinder's own Failed heal. */
+    private void plzHealIfStuck() {
+        if (GameServer.server || !GameClient.client || this.player == null || this.player.isLocalPlayer()) {
+            return;
+        }
+
+        float gap = IsoUtils.DistanceManhatten(this.player.realx, this.player.realy, this.player.getX(), this.player.getY());
+        int action = zombie.plz.PLZRemoteHeal.track(
+            this.player.getOnlineID(), this.player.getX(), this.player.getY(), this.targetX, this.targetY, gap
+        );
+
+        if (action == zombie.plz.PLZRemoteHeal.REQUEST) {
+            INetworkPacket.send(PacketTypes.PacketType.PlayerDataRequest, this.player.getOnlineID());
+        } else if (action == zombie.plz.PLZRemoteHeal.SNAP) {
+            this.player.teleportTo(this.player.realx, this.player.realy, this.player.realz);
+        }
     }
 
     public boolean isPressedMovement() {

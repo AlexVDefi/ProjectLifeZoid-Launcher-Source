@@ -905,8 +905,9 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
                 int plzSkipped = 0;
 
                 for (UdpConnection connection : GameServer.udpEngine.connections) {
-                    if (PLZSyncWatch.enabled && !connection.isRelevantTo(this.square.x, this.square.y)) {
+                    if (PLZSyncWatch.relevantOnly && !connection.isRelevantTo(this.square.x, this.square.y)) {
                         plzSkipped++;
+                        continue;
                     }
 
                     ByteBufferWriter b = connection.startPacket();
@@ -918,7 +919,7 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
 
                 if (PLZSyncWatch.enabled) {
                     PLZSyncWatch.record(
-                        this.getClass().getSimpleName() + " (server, unfiltered)",
+                        this.getClass().getSimpleName() + " (server)",
                         this.square.getX(),
                         this.square.getY(),
                         this.square.getZ(),

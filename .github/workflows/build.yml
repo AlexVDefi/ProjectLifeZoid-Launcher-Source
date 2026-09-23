@@ -7,21 +7,18 @@ on:
         description: Manifest URL to bake into the build
         required: false
         default: https://launcher.projectlifezoid.com/release/manifest.json
-  push:
-    tags: ["v*"]
 
 # write, not read: the bundles are attached to a draft RELEASE rather than uploaded as Actions
-# artifacts. Artifact storage is a per-account quota that silently killed two releases (0.5.5 and
-# the first 0.5.6 run) - both builds succeeded and only the upload failed, and deleting artifacts
-# does not restore the quota for 6-12 hours because the usage figure is cached. Release assets do
-# not count against it.
+# artifacts, which count against a per-account quota that silently killed two releases.
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
-  # Created once, up front. Both build jobs run in parallel and would otherwise race to create
-  # the same release, and the loser fails.
+  # Created once, up front, so the parallel build jobs do not race to create the same release.
   prepare:
+    if: github.repository == 'AlexVDefi/ProjectLifeZoid-Launcher-Source'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.draft.outputs.tag }}
@@ -41,19 +38,20 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists; the bundles will replace its assets"
           else
-            # A DRAFT deliberately: a draft does not create the git tag, so this cannot fire the
-            # push:tags trigger above and start the workflow again.
             gh release create "$tag" --draft --title "$tag" \
-              --notes "Launcher $version. Build output; the published installers are served from the origin."
+              --notes "Launcher $version, built by the build workflow from $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           fi
 
   build:
     needs: prepare
-    environment: release
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: windows-2022
+            name: windows
+            bundles: nsis
+            args: ""
           - os: ubuntu-22.04
             name: linux
             bundles: deb,appimage
@@ -92,40 +90,44 @@ jobs:
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build
-        working-directory: src-tauri
-        env:
-          PLZ_MANIFEST_URL_BAKED: ${{ inputs.manifest_url || 'https://launcher.projectlifezoid.com/release/manifest.json' }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo tauri build --bundles ${{ matrix.bundles }} ${{ matrix.args }}
-
-      - name: Verify the updater signature exists
+      # The real updater key never enters GitHub: the maintainer signs these bundles locally after
+      # checking their attestation, so the signatures made here are thrown away.
+      - name: Make a throwaway updater key
         shell: bash
         run: |
-          found=$(find src-tauri/target -name '*.sig' -newermt '-2 hours' | head -5)
-          if [ -z "$found" ]; then
-            echo "::error::No updater signature was produced. Is TAURI_SIGNING_PRIVATE_KEY set?"
+          cargo tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway.key" >/dev/null
+          echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$RUNNER_TEMP/throwaway.key" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: src-tauri
+        shell: bash
+        env:
+          PLZ_MANIFEST_URL_BAKED: ${{ inputs.manifest_url || 'https://launcher.projectlifezoid.com/release/manifest.json' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$TAURI_SIGNING_PRIVATE_KEY_PATH")"
+          cargo tauri build --bundles ${{ matrix.bundles }} ${{ matrix.args }}
+
+      - id: bundles
+        name: Collect the bundles
+        shell: bash
+        run: |
+          mkdir -p out
+          find src-tauri/target -path '*release/bundle/*' \
+            \( -name '*-setup.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.app.tar.gz' \) \
+            -exec cp {} out/ \;
+          if [ -z "$(ls -A out)" ]; then
+            echo "::error::the build produced no bundles"
             exit 1
           fi
-          echo "signed artifacts:"; echo "$found"
+          ls -la out
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: out/*
 
       - name: Attach the bundles to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # No mapfile: the macOS runner's /bin/bash is 3.2. Null-delimited because every bundle
-          # name contains a space.
-          files=()
-          while IFS= read -r -d '' f; do files+=("$f"); done < <(
-            find src-tauri/target -path '*release/bundle/*' \
-              \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \
-                 -o -name '*.sig' -o -name '*.app.tar.gz' \) -print0
-          )
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::the build produced no bundles to attach"
-            exit 1
-          fi
-          printf '  %s\n' "${files[@]}"
-          gh release upload "${{ needs.prepare.outputs.tag }}" --clobber "${files[@]}"
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" --clobber out/*

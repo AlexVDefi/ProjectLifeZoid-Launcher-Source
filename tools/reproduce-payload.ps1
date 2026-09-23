@@ -122,10 +122,26 @@ if ($jarSha -ne $man.builtAgainstJarSha256) {
 }
 "Jar     : matches builtAgainstJarSha256"
 
-if ($man.javacVersion -and $man.javacVersion -ne $javacVersion) {
+$localJdk = ""
+$javaExe = Join-Path (Split-Path $javac) $(if ($env:OS -eq 'Windows_NT') { "java.exe" } else { "java" })
+if (Test-Path -LiteralPath $javaExe) {
+    $props = (& $javaExe -XshowSettings:properties -version 2>&1 | Out-String)
+    $localJdk = ("{0} {1}" -f ([regex]::Match($props, '(?m)^\s*java\.vendor = (.+)$')).Groups[1].Value.Trim(),
+        ([regex]::Match($props, '(?m)^\s*java\.runtime\.version = (.+)$')).Groups[1].Value.Trim()).Trim()
+}
+if ($man.jdk -and $man.jdk -ne $localJdk) {
+    ""
+    "NOTE: this release was built with $($man.jdk), you have $localJdk."
+    "      JDK 25 builds have produced identical classes so far, but only the same one is guaranteed to."
+} elseif (-not $man.jdk -and $man.javacVersion -and $man.javacVersion -ne $javacVersion) {
     ""
     "NOTE: this release was built with '$($man.javacVersion)', you have '$javacVersion'."
     "      A different compiler build can produce different bytecode from identical source."
+}
+if ($man.provenance) {
+    ""
+    "GitHub Actions built this release and attested it. node tools/verify-provenance.mjs checks that"
+    "without a JDK or a game install."
 }
 
 $outDir = Join-Path ([System.IO.Path]::GetTempPath()) ("plz-reproduce-" + [guid]::NewGuid().ToString("N"))

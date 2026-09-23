@@ -13,6 +13,7 @@ import zombie.GameProfiler;
 import zombie.core.logger.ExceptionLogger;
 import zombie.debug.DebugOptions;
 import zombie.debug.DebugType;
+import zombie.plz.PLZEventSkip;
 import zombie.plz.PLZLuaProfile;
 
 public final class Event {
@@ -30,6 +31,10 @@ public final class Event {
     private long[] plzCalls;
     private int plzSlots = -1;
 
+    private boolean[] plzSkip;
+    private int plzSkipSlots = -1;
+    private int plzSkipGen = -1;
+
     public boolean trigger(KahluaTable env, LuaCaller caller, Object[] params) {
         if (this.callbacks.isEmpty()) {
             return false;
@@ -45,7 +50,18 @@ public final class Event {
             this.plzSyncCounters();
         }
 
+        boolean skipping = PLZEventSkip.enabled;
+        if (skipping) {
+            this.plzSyncSkips();
+        }
+
         for (int n = 0; n < this.callbacks.size(); n++) {
+            // Before the closure is even fetched: a refused callback costs an array read.
+            if (skipping && this.plzSkip != null && n < this.plzSkip.length && this.plzSkip[n]) {
+                PLZEventSkip.countSkipped();
+                continue;
+            }
+
             LuaClosure closure = this.callbacks.get(n);
 
             try (GameProfiler.ProfileArea area = profiler.profile(profileKey)) {
@@ -105,6 +121,25 @@ public final class Event {
         this.plzCalls = new long[count];
         this.plzSlots = count;
         PLZLuaProfile.track(this);
+    }
+
+    // Same invalidation as the counters, plus a generation so a rule change re-resolves. Doing it
+    // here keeps PLZFixes and the file-path match off the per-callback path entirely.
+    private void plzSyncSkips() {
+        int count = this.callbacks.size();
+        int gen = PLZEventSkip.generation();
+        if (this.plzSkipSlots == count && this.plzSkipGen == gen && this.plzSkip != null) {
+            return;
+        }
+
+        boolean[] flags = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            flags[i] = PLZEventSkip.shouldSkip(this.name, this.callbacks.get(i));
+        }
+
+        this.plzSkip = flags;
+        this.plzSkipSlots = count;
+        this.plzSkipGen = gen;
     }
 
     public long[] plzNanos() {

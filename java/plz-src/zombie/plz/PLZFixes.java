@@ -30,6 +30,7 @@ import zombie.debug.DebugLog;
  */
 public final class PLZFixes {
     public static final String ACTION_CANCEL = "actionCancel";
+    public static final String EVENT_SKIP = "eventSkip";
     public static final String ACTION_GROUP_SYNC = "actionGroupSync";
     public static final String ACTION_STATE_CONTAINER = "actionStateContainer";
     public static final String ADVANCED_ANIMATOR_FOLDERS = "advancedAnimatorFolders";

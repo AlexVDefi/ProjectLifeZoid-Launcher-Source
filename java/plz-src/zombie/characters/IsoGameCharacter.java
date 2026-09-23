@@ -14777,7 +14777,7 @@ public abstract class IsoGameCharacter
     }
 
     public final void Kill(IsoGameCharacter killer, HandWeapon attackingWeapon, boolean isGory, CharacterDiedListener onDiedListener) {
-        if (zombie.plz.PLZDowned.isDowned(this)) {
+        if (zombie.plz.PLZDowned.preventDeath(this)) {
             return;
         }
 
@@ -14799,6 +14799,10 @@ public abstract class IsoGameCharacter
     }
 
     public final void die() {
+        if (zombie.plz.PLZDowned.preventDeath(this)) {
+            return;
+        }
+
         if (!this.isOnDeathDone() || this.diedBody == null) {
             if (!this.isOnKillDone()) {
                 this.Kill(this.getAttackedBy());
@@ -14817,6 +14821,10 @@ public abstract class IsoGameCharacter
     }
 
     public final IsoDeadBody dieNetwork(IsoGameCharacter killer, HandWeapon attackingWeapon, boolean isGory, CharacterDiedListener onDiedListener) {
+        if (zombie.plz.PLZDowned.preventDeath(this)) {
+            return null;
+        }
+
         this.Kill(killer, attackingWeapon, isGory, onDiedListener);
         return this.becomeCorpse();
     }
@@ -14852,6 +14860,10 @@ public abstract class IsoGameCharacter
     }
 
     private final IsoDeadBody becomeCorpse() {
+        if (zombie.plz.PLZDowned.preventDeath(this)) {
+            return null;
+        }
+
         if (this.diedBody == null) {
             this.diedBody = new IsoDeadBody(this);
             this.invokeOnDiedListeners(this.diedBody);
@@ -17881,10 +17893,6 @@ public abstract class IsoGameCharacter
         return zombie.plz.PLZDowned.count();
     }
 
-    public static void plzSetAutoDown(boolean value) {
-        zombie.plz.PLZDowned.setAutoDown(value);
-    }
-
     public static void plzClearDowned() {
         zombie.plz.PLZDowned.clear();
     }
@@ -17893,16 +17901,8 @@ public abstract class IsoGameCharacter
         zombie.plz.PLZDowned.setAllowDeath(username, value);
     }
 
-    public static void plzMarkLive(IsoGameCharacter character) {
-        zombie.plz.PLZDowned.markLive(character);
-    }
-
     public static String plzListDowned() {
         return zombie.plz.PLZDowned.listDowned();
-    }
-
-    public static String plzListSeenHealthy() {
-        return zombie.plz.PLZDowned.listSeenHealthy();
     }
 
     public static String plzDownedPatchStatus() {

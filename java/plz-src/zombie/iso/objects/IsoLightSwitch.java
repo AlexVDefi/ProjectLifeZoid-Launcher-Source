@@ -36,6 +36,7 @@ import zombie.iso.areas.IsoRoom;
 import zombie.iso.sprite.IsoSprite;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
+import zombie.plz.PLZPerf;
 import zombie.plz.PLZSyncWatch;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
@@ -61,6 +62,9 @@ public class IsoLightSwitch extends IsoObject {
     protected int bulbBurnMinutes = -1;
     protected int lastMin;
     protected int nextBreakUpdate = 60;
+
+    private int plzPowerFrame = -1;
+    private boolean plzPowered;
 
     @Override
     public String getObjectName() {
@@ -420,6 +424,24 @@ public class IsoLightSwitch extends IsoObject {
     }
 
     private boolean hasElectricityAround() {
+        // Vanilla walks the surrounding squares for every switch on every frame, and a lit town
+        // holds hundreds of them. Power cannot change faster than the switch reacts anyway.
+        int interval = PLZPerf.LIGHT_SWITCH_FRAMES;
+        if (interval > 0 && IsoWorld.instance != null) {
+            int now = IsoWorld.instance.getFrameNo();
+            if (this.plzPowerFrame >= 0 && now >= this.plzPowerFrame && now - this.plzPowerFrame < interval) {
+                return this.plzPowered;
+            }
+
+            this.plzPowered = this.plzHasElectricityAroundNow();
+            this.plzPowerFrame = now;
+            return this.plzPowered;
+        }
+
+        return this.plzHasElectricityAroundNow();
+    }
+
+    private boolean plzHasElectricityAroundNow() {
         if (this.getObjectIndex() == -1) {
             return false;
         }

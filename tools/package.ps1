@@ -2,10 +2,13 @@ param(
     [string]$Version,
     [string]$ManifestUrl,
     [switch]$Portable,
-    [switch]$LocalTest
+    [switch]$LocalTest,
+    # Build the Windows installer on this machine instead of taking the attested one from CI.
+    [switch]$LocalBuild
 )
 
 if ($Portable) { $LocalTest = $true }
+$fromCi = -not ($LocalTest -or $LocalBuild)
 
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -219,36 +222,71 @@ function Invoke-TauriBuild {
     return $proc.ExitCode
 }
 
-"Building..."
-$signKey = Join-Path $repo "tools\keys\updater-private.key"
-if (-not (Test-Path -LiteralPath $signKey)) {
-    throw "missing $signKey -- run: cargo tauri signer generate -w ..\tools\keys\updater-private.key"
-}
-$buildVars = @{
-    PLZ_MANIFEST_URL_BAKED             = $bakedUrl
-    TAURI_SIGNING_PRIVATE_KEY          = (Get-Content -LiteralPath $signKey -Raw).Trim()
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-    CARGO_BUILD_JOBS                   = "4"
-}
-
-$buildDir = Join-Path $repo "src-tauri"
-$buildExit = Invoke-TauriBuild -WorkDir $buildDir -Vars $buildVars
-if ($buildExit -ne 0) {
-    Write-Output "build failed; waiting 20s in case the exe is still locked, then retrying once"
-    Start-Sleep -Seconds 20
-    $buildExit = Invoke-TauriBuild -WorkDir $buildDir -Vars $buildVars
-}
-if ($buildExit -ne 0) { throw "cargo tauri build failed with exit code $buildExit" }
-
-$nsisDir = Join-Path $repo "src-tauri\target\release\bundle\nsis"
-$installer = Get-ChildItem $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $installer) { throw "no installer produced under $nsisDir" }
-
 $mainName = "$($conf.mainBinaryName).exe"
-$mainExe = Join-Path (Join-Path (Join-Path $repo "src-tauri") "target") (Join-Path "release" $mainName)
-if (-not (Test-Path -LiteralPath $mainExe)) {
-    throw "$mainExe was not produced"
+$sevenZip = @(
+    (Join-Path $env:ProgramFiles "7-Zip\7z.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "7-Zip\7z.exe")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$platformDir = Join-Path $repo "platforms"
+$ciProvenance = $null
+
+if ($fromCi) {
+    $provPath = Join-Path $platformDir "provenance.json"
+    if (-not (Test-Path -LiteralPath $provPath)) {
+        throw "platforms/ holds no CI build. Run the build workflow on the public repo, then tools\fetch-ci-artifacts.ps1. -LocalBuild builds here instead."
+    }
+    $ciProvenance = Get-Content -LiteralPath $provPath -Raw | ConvertFrom-Json
+    $installer = @(Get-ChildItem $platformDir -Filter "*-setup.exe" -File)
+    if ($installer.Count -ne 1) { throw "platforms/ must hold exactly one *-setup.exe, found $($installer.Count)" }
+    $installer = $installer[0]
+    if ($installer.Name -notlike "*_$($conf.version)_*") {
+        throw "platforms/$($installer.Name) is not version $($conf.version). Re-run the build workflow for this version."
+    }
+    $record = @($ciProvenance.bundles | Where-Object { $_.name -eq $installer.Name })[0]
+    $installerSha = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not $record -or $record.sha256 -ne $installerSha) { throw "$($installer.Name) is not the file fetch-ci-artifacts.ps1 verified" }
+    $sig = Get-Item -LiteralPath "$($installer.FullName).sig" -ErrorAction SilentlyContinue
+    if (-not $sig) { throw "no updater signature beside $($installer.Name); re-run tools\fetch-ci-artifacts.ps1" }
+    if (-not $sevenZip) { throw "7-Zip is needed to check the binary inside the CI installer" }
+    $inspectDir = Join-Path ([System.IO.Path]::GetTempPath()) ("plz-installer-" + [guid]::NewGuid().ToString("N"))
+    & $sevenZip e $installer.FullName "-o$inspectDir" $mainName -y | Out-Null
+    $mainExe = Join-Path $inspectDir $mainName
+    if (-not (Test-Path -LiteralPath $mainExe)) { throw "the CI installer does not contain $mainName" }
+    Line "installer" "from CI: $($ciProvenance.repo)@$($ciProvenance.commit.Substring(0, 12))"
+    Line "built by" $record.run
+} else {
+    "Building..."
+    $signKey = Join-Path $repo "tools\keys\updater-private.key"
+    if (-not (Test-Path -LiteralPath $signKey)) {
+        throw "missing $signKey -- run: cargo tauri signer generate -w ..\tools\keys\updater-private.key"
+    }
+    $buildVars = @{
+        PLZ_MANIFEST_URL_BAKED             = $bakedUrl
+        TAURI_SIGNING_PRIVATE_KEY          = (Get-Content -LiteralPath $signKey -Raw).Trim()
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+        CARGO_BUILD_JOBS                   = "4"
+    }
+
+    $buildDir = Join-Path $repo "src-tauri"
+    $buildExit = Invoke-TauriBuild -WorkDir $buildDir -Vars $buildVars
+    if ($buildExit -ne 0) {
+        Write-Output "build failed; waiting 20s in case the exe is still locked, then retrying once"
+        Start-Sleep -Seconds 20
+        $buildExit = Invoke-TauriBuild -WorkDir $buildDir -Vars $buildVars
+    }
+    if ($buildExit -ne 0) { throw "cargo tauri build failed with exit code $buildExit" }
+
+    $nsisDir = Join-Path $repo "src-tauri\target\release\bundle\nsis"
+    $installer = Get-ChildItem $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $installer) { throw "no installer produced under $nsisDir" }
+    $sig = Get-ChildItem $nsisDir -Filter "*-setup.exe.sig" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+    $mainExe = Join-Path (Join-Path (Join-Path $repo "src-tauri") "target") (Join-Path "release" $mainName)
+    if (-not (Test-Path -LiteralPath $mainExe)) {
+        throw "$mainExe was not produced"
+    }
 }
 $bytes = [System.IO.File]::ReadAllBytes($mainExe)
 $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
@@ -261,10 +299,6 @@ if ($subsystem -ne 2) {
 }
 Line "main binary" "$mainName (GUI, $([int]($bytes.Length / 1KB)) KB)"
 
-$sevenZip = @(
-    (Join-Path $env:ProgramFiles "7-Zip\7z.exe"),
-    (Join-Path ${env:ProgramFiles(x86)} "7-Zip\7z.exe")
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($sevenZip) {
     $listing = & $sevenZip l $installer.FullName 2>$null
     if (-not ($listing -match [regex]::Escape($mainName))) {
@@ -397,14 +431,16 @@ WINDOWS WILL WARN YOU
 
       certutil -hashfile "$distName" SHA256
 
+  To check GitHub built it from the public source, with the GitHub CLI installed:
+
+      gh attestation verify "$distName" --repo AlexVDefi/ProjectLifeZoid-Launcher-Source
+
 WHAT IT TOUCHES
   One file in your game install (ProjectZomboid64.json), restored when you quit. If the
   launcher is ever killed mid-session, the next start restores it before doing anything else.
 "@
 Write-Utf8NoBom (Join-Path $distDir "README.txt") ($readme -replace "`r`n", "`n")
 
-$sig = Get-ChildItem $nsisDir -Filter "*-setup.exe.sig" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $sig) {
     throw "no .sig beside the installer -- createUpdaterArtifacts or the signing key did not take effect"
 }
@@ -422,7 +458,7 @@ $platformDir = Join-Path $repo "platforms"
 $platformFiles = @()
 if (Test-Path $platformDir) {
     foreach ($f in (Get-ChildItem -Path $platformDir -File |
-            Where-Object { $n = $_.Name; @(".deb", ".AppImage", ".dmg", ".app.tar.gz", ".sig") | Where-Object { $n.EndsWith($_) } })) {
+            Where-Object { $n = $_.Name; $n -notlike "*-setup.exe*" -and (@(".deb", ".AppImage", ".dmg", ".app.tar.gz", ".sig") | Where-Object { $n.EndsWith($_) }) })) {
         $clean = $f.Name -replace " ", "-"
         if ($clean.EndsWith(".app.tar.gz") -or $clean.EndsWith(".app.tar.gz.sig")) {
             $suffix = if ($clean.EndsWith(".sig")) { ".app.tar.gz.sig" } else { ".app.tar.gz" }

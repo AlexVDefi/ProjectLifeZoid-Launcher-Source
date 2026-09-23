@@ -378,24 +378,33 @@ footer { padding: 30px 0 60px; color: var(--dim); font-size: 14px; }
 
         <h3>That the patch really is the published source</h3>
         <p>
-            A signature says who published a file, not what is inside it. This rebuilds the whole
-            patch from the source in the repository and compares it byte for byte against what we
-            signed. The manifest names the exact commit it was built from, so there is no guessing
-            which version you are checking against.
+            A signature says who published a file, not what is inside it. We do not compile the
+            patch ourselves: GitHub Actions compiles it from a public commit and signs a statement
+            saying so. This checks that statement and that every class the manifest lists is one
+            GitHub built:
+        </p>
+        <p class="fine">node tools/verify-provenance.mjs</p>
+        <p>
+            Or rebuild it yourself and compare byte for byte. The manifest names the exact commit
+            and JDK, so there is no guessing which version you are checking against:
         </p>
         <p class="fine">.\tools\reproduce-payload.ps1</p>
         <p>
-            Build {{PAYLOAD_BUILD}} rebuilds identically. You can also disassemble any single
-            class and diff it against the untouched one in your own copy of the game:
+            You can also disassemble any single class and diff it against the untouched one in
+            your own copy of the game:
         </p>
         <p class="fine">.\tools\inspect-class.ps1 zombie.ZomboidGlobals</p>
 
+        <h3>That the installer was built from that source</h3>
+        <p>
+            The installers are built by GitHub Actions too. With the GitHub CLI installed:
+        </p>
+        <p class="fine">gh attestation verify {{INSTALLER}} --repo AlexVDefi/ProjectLifeZoid-Launcher-Source</p>
+
         <h3>What this does not prove</h3>
         <p>
-            The Java patch rebuilds from source exactly. The launcher executable does not: the
-            tools that build it do not produce identical files twice, so the checksum above tells
-            you that you have the file we published, not that it was built from this source. If
-            that distinction matters to you, build it yourself from the repository.
+            An attestation proves which public commit GitHub built a file from. It does not prove
+            that commit is harmless: that is what reading the source is for.
         </p>
         <p>
             The server's mod content is not in that repository either. What is published there is

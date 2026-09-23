@@ -18,25 +18,11 @@ public final class PLZDowned {
 
     private static final float PART_FLOOR = 2.0F;
 
-    private static final float HEALTHY_MARK = 25.0F;
-
     private static final float DOWN_MARK = 2.0F;
 
     private static final Set<String> DOWNED = Collections.synchronizedSet(new HashSet<>());
 
-    private static final Set<String> SEEN_HEALTHY = Collections.synchronizedSet(new HashSet<>());
-
     private static final Set<String> ALLOW_DEATH = Collections.synchronizedSet(new HashSet<>());
-
-    private static volatile boolean autoDown = true;
-
-    public static void setAutoDown(boolean value) {
-        autoDown = value;
-    }
-
-    public static boolean isAutoDown() {
-        return autoDown;
-    }
 
     public static void setDowned(String username, boolean value) {
         if (username == null || username.isEmpty()) {
@@ -46,7 +32,6 @@ public final class PLZDowned {
             DOWNED.add(username);
         } else {
             DOWNED.remove(username);
-            SEEN_HEALTHY.add(username);
         }
     }
 
@@ -61,6 +46,27 @@ public final class PLZDowned {
         return isDowned(player.getUsername());
     }
 
+    static boolean allowsDeath(String username) {
+        return username != null && !username.isEmpty() && ALLOW_DEATH.contains(username);
+    }
+
+    public static boolean preventDeath(IsoGameCharacter character) {
+        if (!(character instanceof IsoPlayer player)) {
+            return false;
+        }
+
+        String username = player.getUsername();
+        if (allowsDeath(username)) {
+            return false;
+        }
+
+        if (username != null && !username.isEmpty()) {
+            DOWNED.add(username);
+        }
+        enforce(character);
+        return true;
+    }
+
     public static int count() {
         return DOWNED.size();
     }
@@ -69,61 +75,24 @@ public final class PLZDowned {
         DOWNED.clear();
     }
 
-    public static void forgetHealthy(String username) {
-        if (username != null) {
-            SEEN_HEALTHY.remove(username);
-        }
-    }
-
-    // SEEN_HEALTHY is empty at every boot, so a player who comes back already hurt
-    // would never be eligible for the downed state until they healed past the mark.
-    public static void markLive(IsoGameCharacter character) {
-        if (!(character instanceof IsoPlayer player)) {
-            return;
-        }
-
-        String username = player.getUsername();
-        if (username == null || username.isEmpty()) {
-            return;
-        }
-
-        BodyDamage damage = character.getBodyDamage();
-        if (damage != null && damage.getOverallBodyHealth() > 0.0F && character.getHealth() > 0.0F) {
-            SEEN_HEALTHY.add(username);
-        }
-    }
-
     public static void enforce(IsoGameCharacter character) {
         if (!(character instanceof IsoPlayer player)) {
             return;
         }
 
         String username = player.getUsername();
-        if (username == null || username.isEmpty()) {
-            return;
-        }
-
-        // Hands off entirely, downed or not: the floor below runs whatever DOWNED says,
-        // and the staff retirement needs the server's copy to stay dead for a tick.
-        if (ALLOW_DEATH.contains(username)) {
+        if (allowsDeath(username)) {
             return;
         }
 
         BodyDamage damage = character.getBodyDamage();
         float overall = damage != null ? damage.getOverallBodyHealth() : 100.0F;
 
-        if (overall > HEALTHY_MARK) {
-            SEEN_HEALTHY.add(username);
+        boolean downed = username != null && !username.isEmpty() && DOWNED.contains(username);
+        if (!downed && !isLethal(character)) {
             return;
         }
-
-        if (!DOWNED.contains(username)) {
-            if (!autoDown || !isLethal(character)) {
-                return;
-            }
-            if (!SEEN_HEALTHY.contains(username)) {
-                return;
-            }
+        if (username != null && !username.isEmpty()) {
             DOWNED.add(username);
         }
 
@@ -153,26 +122,17 @@ public final class PLZDowned {
         }
 
         String username = player.getUsername();
-        if (username == null || username.isEmpty()) {
+        if (allowsDeath(username)) {
             return computed;
         }
 
-        if (computed > HEALTHY_MARK) {
-            SEEN_HEALTHY.add(username);
+        if (computed > DOWN_MARK) {
             return computed;
         }
 
-        if (computed > DOWN_MARK || !autoDown || ALLOW_DEATH.contains(username)) {
-            return computed;
+        if (username != null && !username.isEmpty()) {
+            DOWNED.add(username);
         }
-
-        // Same gate as enforce. Flooring somebody this patch has never seen alive
-        // makes them unkillable without ever putting them in the downed state.
-        if (!SEEN_HEALTHY.contains(username)) {
-            return computed;
-        }
-
-        DOWNED.add(username);
         return computed < OVERALL_FLOOR ? OVERALL_FLOOR : computed;
     }
 
@@ -190,12 +150,6 @@ public final class PLZDowned {
     public static String listDowned() {
         synchronized (DOWNED) {
             return String.join(",", DOWNED);
-        }
-    }
-
-    public static String listSeenHealthy() {
-        synchronized (SEEN_HEALTHY) {
-            return String.join(",", SEEN_HEALTHY);
         }
     }
 
