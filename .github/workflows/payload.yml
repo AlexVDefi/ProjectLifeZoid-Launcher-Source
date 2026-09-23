@@ -34,7 +34,7 @@ jobs:
       BUILD: ${{ inputs.build }}
       WANT_COMMIT: ${{ inputs.commit }}
       JAR_SHA256: ${{ inputs.jar_sha256 }}
-      JDK_VERSION: 25.0.4+7
+      JDK_VERSION: 25.0.4+7.0.LTS
     steps:
       - name: Check the inputs
         run: |
