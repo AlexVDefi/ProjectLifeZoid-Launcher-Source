@@ -125,7 +125,10 @@ if ($jarSha -ne $man.builtAgainstJarSha256) {
 $localJdk = ""
 $javaExe = Join-Path (Split-Path $javac) $(if ($env:OS -eq 'Windows_NT') { "java.exe" } else { "java" })
 if (Test-Path -LiteralPath $javaExe) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $props = (& $javaExe -XshowSettings:properties -version 2>&1 | Out-String)
+    $ErrorActionPreference = $prevEap
     $localJdk = ("{0} {1}" -f ([regex]::Match($props, '(?m)^\s*java\.vendor = (.+)$')).Groups[1].Value.Trim(),
         ([regex]::Match($props, '(?m)^\s*java\.runtime\.version = (.+)$')).Groups[1].Value.Trim()).Trim()
 }
