@@ -19,6 +19,14 @@ $distDir = Join-Path $root "java\dist"
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
+function Invoke-Gh {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { $out = @(& gh @args 2>&1) } finally { $ErrorActionPreference = $prev }
+    $script:ghExit = $LASTEXITCODE
+    $script:ghErr = ($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join "`n"
+    return (($out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join "`n")
+}
 function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function To-Utc($value) {
     if ($value -is [datetime]) { return $value.ToUniversalTime() }
@@ -45,13 +53,15 @@ if ($Dispatch) {
     }
     $since = [DateTime]::UtcNow.AddSeconds(-10)
     "Dispatch : $workflowFile on $Repo  build $Build  commit $Commit"
-    & gh workflow run $workflowFile --repo $Repo --ref main -f "build=$Build" -f "commit=$Commit" -f "jar_sha256=$JarSha256"
-    if ($LASTEXITCODE -ne 0) { throw "gh workflow run failed" }
+    $null = Invoke-Gh workflow run $workflowFile --repo $Repo --ref main -f "build=$Build" -f "commit=$Commit" -f "jar_sha256=$JarSha256"
+    if ($ghExit -ne 0) { throw "gh workflow run failed: $ghErr" }
 
     $runId = $null
     for ($i = 0; $i -lt 30 -and -not $runId; $i++) {
         Start-Sleep -Seconds 4
-        $runs = (& gh run list --repo $Repo --workflow $workflowFile --event workflow_dispatch --limit 10 --json "databaseId,headSha,createdAt" | Out-String) | ConvertFrom-Json
+        $listed = Invoke-Gh run list --repo $Repo --workflow $workflowFile --event workflow_dispatch --limit 10 --json "databaseId,headSha,createdAt"
+        if ($ghExit -ne 0) { continue }
+        $runs = $listed | ConvertFrom-Json
         $mine = @($runs | Where-Object { $_.headSha -eq $Commit -and (To-Utc $_.createdAt) -ge $since } |
             Sort-Object { To-Utc $_.createdAt } -Descending)
         if ($mine.Count -gt 0) { $runId = $mine[0].databaseId }
@@ -63,7 +73,9 @@ if ($Dispatch) {
     $deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     $last = ""
     while ($true) {
-        $run = (& gh run view $runId --repo $Repo --json "status,conclusion" | Out-String) | ConvertFrom-Json
+        $viewed = Invoke-Gh run view $runId --repo $Repo --json "status,conclusion"
+        if ($ghExit -ne 0) { Start-Sleep -Seconds 20; continue }
+        $run = $viewed | ConvertFrom-Json
         $now = "$($run.status) $($run.conclusion)".Trim()
         if ($now -ne $last) { "           $(([DateTime]::UtcNow).ToString('HH:mm:ss'))  $now"; $last = $now }
         if ($run.status -eq "completed") { break }
@@ -78,8 +90,8 @@ if ($Dispatch) {
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("plz-ci-" + $tag + "-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force $stage | Out-Null
 try {
-    & gh release download $tag --repo $Repo --dir $stage
-    if ($LASTEXITCODE -ne 0) { throw "no $tag release on $Repo. Dispatch the payload workflow for build $Build first." }
+    $null = Invoke-Gh release download $tag --repo $Repo --dir $stage
+    if ($ghExit -ne 0) { throw "no $tag release on $Repo. Dispatch the payload workflow for build $Build first. ($ghErr)" }
     $sumsPath = Join-Path $stage "payload-sha256sums.txt"
     $zipPath = Join-Path $stage "$tag.zip"
     foreach ($p in @($sumsPath, $zipPath)) {
@@ -91,8 +103,8 @@ try {
         $verifyArgs = @("attestation", "verify", $p, "--repo", $Repo, "--signer-workflow", $signer,
             "--deny-self-hosted-runners", "--format", "json")
         if ($Commit) { $verifyArgs += @("--source-digest", $Commit) }
-        $out = (& gh @verifyArgs | Out-String)
-        if ($LASTEXITCODE -ne 0) { throw "$(Split-Path -Leaf $p) has no valid attestation from $signer" }
+        $out = Invoke-Gh @verifyArgs
+        if ($ghExit -ne 0) { throw "$(Split-Path -Leaf $p) has no valid attestation from $signer. $ghErr" }
         $cert = @($out | ConvertFrom-Json)[0].verificationResult.signature.certificate
         $attested[$p] = [pscustomobject]@{
             commit = [string]$cert.sourceRepositoryDigest

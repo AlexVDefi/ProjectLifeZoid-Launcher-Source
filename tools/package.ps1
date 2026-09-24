@@ -255,6 +255,7 @@ if ($fromCi) {
     Line "installer" "from CI: $($ciProvenance.repo)@$($ciProvenance.commit.Substring(0, 12))"
     Line "built by" $record.run
 } else {
+    try { & (Join-Path $PSScriptRoot "cargo-target-on-d.ps1") } catch { "WARNING: $_" }
     "Building..."
     $signKey = Join-Path $repo "tools\keys\updater-private.key"
     if (-not (Test-Path -LiteralPath $signKey)) {
