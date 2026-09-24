@@ -105,17 +105,19 @@ try {
         if ($Commit) { $verifyArgs += @("--source-digest", $Commit) }
         $out = Invoke-Gh @verifyArgs
         if ($ghExit -ne 0) { throw "$(Split-Path -Leaf $p) has no valid attestation from $signer. $ghErr" }
-        $cert = @($out | ConvertFrom-Json)[0].verificationResult.signature.certificate
-        $attested[$p] = [pscustomobject]@{
-            commit = [string]$cert.sourceRepositoryDigest
-            run    = [string]$cert.runInvocationURI
-        }
+        $attested[$p] = @($out | ConvertFrom-Json | ForEach-Object { $_ } | ForEach-Object {
+            $cert = $_.verificationResult.signature.certificate
+            [pscustomobject]@{ commit = [string]$cert.sourceRepositoryDigest; run = [string]$cert.runInvocationURI }
+        })
     }
-    $attestedCommit = $attested[$sumsPath].commit
-    $runUri = $attested[$sumsPath].run
+    # Identical classes from two runs give the sums file two attestations; the zip embeds its commit, so it has one.
+    $zipRuns = @($attested[$zipPath] | Select-Object -Property commit, run -Unique)
+    if ($zipRuns.Count -ne 1) { throw "the zip carries $($zipRuns.Count) attestations; expected exactly one" }
+    $attestedCommit = $zipRuns[0].commit
+    $runUri = $zipRuns[0].run
     if ($attestedCommit -notmatch '^[0-9a-f]{40}$') { throw "the attestation names no source commit" }
-    if ($attested[$zipPath].commit -ne $attestedCommit -or $attested[$zipPath].run -ne $runUri) {
-        throw "the sums file and the zip were attested by different runs"
+    if (-not @($attested[$sumsPath] | Where-Object { $_.commit -eq $attestedCommit -and $_.run -eq $runUri })) {
+        throw "the sums file was not attested by the run that built the zip"
     }
     if ($Commit -and $attestedCommit -ne $Commit) { throw "$tag was built from $attestedCommit, not $Commit" }
     "Attested : $tag  $Repo@$attestedCommit"
