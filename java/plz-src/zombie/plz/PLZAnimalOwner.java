@@ -243,4 +243,34 @@ public final class PLZAnimalOwner {
         }
     }
 
+    /** Keys owned by the Lua AnimalPenCore: where the animal lives, not who owns it. */
+    public static final String PEN_PREFIX = "PLZ_pen";
+
+    /**
+     * An animal put down from a player's arms or let out of a trailer is rebuilt by
+     * {@code IsoAnimal.copyFrom}, which copies no ModData. The owner goes with it; the pen does
+     * not, because a player chose where it landed.
+     */
+    public static void relocate(IsoAnimal from, IsoAnimal to) {
+        try {
+            if (from == null || to == null || from == to || !from.hasModData()) {
+                return;
+            }
+
+            KahluaTable source = from.getModData();
+            if (!hasPlzData(source)) {
+                return;
+            }
+
+            KahluaTable target = to.getModData();
+            KahluaTableIterator it = source.iterator();
+            while (it.advance()) {
+                if (it.getKey() instanceof String key && key.startsWith(MD_PREFIX) && !key.startsWith(PEN_PREFIX)) {
+                    target.rawset(key, it.getValue());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
 }

@@ -88,41 +88,24 @@ public final class PLZOrderedPublisher<T> {
         return (int)(this.issued - this.cursor);
     }
 
-    /**
-     * Walks the cursor over finished slots. The callbacks run OUTSIDE the monitor - they hand work
-     * to the game thread, and holding the lock across that would block every worker behind them.
-     */
-    private void drain() {
-        while (true) {
-            T item;
-            long ticket;
-            boolean failure;
-            synchronized (this) {
-                if (this.parked || this.cursor == this.issued) {
-                    return;
-                }
-
-                int slot = (int)(this.cursor & MASK);
-                int st = this.state[slot];
-                if (st != DONE && st != FAILED) {
-                    return;
-                }
-
-                item = (T)this.items[slot];
-                ticket = this.cursor;
-                failure = st == FAILED;
-                if (failure) {
-                    this.parked = true;
-                } else {
-                    this.retire(slot);
-                }
-            }
-
-            if (failure) {
-                this.failed.onFailed(ticket, item);
+    /** Publishes inside the monitor, or a worker preempted after retiring slot k lets k+1 out first.
+     *  Both callbacks must therefore be quick and never wait on another worker. */
+    private synchronized void drain() {
+        while (!this.parked && this.cursor != this.issued) {
+            int slot = (int)(this.cursor & MASK);
+            int st = this.state[slot];
+            if (st != DONE && st != FAILED) {
                 return;
             }
 
+            T item = (T)this.items[slot];
+            if (st == FAILED) {
+                this.parked = true;
+                this.failed.onFailed(this.cursor, item);
+                return;
+            }
+
+            this.retire(slot);
             this.publish.accept(item);
         }
     }

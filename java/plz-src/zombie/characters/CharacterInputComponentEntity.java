@@ -279,7 +279,11 @@ public interface CharacterInputComponentEntity extends ECSEntity {
         PLZGrappleEdit.setPhase(node, phase);
     }
 
-    /** kind is "forward" or "yaw"; fraction is a point in the clip, 0..1. */
+    default void plzGrappleSetSide(String node, float side) {
+        PLZGrappleEdit.setSide(node, side);
+    }
+
+    /** kind is "forward", "yaw" or "side"; fraction is a point in the clip, 0..1. */
     default void plzGrappleAddKey(String node, String kind, float fraction, float value) {
         PLZGrappleEdit.addKey(node, kind, fraction, value);
     }
@@ -316,6 +320,10 @@ public interface CharacterInputComponentEntity extends ECSEntity {
 
     default float plzGrappleGetYaw(String node) {
         return PLZGrappleEdit.yawOf(node);
+    }
+
+    default float plzGrappleGetSide(String node) {
+        return PLZGrappleEdit.sideOf(node);
     }
 
     default float plzGrappleGetPhase(String node) {

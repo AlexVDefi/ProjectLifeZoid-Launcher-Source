@@ -17,6 +17,7 @@ import zombie.plz.PLZBakeScheduler;
 import zombie.plz.PLZLightRefresh;
 import zombie.plz.PLZPuddleCache;
 import zombie.plz.PLZRainTiles;
+import zombie.plz.PLZTorchZone;
 import zombie.plz.PLZTreeBake;
 import se.krka.kahlua.j2se.KahluaTableImpl;
 import se.krka.kahlua.vm.JavaFunction;
@@ -212,7 +213,13 @@ public final class FBORenderCell {
     private IsoGridSquare plzGridStackSquare;
     private IsoDirections plzGridStackDir;
     private int plzGridStackFrame = -1000;
-    private final PLZLightRefresh plzLightBacklog = new PLZLightRefresh();
+    private final PLZLightRefresh[] plzLightBacklogs = {new PLZLightRefresh(), new PLZLightRefresh(), new PLZLightRefresh(), new PLZLightRefresh()};
+    private final PLZTorchZone plzTorchZone = new PLZTorchZone();
+    private final ArrayList<IsoGameCharacter.TorchInfo> plzTorches = new ArrayList<>();
+    private static final int PLZ_PLAYER_LIGHT_REACH = 2;
+    private long plzLightEventUntilMs;
+    private int plzPlayerChunkX = Integer.MIN_VALUE;
+    private int plzPlayerChunkY = Integer.MIN_VALUE;
     public static long plzLightInfoSkipped;
     public static long plzLightInfoLevelsGated;
     public static long plzOcclusionRebuildsSkipped;
@@ -385,6 +392,7 @@ public final class FBORenderCell {
             PerPlayerRender perPlayerRender = this.cell.getPerPlayerRenderAt(playerIndex);
             perPlayerRender.setSize(this.cell.maxX - this.cell.minX + 1, this.cell.maxY - this.cell.minY + 1);
             this.currentTimeMillis = System.currentTimeMillis();
+            this.plzUpdateLightUrgency(player);
             if (this.cell.minX != perPlayerRender.minX
                 || this.cell.minY != perPlayerRender.minY
                 || this.cell.maxX != perPlayerRender.maxX
@@ -979,7 +987,8 @@ public final class FBORenderCell {
         }
 
         float zoom = Core.getInstance().getZoom(playerIndex);
-        if (renderLevels.isDirty(0, zoom)) {
+        // A lighting-only hold is not a bake this frame, so it must not freeze the tree fade.
+        if (PLZBakeScheduler.active() ? renderLevels.isDirty(0, PLZBakeScheduler.DIRTY_CONTENT, zoom) : renderLevels.isDirty(0, zoom)) {
             return false;
         }
 
@@ -1346,6 +1355,7 @@ public final class FBORenderCell {
                         renderLevels.isDirty(level, PLZBakeScheduler.DIRTY_CREATE, zoom),
                         renderLevels.isDirty(level, PLZBakeScheduler.DIRTY_CONTENT, zoom),
                         renderLevels.isDirty(level, PLZBakeScheduler.DIRTY_CONTENT_NOT_REDRAW, zoom),
+                        this.plzLightUrgency(c),
                         plzTexture, IsoWorld.instance.getFrameNo(), currentTimeMillis);
                 } else {
                     // Upper levels follow whatever the bottom level of the same chunk decided.
@@ -3776,24 +3786,78 @@ public final class FBORenderCell {
             this.plzQueueDirtyLevels(playerIndex, perPlayerData1);
         }
 
-        if (!this.plzLightBacklog.isEmpty()) {
-            this.plzLightBacklog.drain(budget, (chunk, level) -> this.plzRefreshQueuedLevel(playerIndex, perPlayerData1, (IsoChunk)chunk, level));
+        PLZLightRefresh backlog = this.plzLightBacklogs[playerIndex];
+        if (!backlog.isEmpty()) {
+            backlog.drain(budget, (chunk, level) -> this.plzRefreshQueuedLevel(playerIndex, perPlayerData1, (IsoChunk)chunk, level));
         }
+    }
+
+    private void plzUpdateLightUrgency(IsoPlayer player) {
+        if (!PLZPerf.URGENT_LIGHTING) {
+            this.plzTorchZone.clear();
+            this.plzLightEventUntilMs = 0L;
+            this.plzPlayerChunkX = Integer.MIN_VALUE;
+            return;
+        }
+
+        if (Core.dirtyGlobalLightsCount > 0) {
+            this.plzLightEvent();
+        }
+
+        this.plzPlayerChunkX = player == null ? Integer.MIN_VALUE : PZMath.fastfloor(player.getX()) >> 3;
+        this.plzPlayerChunkY = player == null ? Integer.MIN_VALUE : PZMath.fastfloor(player.getY()) >> 3;
+        this.plzTorchZone.expire(this.currentTimeMillis);
+        this.plzTorches.clear();
+        LightingJNI.getTorches(this.plzTorches);
+        for (int i = 0; i < this.plzTorches.size(); i++) {
+            IsoGameCharacter.TorchInfo torch = this.plzTorches.get(i);
+            this.plzTorchZone.light(torch.id, torch.x, torch.y, torch.dist, this.currentTimeMillis);
+        }
+
+        this.plzTorches.clear();
+    }
+
+    /** A light switched, a lamp placed, power or night changed, a room revealed: the lit result trails by a few frames. */
+    private void plzLightEvent() {
+        if (PLZPerf.URGENT_LIGHTING) {
+            this.plzLightEventUntilMs = this.currentTimeMillis + PLZTorchZone.LINGER_MS;
+        }
+    }
+
+    private int plzLightUrgency(IsoChunk c) {
+        if (this.plzTorchZone.covers(c.wx, c.wy)) {
+            return PLZBakeScheduler.LIGHT_TORCH;
+        }
+
+        if (this.currentTimeMillis < this.plzLightEventUntilMs
+            || this.plzPlayerChunkX != Integer.MIN_VALUE
+                && Math.abs(c.wx - this.plzPlayerChunkX) <= PLZ_PLAYER_LIGHT_REACH
+                && Math.abs(c.wy - this.plzPlayerChunkY) <= PLZ_PLAYER_LIGHT_REACH) {
+            return PLZBakeScheduler.LIGHT_EVENT;
+        }
+
+        return PLZBakeScheduler.LIGHT_DRIFT;
     }
 
     /** Oldest-lit chunks first, so a chunk does not sit stale while newer ones keep jumping it. */
     private void plzQueueDirtyLevels(int playerIndex, FBORenderCell.PerPlayerData perPlayerData1) {
+        PLZLightRefresh backlog = this.plzLightBacklogs[playerIndex];
         this.sortedChunks.clear();
         PZArrayUtil.addAll(this.sortedChunks, perPlayerData1.onScreenChunks);
         this.timSort.doSort(this.sortedChunks.getElements(), Comparator.comparingInt((IsoChunk a) -> a.lightingUpdateCounter), 0, this.sortedChunks.size());
 
         for (int i = 0; i < this.sortedChunks.size(); i++) {
             IsoChunk chunk = this.sortedChunks.get(i);
+            boolean nearTorch = this.plzTorchZone.covers(chunk.wx, chunk.wy);
             boolean queued = false;
 
             for (int z = chunk.minLevel; z <= chunk.maxLevel; z++) {
                 if (this.plzIsChunkLevelLightingDirty(playerIndex, chunk, z)) {
-                    this.plzLightBacklog.offer(chunk, z);
+                    if (nearTorch) {
+                        this.plzCacheChunkLevelLightInfo(playerIndex, chunk, z);
+                    } else if (!plzLightInfoReadThisFrame(playerIndex, chunk, z)) {
+                        backlog.offer(chunk, z);
+                    }
                     queued = true;
                 }
             }
@@ -3816,6 +3880,28 @@ public final class FBORenderCell {
         } else {
             return false;
         }
+    }
+
+    /** prepareChunksForUpdating already re-read every dirty level of this generation earlier in the frame. */
+    private static boolean plzLightInfoReadThisFrame(int playerIndex, IsoChunk chunk, int level) {
+        int[][] stamps = chunk.plzLightInfoFrame;
+        if (!PLZPerf.LIGHT_INFO_ONCE_PER_FRAME || stamps == null || level < -32 || level >= 32) {
+            return false;
+        }
+
+        int[] r = stamps[playerIndex * 64 + level + 32];
+        if (r == null) {
+            return false;
+        }
+
+        int frame = IsoWorld.instance.getFrameNo();
+        for (int i = 0; i < r.length; i++) {
+            if (r[i] == frame) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void plzCacheLightInfo(int playerIndex, IsoChunk chunk, int level, int index, IsoGridSquare square) {
@@ -5386,11 +5472,13 @@ public final class FBORenderCell {
                 if (distSq > 100.0F) {
                     perPlayerData1.blackedOutBuildings.add(buildingDef);
                     buildingDef.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                    this.plzLightEvent();
                     bChanged = true;
                 }
             } else if (distSq <= 100.0F) {
                 perPlayerData1.blackedOutBuildings.remove(index);
                 buildingDef.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                this.plzLightEvent();
                 bChanged = true;
             }
         }
@@ -5403,6 +5491,7 @@ public final class FBORenderCell {
             if (index == -1) {
                 perPlayerData1.blackedOutBuildings.remove(i--);
                 buildingDef.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                this.plzLightEvent();
                 bChanged = true;
             }
         }
@@ -5420,6 +5509,7 @@ public final class FBORenderCell {
                     RoomDef roomDefx = metaCellx == null ? null : metaCellx.roomByMetaId.get(visibleRoom.metaId);
                     if (roomDefx != null) {
                         roomDefx.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                        this.plzLightEvent();
                     }
 
                     if (this.shouldDarkenIndividualRooms()) {
@@ -5446,6 +5536,7 @@ public final class FBORenderCell {
                     RoomDef roomDefx = metaCellx == null ? null : metaCellx.roomByMetaId.get(visibleRoom.metaId);
                     if (roomDefx != null) {
                         roomDefx.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                        this.plzLightEvent();
                     }
                 }
             });
@@ -5474,6 +5565,7 @@ public final class FBORenderCell {
                             RoomDef roomDef = metaCell == null ? null : metaCell.roomByMetaId.get(fadingRoom.metaId);
                             if (roomDef != null) {
                                 roomDef.setInvalidateCacheForAllChunks(playerIndex, 32L);
+                                this.plzLightEvent();
                             }
                         }
                     }

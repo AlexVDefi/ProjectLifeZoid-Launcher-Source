@@ -5,6 +5,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
+import zombie.GameTime;
 import zombie.UsedFromLua;
 import zombie.core.Translator;
 import zombie.core.math.PZMath;
@@ -125,10 +126,32 @@ public class DryingCraftLogic extends CraftLogic {
       return temperature;
    }
 
+   // PLZ: recipe time is counted in one-hour-day seconds whatever DayLength is, so vanilla printed a 3 real hour dry as 3 days.
+   private void plzDoGameTimeProgress(Layout layout, CraftRecipeData craftRecipeData) {
+      LayoutItem item = layout.addItem();
+      item.setLabel(Translator.getText("EC_CraftLogicTooltip_Progress") + ":", 1.0F, 1.0F, 1.0F, 1.0F);
+      int progress = (int)(this.getProgress(craftRecipeData) * 100.0);
+      item.setValue(String.format(Locale.ENGLISH, "%d%%", progress), 1.0F, 1.0F, 0.8F, 1.0F);
+      item = layout.addItem();
+      item.setLabel(Translator.getText("EC_CraftLogicTooltip_TimeRemaining") + ":", 1.0F, 1.0F, 1.0F, 1.0F);
+      double remaining = craftRecipeData.getRecipe().getTime() - craftRecipeData.getElapsedTime();
+      int timeRemaining = (int)(remaining * 60.0 / GameTime.getInstance().getMinutesPerDay());
+      int ss = timeRemaining % 60;
+      int mm = timeRemaining / 60 % 60;
+      int hh = timeRemaining / 3600 % 24;
+      int dd = Math.floorDiv(timeRemaining, 86400);
+      item.setValue(String.format(Locale.ENGLISH, "%02dd %02dh %02dm %02ds", dd, hh, mm, ss), 1.0F, 1.0F, 0.8F, 1.0F);
+   }
+
    @Override
    public void doProgressTooltip(Layout layout, Resource resource, CraftRecipeData craftRecipeData) {
       double wetness = this.temporaryWetnesses.containsKey(craftRecipeData) ? this.temporaryWetnesses.get(craftRecipeData) : 0.0;
-      super.doProgressTooltip(layout, resource, craftRecipeData);
+      if (this.isRunning() && craftRecipeData != null) {
+         this.plzDoGameTimeProgress(layout, craftRecipeData);
+      } else {
+         super.doProgressTooltip(layout, resource, craftRecipeData);
+      }
+
       if (this.isRunning()) {
          float dryingFactor = this.getDryingFactor();
          boolean paused = wetness > 0.0 || dryingFactor <= 0.0F;

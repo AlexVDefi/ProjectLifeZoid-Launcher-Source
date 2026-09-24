@@ -7,6 +7,7 @@ import zombie.characters.IsoGameCharacter;
 import zombie.characters.IsoPlayer;
 import zombie.characters.BodyDamage.BodyDamage;
 import zombie.characters.BodyDamage.BodyPart;
+import zombie.characters.animals.IsoAnimal;
 
 public final class PLZDowned {
     private PLZDowned() {
@@ -40,10 +41,18 @@ public final class PLZDowned {
     }
 
     public static boolean isDowned(IsoGameCharacter character) {
-        if (!(character instanceof IsoPlayer player)) {
+        if (!(playerOf(character) instanceof IsoPlayer player)) {
             return false;
         }
         return isDowned(player.getUsername());
+    }
+
+    // IsoAnimal extends IsoPlayer with no username, so without this no animal could ever die.
+    static IsoPlayer playerOf(IsoGameCharacter character) {
+        if (character instanceof IsoAnimal || !(character instanceof IsoPlayer player)) {
+            return null;
+        }
+        return player;
     }
 
     static boolean allowsDeath(String username) {
@@ -51,7 +60,7 @@ public final class PLZDowned {
     }
 
     public static boolean preventDeath(IsoGameCharacter character) {
-        if (!(character instanceof IsoPlayer player)) {
+        if (!(playerOf(character) instanceof IsoPlayer player)) {
             return false;
         }
 
@@ -76,7 +85,7 @@ public final class PLZDowned {
     }
 
     public static void enforce(IsoGameCharacter character) {
-        if (!(character instanceof IsoPlayer player)) {
+        if (!(playerOf(character) instanceof IsoPlayer player)) {
             return;
         }
 
@@ -117,7 +126,7 @@ public final class PLZDowned {
     }
 
     public static float onOverallHealth(IsoGameCharacter character, float computed) {
-        if (!(character instanceof IsoPlayer player)) {
+        if (!(playerOf(character) instanceof IsoPlayer player)) {
             return computed;
         }
 

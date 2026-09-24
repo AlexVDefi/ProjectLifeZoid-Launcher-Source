@@ -174,6 +174,7 @@ public final class WorldStreamer {
             if (this.chunkHeadMain != null) {
                 this.chunkRequests0.add(this.chunkHeadMain);
                 this.chunkHeadMain = null;
+                PLZStreamerWake.signal();
             }
         }
 
@@ -364,7 +365,7 @@ public final class WorldStreamer {
             }
 
             if (!this.pendingRequests1.isEmpty()) {
-                Thread.sleep(20L);
+                PLZStreamerWake.idle(20L);
                 return;
             }
 
@@ -478,10 +479,12 @@ public final class WorldStreamer {
 
             if (chunk.jobType != IsoChunk.JobType.Convert && chunk.jobType != IsoChunk.JobType.SoftReset) {
                 if (PLZRecalcPool.active() && Thread.currentThread() == this.worldStreamer && !chunk.refs.isEmpty()) {
+                    boolean firstPassDone = false;
                     boolean submitted = false;
 
                     try {
                         chunk.recalcLoop1();
+                        firstPassDone = true;
                         submitted = PLZRecalcPool.submit(chunk);
                     } catch (Exception ex) {
                         ExceptionLogger.logException(ex);
@@ -489,6 +492,14 @@ public final class WorldStreamer {
 
                     if (submitted) {
                         return;
+                    }
+
+                    if (firstPassDone) {
+                        try {
+                            chunk.recalcPooled();
+                        } catch (Exception ex) {
+                            ExceptionLogger.logException(ex);
+                        }
                     }
                 } else {
                     try {
@@ -696,6 +707,7 @@ public final class WorldStreamer {
                     request.bb.position(fileSize);
                     this.pendingRequests.remove(i);
                     request.flagsUdp |= 16;
+                    PLZStreamerWake.signal();
                     if (this.requestingLargeArea) {
                         this.largeAreaDownloads++;
                     }

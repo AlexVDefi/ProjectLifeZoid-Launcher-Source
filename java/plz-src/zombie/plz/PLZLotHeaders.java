@@ -42,12 +42,14 @@ public final class PLZLotHeaders {
                 return mapFiles.getLotHeader(lotHeader.cellX, lotHeader.cellY).getZombieIntensity(chunkX + chunkY * CHUNKS_PER_CELL_SIDE) & 0xFF;
             }
 
-            if (!cache.known[j]) {
-                cache.byLayer[j] = mapFiles.getLotHeader(lotHeader.cellX, lotHeader.cellY);
-                cache.known[j] = true;
+            // One read into a local: the streamer and the main thread share this cache without a lock.
+            LotHeader layer = cache.byLayer[j];
+            if (layer == null) {
+                layer = mapFiles.getLotHeader(lotHeader.cellX, lotHeader.cellY);
+                cache.byLayer[j] = layer;
             }
 
-            return cache.byLayer[j].getZombieIntensity(chunkX + chunkY * CHUNKS_PER_CELL_SIDE) & 0xFF;
+            return layer.getZombieIntensity(chunkX + chunkY * CHUNKS_PER_CELL_SIDE) & 0xFF;
         }
 
         return -1;
@@ -57,13 +59,11 @@ public final class PLZLotHeaders {
     public static final class Cache {
         public final LotHeader header;
         final LotHeader[] byLayer;
-        final boolean[] known;
 
         public Cache(LotHeader header) {
             this.header = header;
             int n = IsoLot.MapFiles.size();
             this.byLayer = new LotHeader[n];
-            this.known = new boolean[n];
         }
     }
 }

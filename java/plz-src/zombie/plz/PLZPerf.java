@@ -92,6 +92,10 @@ public final class PLZPerf {
     /** Minimum ms between re-bakes of a texture dirtied only by a lighting change. 0 = vanilla. */
     public static final int LIGHTING_REBAKE_MS = integer("lightingRebakeMs", 250, 0);
 
+    /** Torches, light switches, generators, room reveals and the player's own surroundings skip
+     *  the lighting rate limit; torch-lit chunks skip the budget too. Off: every change is drift. */
+    public static final boolean URGENT_LIGHTING = bool("urgentLighting", true);
+
     // --- cutaways, occlusion and lighting queries ------------------------------------------
 
     /** Clean chunk levels replay their stored occluder masks instead of re-testing every square. */
@@ -158,11 +162,12 @@ public final class PLZPerf {
     public static final boolean STREAMER_WAKE = bool("streamerWake", true);
 
     /** At most 1 + queued/divisor chunks handed to the game thread per frame, so an arriving row
-     *  spreads over a few frames instead of one long one. 0 = vanilla's up to 4 a frame. */
+     *  spreads over a few frames. 0 = vanilla's uncapped 1 + queued*3/chunkGridWidth. */
     public static final int CHUNK_HANDOFF_DIVISOR = integer("chunkHandoffDivisor", 8, 0);
 
-    /** Serialise the periodic hot save one part per streamer update instead of all in one frame. */
-    public static final boolean HOTSAVE_STAGED = bool("hotsaveStaged", true);
+    /** Serialise the periodic hot save one part per streamer update instead of all in one frame.
+     *  Off: a quit or sleep save can land before the staged parts and be overwritten by older ones. */
+    public static final boolean HOTSAVE_STAGED = bool("hotsaveStaged", false);
 
     /** Minimum seconds between the game-thread saves that follow a drained chunk-save queue. */
     public static final int HOTSAVE_INTERVAL_SEC = integer("hotsaveIntervalSec", 30, 0);
@@ -301,6 +306,7 @@ public final class PLZPerf {
             + " bakeBudget=" + BAKE_BUDGET
             + " rebakeBudget=" + REBAKE_BUDGET
             + " lightingBudget=" + LIGHTING_BUDGET
+            + " urgentLighting=" + URGENT_LIGHTING
             + " cutawayFast=" + CUTAWAY_FAST
             + " cutawayRadius=" + CUTAWAY_RADIUS
             + " gridStackInterval=" + GRID_STACK_INTERVAL

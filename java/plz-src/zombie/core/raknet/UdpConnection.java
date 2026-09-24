@@ -80,6 +80,7 @@ public class UdpConnection extends PacketsCache implements IConnection {
     public final TShortObjectHashMap<BaseVehicle.ServerVehicleState> vehicleStates = new TShortObjectHashMap<>();
     public final TShortObjectHashMap<IsoObject> thumpHits = new TShortObjectHashMap<>();
     public ZNetStatistics netStatistics;
+    public volatile zombie.plz.PLZNetProbe.Tally plzNetTally;
     public final Deque<Integer> pingHistory = new ArrayDeque<>();
     private int averagePing;
     private int lowestPing;
@@ -374,6 +375,11 @@ public class UdpConnection extends PacketsCache implements IConnection {
     }
 
     private void flipSendUnlock(ByteBuffer bb, int priority, int reliability, byte ordering, Lock lock) {
+        zombie.plz.PLZNetProbe.Tally tally = this.plzNetTally;
+        if (tally != null && bb.position() >= 3) {
+            tally.add(bb.getShort(1), bb.position());
+        }
+
         bb.flip();
         this.engine.peer.Send(bb, priority, reliability, ordering, this.connectedGuid, false);
         lock.unlock();

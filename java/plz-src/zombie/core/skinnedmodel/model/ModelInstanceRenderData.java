@@ -106,9 +106,8 @@ public final class ModelInstanceRenderData extends AnimatedModel.AnimatedModelIn
      * offset by its own size: the slider means the same distance whatever the body is set to, the
      * same promise the prop offsets make.
      *
-     * <p>WRITTEN STRAIGHT INTO THE FLOAT BUFFER. A stored lwjgl Matrix4f is column-major, so each
-     * sixteen-float block carries its translation at offsets 12, 13 and 14 - three adds per bone,
-     * no matrix objects and no allocation.
+     * <p>WRITTEN STRAIGHT INTO THE FLOAT BUFFER. The engine's row-vector matrices store their
+     * translation at offsets 3, 7 and 11 of each block - three adds per bone, no allocation.
      *
      * <p>COSTS ONE BOOLEAN READ when nobody on the server has a rig, which is every ordinary
      * server: {@code PLZBoneScale.isActive()} is the first line.
@@ -359,18 +358,17 @@ public final class ModelInstanceRenderData extends AnimatedModel.AnimatedModelIn
 
         for (int bone = 0; bone < numBones; bone++) {
             int base = bone * 16;
-            this.matrixPalette.put(base + 12, this.matrixPalette.get(base + 12) + deltaX);
-            this.matrixPalette.put(base + 13, this.matrixPalette.get(base + 13) + deltaY);
-            this.matrixPalette.put(base + 14, this.matrixPalette.get(base + 14) + deltaZ);
+            this.matrixPalette.put(base + 3, this.matrixPalette.get(base + 3) + deltaX);
+            this.matrixPalette.put(base + 7, this.matrixPalette.get(base + 7) + deltaY);
+            this.matrixPalette.put(base + 11, this.matrixPalette.get(base + 11) + deltaZ);
         }
     }
 
     /**
      * PLZ. Turn an offset given in the head bone's frame into one in model space.
      *
-     * <p>An lwjgl {@code Matrix4f} is column-major: {@code m00,m01,m02} is the local X axis,
-     * {@code m10,m11,m12} the local Y and {@code m20,m21,m22} the local Z. Each is normalised
-     * before use, and a collapsed axis contributes nothing rather than a NaN.
+     * <p>Row-vector convention: the local axes are the ROWS, {@code m00,m10,m20} and so on. Reading
+     * the columns turns the offset by the head's inverse rotation, so it swings the wrong way on a tilt.
      *
      * @return false when the skeleton has no head bone, in which case there is nothing to be
      *         relative to and the item is left where the animation put it
@@ -395,9 +393,9 @@ public final class ModelInstanceRenderData extends AnimatedModel.AnimatedModelIn
         delta[1] = 0.0F;
         delta[2] = 0.0F;
 
-        plzAddAxis(m.m00, m.m01, m.m02, offset[0], delta);
-        plzAddAxis(m.m10, m.m11, m.m12, offset[1], delta);
-        plzAddAxis(m.m20, m.m21, m.m22, offset[2], delta);
+        plzAddAxis(m.m00, m.m10, m.m20, offset[0], delta);
+        plzAddAxis(m.m01, m.m11, m.m21, offset[1], delta);
+        plzAddAxis(m.m02, m.m12, m.m22, offset[2], delta);
         return true;
     }
 

@@ -15,7 +15,8 @@ import java.util.Map;
  *
  *   1. A texture that does not exist yet is never deferred - deferring it would draw a hole.
  *   2. A texture dirtied ONLY by lighting drift is rate-limited by wall clock. Daylight moves
- *      continuously and nothing about it is urgent.
+ *      continuously and nothing about it is urgent. A light event skips this; a torch skips the
+ *      budget below as well. See the LIGHT_* levels.
  *   3. Everything else is capped per frame, with a hold limit in frames so that a texture which
  *      keeps losing the budget race still lands.
  *
@@ -38,6 +39,13 @@ public final class PLZBakeScheduler {
 
     /** Real content excluding a plain redraw request, which is cheap to satisfy late. */
     public static final long DIRTY_CONTENT_NOT_REDRAW = ~(DIRTY_REDRAW | DIRTY_LIGHTING);
+
+    /** Lighting that is only daylight or vision drift: rate-limited and spread over many frames. */
+    public static final int LIGHT_DRIFT = 0;
+    /** A light switched, a generator, a room revealed: no rate limit, and lands within a few frames. */
+    public static final int LIGHT_EVENT = 1;
+    /** A flashlight or headlight the player is watching move: re-bakes every frame it changes. */
+    public static final int LIGHT_TORCH = 2;
 
     /** Textures tracked before the maps are dropped wholesale. Identity maps over render chunks
      *  would otherwise grow for the life of the process as the manager recycles them. */
@@ -76,19 +84,27 @@ public final class PLZBakeScheduler {
      * @param contentDirty        dirty for any reason other than lighting drift
      * @param contentDirtyNotRedraw dirty for a reason other than lighting or a plain redraw
      * @param texture             the level's existing render chunk, or null if never baked
+     * @param lightUrgency        {@link #LIGHT_DRIFT}, {@link #LIGHT_EVENT} or {@link #LIGHT_TORCH}
      * @return true to bake now, false to leave it dirty and try again next frame
      */
     public boolean admit(boolean needsCreate, boolean contentDirty, boolean contentDirtyNotRedraw,
-        Object texture, int frame, long nowMs) {
+        int lightUrgency, Object texture, int frame, long nowMs) {
         // Nothing to draw from yet: a deferral here is a visible hole, not a delay.
         if (texture == null) {
             this.firstBakesUsed++;
             return true;
         }
 
+        // A moving light is what the player is watching; holding its re-bake makes the beam stutter.
+        if (lightUrgency >= LIGHT_TORCH && !needsCreate) {
+            this.rebakesUsed++;
+            this.heldSinceFrame.remove(texture);
+            return true;
+        }
+
         // 1. Lighting drift alone is never urgent, and is rate-limited by the clock so the
         //    behaviour does not change with frame rate.
-        if (!contentDirty && this.lightingTooSoon(texture, nowMs)) {
+        if (!contentDirty && lightUrgency < LIGHT_EVENT && this.lightingTooSoon(texture, nowMs)) {
             this.lightingHolds++;
             return this.defer(texture);
         }
@@ -105,7 +121,7 @@ public final class PLZBakeScheduler {
 
         // 3. Only a redraw and/or lighting over an existing texture: the cheap tier.
         if (!contentDirtyNotRedraw) {
-            return this.admitRebake(texture, frame, contentDirty);
+            return this.admitRebake(texture, frame, contentDirty, contentDirty || lightUrgency >= LIGHT_EVENT);
         }
 
         // Real content moved on a texture that already exists: always bake.
@@ -136,7 +152,7 @@ public final class PLZBakeScheduler {
      * The cheap tier gets its own per-frame budget, and a texture that loses the race is only
      * held for a bounded number of frames - otherwise a busy screen could starve one forever.
      */
-    private boolean admitRebake(Object texture, int frame, boolean contentChanged) {
+    private boolean admitRebake(Object texture, int frame, boolean contentChanged, boolean shortHold) {
         int budget = contentChanged ? PLZPerf.REBAKE_BUDGET : PLZPerf.LIGHTING_REBAKE_BUDGET;
         if (budget <= 0 || this.rebakesUsed < budget) {
             this.rebakesUsed++;
@@ -144,7 +160,7 @@ public final class PLZBakeScheduler {
             return true;
         }
 
-        int maxHold = contentChanged ? PLZPerf.REBAKE_MAX_FRAMES : PLZPerf.LIGHTING_REBAKE_MAX_FRAMES;
+        int maxHold = shortHold ? PLZPerf.REBAKE_MAX_FRAMES : PLZPerf.LIGHTING_REBAKE_MAX_FRAMES;
         Integer since = this.heldSinceFrame.get(texture);
         if (since == null) {
             this.track(this.heldSinceFrame, texture, frame);

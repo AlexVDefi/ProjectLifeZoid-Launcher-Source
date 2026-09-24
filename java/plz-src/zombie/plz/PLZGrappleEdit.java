@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import zombie.core.skinnedmodel.IGrappleable;
 import zombie.core.skinnedmodel.advancedanimation.GrappleOffsetBehaviour;
 
 /**
@@ -39,6 +40,7 @@ public final class PLZGrappleEdit {
 
     public static final String KIND_FORWARD = "forward";
     public static final String KIND_YAW = "yaw";
+    public static final String KIND_SIDE = "side";
 
     private static final float KEY_EPS = 0.005F;
 
@@ -52,9 +54,11 @@ public final class PLZGrappleEdit {
         volatile float forward;
         volatile float yaw;
         volatile float phase;
+        volatile float side;
         volatile GrappleOffsetBehaviour behaviour;
         volatile Curve forwardCurve;
         volatile Curve yawCurve;
+        volatile Curve sideCurve;
     }
 
     /**
@@ -129,6 +133,14 @@ public final class PLZGrappleEdit {
         e.behaviour = parseBehaviour(behaviour);
     }
 
+    /** Tiles to the holder's right, negative for left. Moves the held character without turning them. */
+    public static void setSide(String node, float side) {
+        Entry e = getOrCreate(node);
+        if (e != null) {
+            e.side = side;
+        }
+    }
+
     /** Shift the playhead of the HELD character against the holder, in fractions of the clip. */
     public static void setPhase(String node, float phase) {
         Entry e = getOrCreate(node);
@@ -148,12 +160,12 @@ public final class PLZGrappleEdit {
             return;
         }
 
-        boolean isYaw = KIND_YAW.equalsIgnoreCase(kind);
-        Curve next = insert(isYaw ? e.yawCurve : e.forwardCurve, fraction, value);
-        if (isYaw) {
-            e.yawCurve = next;
+        if (KIND_YAW.equalsIgnoreCase(kind)) {
+            e.yawCurve = insert(e.yawCurve, fraction, value);
+        } else if (KIND_SIDE.equalsIgnoreCase(kind)) {
+            e.sideCurve = insert(e.sideCurve, fraction, value);
         } else {
-            e.forwardCurve = next;
+            e.forwardCurve = insert(e.forwardCurve, fraction, value);
         }
     }
 
@@ -194,6 +206,7 @@ public final class PLZGrappleEdit {
         if (e != null) {
             e.forwardCurve = null;
             e.yawCurve = null;
+            e.sideCurve = null;
         }
     }
 
@@ -236,6 +249,11 @@ public final class PLZGrappleEdit {
         return e == null ? Float.NaN : e.yaw;
     }
 
+    public static float sideOf(String node) {
+        Entry e = find(node);
+        return e == null ? Float.NaN : e.side;
+    }
+
     public static float phaseOf(String node) {
         Entry e = find(node);
         return e == null ? Float.NaN : e.phase;
@@ -271,7 +289,10 @@ public final class PLZGrappleEdit {
         if (e == null) {
             return null;
         }
-        return KIND_YAW.equalsIgnoreCase(kind) ? e.yawCurve : e.forwardCurve;
+        if (KIND_YAW.equalsIgnoreCase(kind)) {
+            return e.yawCurve;
+        }
+        return KIND_SIDE.equalsIgnoreCase(kind) ? e.sideCurve : e.forwardCurve;
     }
 
     // ------------------------------------------------------------------ read by the engine
@@ -310,6 +331,32 @@ public final class PLZGrappleEdit {
         }
 
         return e.yaw;
+    }
+
+    /** The sideways distance in tiles, curve-evaluated when the node carries keys. Zero when unregistered. */
+    public static float side(String node, float fraction) {
+        Entry e = find(node);
+        if (e == null) {
+            return 0.0F;
+        }
+
+        Curve c = e.sideCurve;
+        if (c != null) {
+            float v = c.at(fraction);
+            if (!Float.isNaN(v)) {
+                return v;
+            }
+        }
+
+        return e.side;
+    }
+
+    /** Only when relativeTo is the HOLDER; the Grappler and tween-in paths place the holder, not the held. */
+    public static float sideFor(IGrappleable relativeTo) {
+        if (relativeTo == null || !relativeTo.isGrappling()) {
+            return 0.0F;
+        }
+        return side(relativeTo.getSharedGrappleAnimNode(), relativeTo.getSharedGrappleAnimFraction());
     }
 
     /** Never null: an unregistered node, or one whose behaviour never parsed, keeps the fallback. */

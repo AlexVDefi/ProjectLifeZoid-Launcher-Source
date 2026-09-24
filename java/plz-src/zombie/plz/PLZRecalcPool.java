@@ -109,15 +109,24 @@ public final class PLZRecalcPool {
             return false;
         }
 
-        executor().execute(() -> run(chunk, ticket));
+        try {
+            executor().execute(() -> run(chunk, ticket));
+        } catch (Throwable t) {
+            // A ticket that never reaches a worker would park the ring for good; fail it into the retry path.
+            ExceptionLogger.logException(t);
+            publisher.complete(ticket, false);
+        }
         return true;
     }
 
     private static void run(IsoChunk chunk, long ticket) {
         boolean ok = true;
         try {
-            chunk.recalcPooled();
+            if (!chunk.refs.isEmpty()) {
+                chunk.recalcPooled();
+            }
         } catch (Throwable t) {
+            ExceptionLogger.logException(t);
             ok = false;
         }
         publisher.complete(ticket, ok);

@@ -36,7 +36,7 @@ public class ChunkSaveWorker {
     public boolean saving;
     private static final SaveBufferMap saveBufferMap = new SaveBufferMap();
     private static long plzLastHotsaveNs;
-    private static int plzSkippedHotsaves;
+    private static boolean plzHotsavePending;
     private int plzHotsaveStage = -1;
     private static final int PLZ_HOTSAVE_STAGES = 9;
 
@@ -70,22 +70,30 @@ public class ChunkSaveWorker {
                 if (qs != null) {
                     this.WriteQueuedSave(qs);
                     if (this.toSaveQueue.isEmpty() && !GameClient.client && !GameServer.server) {
-                        int interval = PLZPerf.HOTSAVE_INTERVAL_SEC;
-                        long now = System.nanoTime();
-                        if (interval > 0 && now - plzLastHotsaveNs < interval * 1000000000L) {
-                            plzSkippedHotsaves++;
-                        } else {
-                            if (plzSkippedHotsaves > 0) {
-                                plzSkippedHotsaves = 0;
-                            }
-
-                            plzLastHotsaveNs = now;
-                            this.HotsaveAncilliarySystems();
-                        }
+                        plzHotsavePending = true;
                     }
                 }
             }
+
+            this.plzRunDueHotsave();
         }
+    }
+
+    /** A hot save held back by the interval still runs once it is due, not at some later drain. */
+    private void plzRunDueHotsave() {
+        if (!plzHotsavePending || this.plzHotsaveStage >= 0 || !this.toSaveQueue.isEmpty()) {
+            return;
+        }
+
+        int interval = PLZPerf.HOTSAVE_INTERVAL_SEC;
+        long now = System.nanoTime();
+        if (interval > 0 && now - plzLastHotsaveNs < interval * 1000000000L) {
+            return;
+        }
+
+        plzHotsavePending = false;
+        plzLastHotsaveNs = now;
+        this.HotsaveAncilliarySystems();
     }
 
     private boolean plzHotsaveStaged() {

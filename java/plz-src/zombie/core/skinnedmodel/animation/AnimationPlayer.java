@@ -1478,86 +1478,12 @@ public final class AnimationPlayer extends PooledObject {
         }
     }
 
-    // PLZ: per-bone proportions for a named account. The registry, the gate and the bone-to-group
-    // map are in zombie.plz.PLZBoneScale; what lives here is the one thing only this class knows,
-    // which is the hierarchy. Applied AFTER the animation has been sampled into boneTransforms and
-    // BEFORE the walk below composes them, so a scale reaches the skinning palette and everything
-    // skinned to the same skeleton - clothing, hair, hats - follows for free.
-    //
-    // ABSOLUTE, NEVER MULTIPLICATIVE. This method runs more than once per frame (transformRootChildBones
-    // calls it again for idle turns and aim-stance changes), so multiplying the scale already on the
-    // bone compounds it: the character would visibly inflate through a turn and snap back when the
-    // animation next re-samples. Writing an absolute value is idempotent however many times it runs.
-    // Vanilla animation data does not scale bones, so nothing of the clip's own is lost.
-    //
-    // Instance scratch, not static: nothing here promises to run only on the main thread, and two
-    // characters sharing one Vector3f would be a corruption that only shows up under load.
-    private final org.lwjgl.util.vector.Vector3f plzPos = new org.lwjgl.util.vector.Vector3f();
-    private final Quaternion plzRot = new Quaternion();
-    private final org.lwjgl.util.vector.Vector3f plzScale = new org.lwjgl.util.vector.Vector3f();
-    private int[] plzBoneGroup;
-    private float[] plzAccumX;
-    private float[] plzAccumY;
-    private float[] plzAccumZ;
-    private int plzRootBone = -1;
-    private SkinningData plzBoneGroupFor;
-
-    // PLZ: DO NOT "FIX" THE getPRS CALL BELOW. It was tried on 2026-09-13 and reverted the same
-    // day, and the reason is worth the paragraph.
-    //
-    // The engine's matrix-to-PRS conversion, BoneTransform.validatePRS, genuinely is lossy: it
-    // hard-codes the scale to 1,1,1 and reads the rotation with Quaternion.setFromMatrix, which
-    // assumes an orthonormal basis. applyTwistBone - the torso twist - leaves its bone MATRIX-backed
-    // with this pass's own scale in the basis, so the rotation that comes back is distorted by the
-    // scale. Reading the matrix and normalising the basis first makes it exact.
-    //
-    // AND THAT MADE IT WORSE, because the twist is a closed feedback loop through this pass.
-    // calculateDesiredTwist measures the error from getBoneModelTransform - our output - and
-    // applyTwistBone writes the correction back into boneTransforms, which we then process again
-    // next frame. The old distortion is applied identically every frame, so the controller settles
-    // against it; correcting the rotation moved the target out from under a controller that was
-    // already converged on the distorted one, and the arms visibly oscillated through every idle
-    // turn. Consistency beats correctness here: leave the engine's own convention alone.
-    //
-    // What was actually wrong with the turn was the DOUBLE NUDGE below, which is a separate bug and
-    // is fixed.
-    //
-    // PLZ: true while this pass is being re-run over a pose it has ALREADY processed.
-    //
-    // THE SCALE IS IDEMPOTENT AND THE NUDGE IS NOT, and that difference is the whole reason this
-    // field exists. Every scale below is written ABSOLUTELY, so running the pass twice writes the
-    // same number twice and nothing moves. The root offset is written by READING the translation
-    // and adding to it, so a second run adds it to its own output and the character is offset
-    // twice.
-    //
-    // It happens on exactly one path and it is not rare: the 180-degree idle turn fires the
-    // TurnAroundFlipSkeleton anim event, IsoGameCharacter answers it by multiplying a half-turn
-    // into the root bone and calling transformRootChildBones, and that ends with a second
-    // updateModelTransformsInternal over bone transforms this pass has already been through. So
-    // for the length of every turn-around the root sits at double its offset and snaps back when
-    // the turn ends - which reads as "the animation glitches when I turn", and only once the
-    // offset is non-zero, which is exactly when somebody has shrunk the legs and put the feet back
-    // on the floor.
-    private boolean plzReapplying;
-
-    // PLZ: a slow baseline of the root bone's vertical (Z) translation, and the clamp that keeps a
-    // shrunk-and-grounded model from SUDDENLY sinking below it. A fast idle->move->idle tap makes
-    // the blended root Z dip for a few frames; stacked on the grounding nudge (Toy is Z -0.31 on a
-    // 0.40 body) that dip clips the model through the floor, and it self-corrects the moment the
-    // blend settles. The baseline follows slow pose changes (walk sits lower than idle, crouch
-    // lower still) so those are allowed; only a drop faster and deeper than the walk bob is caught.
-    // NaN until the first grounded frame seeds it.
-    private float plzRootZBaseline = Float.NaN;
-    // How many consecutive frames the root has wanted to sit below the grounded floor. A blend
-    // artifact lasts ~0.6s and clears; a real crouch or sit does not, and past the hold-off the
-    // baseline is allowed to follow it down.
-    private int plzRootDipFrames;
+    // PLZ: boneTransforms stay vanilla so the twist, turn flip and blending never see the resize.
+    private PLZBoneScale.Layout plzLayout;
+    private Matrix4f[] plzLocal;
 
     private void plzApplyBoneScale() {
-        if (!PLZBoneScale.isActive()) {
-            return;
-        }
-        if (!(this.character instanceof IsoPlayer player)) {
+        if (!PLZBoneScale.isActive() || !(this.character instanceof IsoPlayer player)) {
             return;
         }
 
@@ -1571,186 +1497,32 @@ public final class AnimationPlayer extends PooledObject {
             return;
         }
 
-        // Keyed off the skinning data rather than rebuilt per frame: the skeleton is the same
-        // object for the whole life of a character, and a name lookup per bone per frame would
-        // cost more than everything else here put together.
-        if (this.plzBoneGroup == null || this.plzBoneGroup.length != count || this.plzBoneGroupFor != this.skinningData) {
-            this.plzBoneGroup = new int[count];
-            this.plzAccumX = new float[count];
-            this.plzAccumY = new float[count];
-            this.plzAccumZ = new float[count];
-            this.plzRootBone = -1;
+        if (this.plzLayout == null || !this.plzLayout.isFor(this.skinningData, count)) {
+            String[] names = new String[count];
+            int[] parents = new int[count];
+            boolean hasBind = this.skinningData.bindPose != null && this.skinningData.bindPose.size() >= count;
+            Matrix4f[] bind = hasBind ? new Matrix4f[count] : null;
+            this.plzLocal = new Matrix4f[count];
             for (int boneIdx = 0; boneIdx < count; boneIdx++) {
                 SkinningBone bone = this.skinningData.getBoneAt(boneIdx);
-                String name = bone == null ? null : bone.name;
-                this.plzBoneGroup[boneIdx] = PLZBoneScale.groupOfBone(name);
-                if (PLZBoneScale.isRootBone(name)) {
-                    this.plzRootBone = boneIdx;
+                names[boneIdx] = bone == null ? null : bone.name;
+                parents[boneIdx] = bone == null || bone.parent == null ? -1 : bone.parent.index;
+                if (hasBind) {
+                    bind[boneIdx] = this.getBindPoseBoneModelTransform(boneIdx, new Matrix4f());
                 }
+                this.plzLocal[boneIdx] = new Matrix4f();
             }
-            // A skeleton with no Bip01 would silently drop the whole-body size and the nudge with
-            // it, which reads as "the slider does nothing" rather than as a missing bone. Bone 0 is
-            // the next best root there is.
-            if (this.plzRootBone < 0 && count > 0) {
-                this.plzRootBone = 0;
-            }
-            this.plzBoneGroupFor = this.skinningData;
+            this.plzLayout = new PLZBoneScale.Layout(this.skinningData, names, parents, bind);
         }
-
-        float[] accumX = this.plzAccumX;
-        float[] accumY = this.plzAccumY;
-        float[] accumZ = this.plzAccumZ;
 
         for (int boneIdx = 0; boneIdx < count; boneIdx++) {
-            SkinningBone bone = this.skinningData.getBoneAt(boneIdx);
-            int parentIdx = bone == null || bone.parent == null ? -1 : bone.parent.index;
-            // The same ordering assumption the walk below already makes: a parent is laid out
-            // before its children, so its accumulated scale is known by the time a child needs it.
-            boolean hasParent = parentIdx >= 0 && parentIdx < boneIdx;
-            float parentX = hasParent ? accumX[parentIdx] : 1.0F;
-            float parentY = hasParent ? accumY[parentIdx] : 1.0F;
-            float parentZ = hasParent ? accumZ[parentIdx] : 1.0F;
-            if (parentX <= 0.0F) {
-                parentX = 1.0F;
-            }
-            if (parentY <= 0.0F) {
-                parentY = 1.0F;
-            }
-            if (parentZ <= 0.0F) {
-                parentZ = 1.0F;
-            }
-
-            int group = this.plzBoneGroup[boneIdx];
-            int prop = PLZBoneScale.propOfGroup(group);
-            boolean isRoot = boneIdx == this.plzRootBone;
-
-            if (isRoot) {
-                // WHOLE-BODY SIZE GOES HERE AND NOWHERE ELSE, and it is uniform on purpose.
-                // Written onto the root, every joint below moves by the same factor, so the
-                // skeleton stays in proportion with itself and the animation still reads
-                // correctly. Doing the same thing by shrinking the spine instead does NOT work:
-                // compensation restores a child's size but not where it is attached, so the arms
-                // end up swinging from the sternum.
-                accumX[boneIdx] = rig.overall;
-                accumY[boneIdx] = rig.overall;
-                accumZ[boneIdx] = rig.overall;
-            } else if (group == PLZBoneScale.GROUP_INHERIT) {
-                // Nothing named it, so it follows whatever it hangs off: every nub, finger, toe,
-                // cloth and backpack bone wants exactly that, and leaving the transform untouched
-                // is both correct and free.
-                accumX[boneIdx] = parentX;
-                accumY[boneIdx] = parentY;
-                accumZ[boneIdx] = parentZ;
-                continue;
-            } else if (prop >= 0) {
-                // A HELD ITEM IS ITS OWN SIZE, whatever the arm holding it is doing. The whole-body
-                // scale is deliberately absent from this line: a rifle does not shrink with the
-                // player, which is what makes a small character's grip need correcting at all.
-                accumX[boneIdx] = rig.propScaleX[prop];
-                accumY[boneIdx] = rig.propScaleY[prop];
-                accumZ[boneIdx] = rig.propScaleZ[prop];
-            } else {
-                // The group scale MULTIPLIES the whole-body size rather than replacing it, so
-                // "shrink me" and "but give me a big head" are two settings rather than eleven
-                // numbers to keep in step.
-                accumX[boneIdx] = rig.overall * rig.scaleX[group];
-                accumY[boneIdx] = rig.overall * rig.scaleY[group];
-                accumZ[boneIdx] = rig.overall * rig.scaleZ[group];
-            }
-
-            BoneTransform transform = this.boneTransforms[boneIdx];
-            // getPRS, AND DELIBERATELY SO - reading this "properly" was tried and reverted. See the
-            // note above plzReapplying.
-            transform.getPRS(this.plzPos, this.plzRot, this.plzScale);
-
-            // Divide the ancestors back out, so the slider means the size the bone RENDERS at
-            // rather than a multiplier on whatever the torso happens to be doing.
-            //
-            // PER AXIS, WHICH IS EXACT ONLY WHILE THE VALUES ARE UNIFORM. A bone's axes are its
-            // own, so where a child is rotated relative to its parent the parent's unequal axes
-            // reach it turned - shear rather than scale - and dividing by the parent's numbers no
-            // longer undoes exactly what the parent did. Equal values on all three collapse to the
-            // old uniform arithmetic, so the common case is unchanged; unequal ones are a rig
-            // limitation rather than something this could be written around. See PLZBoneScale.
-            this.plzScale.set(
-                accumX[boneIdx] / parentX,
-                accumY[boneIdx] / parentY,
-                accumZ[boneIdx] / parentZ);
-
-            if (isRoot && !this.plzReapplying) {
-                // In the PARENT's space, so it is not multiplied by the size above - a nudge that
-                // put the feet on the floor keeps doing so when the overall scale changes.
-                //
-                // ADDITIVE, WHICH IS WHY IT IS THE ONE THING GUARDED. See plzReapplying: this
-                // reads the translation and adds to it, so a re-run over a pose that has already
-                // been through here would offset it twice. The scales above need no such guard -
-                // they are absolute and idempotent however many times this runs.
-                this.plzPos.set(this.plzPos.x + rig.nudgeX, this.plzPos.y + rig.nudgeY, this.plzPos.z + rig.nudgeZ);
-                if (rig.overall < 0.99F) {
-                    // Z is the vertical axis. The grounded standing/walking pose holds Z in a tight
-                    // band (measured: ~0.15..0.24 around a 0.195 rest); a fast idle->move->idle tap
-                    // drives the blended root far below it - down to -0.31 - for about 0.6s, and
-                    // that is what punches the shrunk, -0.31-nudged body through the floor.
-                    float rawZ = this.plzPos.z;
-                    if (Float.isNaN(this.plzRootZBaseline)) {
-                        this.plzRootZBaseline = rawZ;
-                        this.plzRootDipFrames = 0;
-                    } else {
-                        // Margin sits just above the walk-bob amplitude, so the bob is never
-                        // clamped and the far deeper glitch dip always is.
-                        float margin = 0.055F;
-                        float floorZ = this.plzRootZBaseline - margin;
-                        if (rawZ >= floorZ) {
-                            // Inside the grounded band: no glitch. Track the bob and slow pose
-                            // changes - briskly when rising, gently when settling - never clamp.
-                            this.plzRootDipFrames = 0;
-                            float follow = rawZ > this.plzRootZBaseline ? 0.20F : 0.05F;
-                            this.plzRootZBaseline += (rawZ - this.plzRootZBaseline) * follow;
-                        } else {
-                            // Below the floor. Hold the model at the floor and FREEZE the baseline,
-                            // so a half-second dip cannot drag the floor down with it - that was the
-                            // flaw in the first attempt, where the EMA chased the dip and the model
-                            // still sank to -0.10. Only once a low pose PERSISTS past the hold-off -
-                            // a genuine crouch or sit, not a blend artifact - let the baseline
-                            // descend so the low pose is allowed.
-                            this.plzRootDipFrames++;
-                            if (this.plzRootDipFrames > 45) {
-                                this.plzRootZBaseline += (rawZ - this.plzRootZBaseline) * 0.03F;
-                                floorZ = this.plzRootZBaseline - margin;
-                            }
-                            if (rawZ < floorZ) {
-                                this.plzPos.z = floorZ;
-                            }
-                        }
-                    }
-                } else {
-                    // Not shrunk (Normal preset): drop the baseline so a later shrink re-seeds from
-                    // its own grounded pose rather than a stale full-size one.
-                    this.plzRootZBaseline = Float.NaN;
-                    this.plzRootDipFrames = 0;
-                }
-            } else if (prop >= 0 && !this.plzReapplying) {
-                // WHERE A HELD ITEM SITS, and the division is the point of it. This translation is
-                // in the HAND's space, so the composition below multiplies it by everything above -
-                // an offset written raw would move a gun half as far once the body was halved, and
-                // every alignment would have to be found again at every size. Dividing the parent's
-                // accumulated scale back out first makes the number mean the distance the prop
-                // actually moves, so the alignment holds while the overall slider is dragged.
-                //
-                // Guarded with the root offset and for the same reason: it is added to the
-                // translation rather than written over it, so a re-run would move the gun twice.
-                this.plzPos.set(
-                    this.plzPos.x + rig.propOffsetX[prop] / parentX,
-                    this.plzPos.y + rig.propOffsetY[prop] / parentY,
-                    this.plzPos.z + rig.propOffsetZ[prop] / parentZ);
-            }
-
-            transform.set(this.plzPos, this.plzRot, this.plzScale);
+            this.boneTransforms[boneIdx].getMatrix(this.plzLocal[boneIdx]);
         }
+
+        PLZBoneScale.compose(this.plzLayout, rig, this.plzLocal, this.modelTransforms);
     }
 
     private void updateModelTransformsInternal() {
-        this.plzApplyBoneScale(); // PLZ
         this.boneTransforms[0].getMatrix(this.modelTransforms[0]);
 
         for (int boneIdx = 1; boneIdx < this.modelTransforms.length; boneIdx++) {
@@ -1758,6 +1530,8 @@ public final class AnimationPlayer extends PooledObject {
             SkinningBone parentBone = bone.parent;
             BoneTransform.mul(this.boneTransforms[bone.index], this.modelTransforms[parentBone.index], this.modelTransforms[bone.index]);
         }
+
+        this.plzApplyBoneScale(); // PLZ
     }
 
     public void transformRootChildBones(String boneName, Quaternion rotation) {
@@ -1771,23 +1545,7 @@ public final class AnimationPlayer extends PooledObject {
             }
         }
 
-        // PLZ: the bone transforms below have ALREADY been through plzApplyBoneScale this frame -
-        // that is what the normal update did before the turn event got here - and the call under
-        // this line runs it over them a second time. The scales are absolute and do not care; the
-        // two ADDITIVE channels, the root offset and the prop offsets, would be applied twice. See
-        // the plzReapplying field.
-        //
-        // try/finally rather than two plain assignments: nothing below is expected to throw, but a
-        // flag left set would silently disable the root offset for the rest of this character's
-        // life, which is a far harder thing to notice than the double offset it exists to prevent.
-        this.plzReapplying = true; // PLZ
-
-        try {
-            this.updateModelTransformsInternal();
-        } finally {
-            this.plzReapplying = false; // PLZ
-        }
-
+        this.updateModelTransformsInternal();
         HelperFunctions.returnMatrix(rotationMatrix);
     }
 

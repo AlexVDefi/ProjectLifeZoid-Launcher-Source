@@ -1128,6 +1128,7 @@ public class GameServer {
                             GameTime.instance.fpsMultiplier = 60.0F / averageFPS;
                             launchCommandHandler();
                             StatisticManager.getInstance().update(dif);
+                            zombie.plz.PLZNetProbe.update(udpEngine.connections);
                             if (!SteamUtils.isSteamModeEnabled()) {
                                 PublicServerUtil.update();
                                 PublicServerUtil.updatePlayerCountIfChanged();

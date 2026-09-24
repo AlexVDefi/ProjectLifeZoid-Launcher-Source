@@ -5,56 +5,11 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.lwjgl.util.vector.Matrix4f;
 
 /**
  * PLZ. Per-bone proportions for a named account: the registry of who is scaled and by how much,
- * read by {@code AnimationPlayer.plzApplyBoneScale} once per hierarchy walk.
- *
- * <p>WHY BONES AND NOT A MODEL SCALE. Vanilla B42 has exactly one scale channel that reaches a
- * skinned character - {@code ModelSlotRenderData.finalScale} - and it is gated to
- * {@code IsoAnimal}. Ungating it carries its own tail of work (attachment sockets, the corpse
- * atlas, collision). The bone palette is already per-character, already per-frame, and already
- * carries a scale on every bone, so both SIZE and SHAPE cost one insertion point here and no new
- * render state.
- *
- * <p>TWO CHANNELS, AND THEY MULTIPLY. {@link Rig#overall} is whole-body size, written onto the
- * ROOT bone so every joint below it moves by the same factor and the skeleton stays in proportion
- * with itself. The eleven group scales are shape, and they multiply on top of it.
- *
- * <p>THE GROUP SCALES ARE ABSOLUTE, NOT INHERITED. A bone's local scale multiplies everything
- * below it in the chain, so a torso at 0.5 would halve the head as well and "big head, small body"
- * would be a fight between two sliders. Every scaled bone therefore divides the accumulated scale
- * of its ancestors back out, which makes each slider mean what it says: head 2.0 renders a head
- * twice the size the overall scale would have given it, whatever the torso is doing. The
- * accumulation is computed in {@code AnimationPlayer}, the only place that knows the hierarchy.
- *
- * <p>WHICH IS WHY "SHRINK ME" BELONGS ON {@code overall} AND NOT ON THE TORSO. Compensation
- * restores a child bone's SIZE but it cannot restore where that child is ATTACHED: a shrunken
- * spine pulls the clavicles, and with them the whole arm, toward the middle of the body, so the
- * arms end up swinging from the sternum and the animation reads as broken. Scaling at the root has
- * no such problem, because every joint moves together.
- *
- * <p>HELD ITEMS ARE EXEMPT FROM THE BODY, AND CARRY THEIR OWN CHANNEL. {@code Bip01_Prop1} and
- * {@code Bip01_Prop2} are in no body group: whatever the arm holding them is doing, they render at
- * their own scale, which defaults to 1.0 so a shotgun stays a shotgun in a giant's hand.
- *
- * <p>THAT DEFAULT IS ALSO THE PROBLEM THE PROP CHANNEL EXISTS TO FIX. A world-sized rifle in a hand
- * shrunk to two thirds is no longer where the animation put it - the grip is the right size and the
- * wrong place, because the hand moved and the prop did not. So each prop bone carries three scales
- * and three offsets of its own, found by eye in one drag exactly like the root offset.
- *
- * <p>A PROP OFFSET IS DIVIDED BY ITS PARENT'S ACCUMULATED SCALE, which is what makes it worth
- * having. A bone's local translation is turned and stretched by its parent's matrix, so the same
- * number written raw would move the gun half as far once the body was halved - the alignment would
- * drift every time the overall size changed and have to be found again. Dividing the parent's scale
- * back out first makes the slider mean the distance the prop actually MOVES, so an alignment found
- * once survives resizing the body.
- *
- * <p>THERE IS NO GROUND CORRECTION, AND THAT IS WHY THE NUDGE EXISTS. Shrinking the legs pulls
- * the feet up toward the hips, because a child bone's local translation is scaled by its
- * parent's matrix - the character floats. Working that out automatically means measuring the
- * rest pose and knowing which axis is up in this rig, neither of which has been verified, so
- * the root bone gets three manual offsets instead and the answer is found by eye in one drag.
+ * and {@link #compose}, which resizes the drawn palette without touching the animation's own bones.
  *
  * <p>WHO MAY BE SCALED IS DECIDED HERE, not only in the UI, the same shape
  * {@link PLZVoiceChanger} uses: the management row is hidden from everyone else and this refuses
@@ -166,7 +121,7 @@ public final class PLZBoneScale {
     public static final float MIN_SCALE = 0.2F;
     public static final float MAX_SCALE = 4.0F;
 
-    /** Root offset bound, in bone units. Wide enough to put the feet back on the floor. */
+    /** Root offset bound, in rendered units. A fine-tune on top of the automatic grounding. */
     public static final float MAX_NUDGE = 1.0F;
 
     /** Prop offset bound, in bone units. Wide enough to move a rifle clean out of a hand. */
@@ -174,6 +129,15 @@ public final class PLZBoneScale {
 
     /** The bone the nudge moves. Named rather than assumed to be index 0: {@code Dummy01} is. */
     public static final String ROOT_BONE = "bip01";
+
+    public static final String LEFT_FOOT_BONE = "bip01_l_foot";
+    public static final String RIGHT_FOOT_BONE = "bip01_r_foot";
+
+    /** Model-space height over which grounding hands over from one foot to the other. */
+    private static final float FOOT_BLEND = 0.02F;
+
+    /** Bound on the bind-pose ankle height, in case a rig's bind pose is not stood on the floor. */
+    private static final float MAX_ANKLE = 0.25F;
 
     private static final Map<String, Integer> GROUP_INDEX = new HashMap<>();
     private static final Map<String, Integer> BONE_GROUP = new HashMap<>();
@@ -220,27 +184,10 @@ public final class PLZBoneScale {
 
     /** One account's rig. Mutated only through the setters below, read on the render path. */
     public static final class Rig {
-        /**
-         * Whole-body size, applied at the root bone so every joint moves together. The per-group
-         * scales MULTIPLY on top of it, which is what makes "shrink me, then give me a big head"
-         * two independent settings instead of eleven numbers to keep in step.
-         *
-         * <p>DELIBERATELY UNIFORM, unlike the groups. Its whole justification is that every joint
-         * moves coherently; a squashed root would put shear into the entire skeleton at once.
-         * Squashing the whole body is still reachable - unlink every group and set them alike.
-         */
+        /** Whole-body size, uniform, about the model origin; the group scales multiply on top. */
         public volatile float overall = 1.0F;
 
-        /**
-         * Per group, per axis, in the bone's OWN local space. Three arrays rather than one array of
-         * triples because this is read once per bone per hierarchy walk and the walk should not be
-         * chasing object headers.
-         *
-         * <p>WHICH AXIS IS WHICH IS NOT DOCUMENTED ANYWHERE, and is not guessed at here. These are
-         * 3ds Max Biped names, where the convention is X down the bone, but that has never been
-         * checked against PZ's rig - so the window labels them X/Y/Z and lets one drag answer it,
-         * the same way the root offsets do.
-         */
+        /** Per group, per axis, in the bone's OWN local space. */
         public final float[] scaleX = new float[GROUPS.length];
         public final float[] scaleY = new float[GROUPS.length];
         public final float[] scaleZ = new float[GROUPS.length];
@@ -258,11 +205,7 @@ public final class PLZBoneScale {
         public final float[] propScaleY = new float[PROPS.length];
         public final float[] propScaleZ = new float[PROPS.length];
 
-        /**
-         * Where the prop sits, in bone units, after its parent's scale has been divided back out -
-         * so the number is the distance it MOVES rather than a distance in a frame that shrinks
-         * with the arm. See the class javadoc.
-         */
+        /** Where the prop sits, in the hand's frame, in rendered units whatever the body's size. */
         public final float[] propOffsetX = new float[PROPS.length];
         public final float[] propOffsetY = new float[PROPS.length];
         public final float[] propOffsetZ = new float[PROPS.length];
@@ -466,18 +409,7 @@ public final class PLZBoneScale {
         return index >= 0 && index < PROPS.length ? index : -1;
     }
 
-    /**
-     * One group of one account's rig, one value per local axis.
-     *
-     * <p>NON-UNIFORM SCALE DOES NOT COMPOSE CLEANLY THROUGH A ROTATED HIERARCHY, and it is worth
-     * saying so rather than letting somebody find out. A bone's axes are its own; where a child is
-     * rotated relative to its parent, the parent's unequal axes reach the child turned, which is
-     * shear rather than scale. Two consequences: the mesh skews at joints that bend, and the
-     * ancestor division this class relies on to keep the sliders independent is exact only while
-     * the values are uniform. Equal values on all three axes degenerate to the uniform case and
-     * behave exactly as they did before this existed, so nothing regressed - but a flattened
-     * shoulder will look stranger than a small one, and that is the rig, not a bug here.
-     */
+    /** One group of one account's rig, one value per local axis. */
     public static void setAxes(String username, String group, float x, float y, float z) {
         Integer index = group == null ? null : GROUP_INDEX.get(group.trim().toLowerCase(Locale.ROOT));
         if (index == null) {
@@ -499,19 +431,6 @@ public final class PLZBoneScale {
         setAxes(username, group, value, value, value);
     }
 
-    /**
-     * Whole-body size. A separate channel from the groups because it is a different question: the
-     * groups say what SHAPE the body is, this says how big that shape is drawn, and a player
-     * wanting a smaller character should not have to drag eleven sliders in step to get one.
-     *
-     * <p>IT IS ALSO THE FIX FOR A REAL PROBLEM WITH DOING IT THE OTHER WAY. Shrinking a chain bone
-     * such as the spine pulls everything hanging off it INWARD - the clavicles, and with them the
-     * whole arm, move toward the middle of the body - because a child bone's local position is
-     * scaled by its parent's matrix. The group scale restores the child's SIZE but cannot restore
-     * where it is attached, so a small chest gives arms that sprout from the sternum and swing from
-     * the wrong origin. Scaling at the root moves every joint by the same factor, so the skeleton
-     * stays in proportion with itself and the animation still reads correctly.
-     */
     public static void setOverall(String username, float value) {
         Rig rig = editable(username);
         if (rig == null) {
@@ -550,7 +469,7 @@ public final class PLZBoneScale {
         settle(username, rig);
     }
 
-    /** Where that item sits. See the class javadoc for why it is divided by the parent's scale. */
+    /** Where that item sits, in the hand's frame and rendered units. */
     public static void setPropOffset(String username, String prop, float x, float y, float z) {
         int index = propIndex(prop);
         if (index < 0) {
@@ -788,6 +707,188 @@ public final class PLZBoneScale {
 
     public static boolean isRootBone(String boneName) {
         return boneName != null && ROOT_BONE.equalsIgnoreCase(boneName.trim());
+    }
+
+    /** One skeleton's hierarchy as {@link #compose} needs it, plus its per-frame scratch. */
+    public static final class Layout {
+        final Object owner;
+        final int count;
+        final int[] parent;
+        final int[] group;
+        final int root;
+        final int footL;
+        final int footR;
+        final int footUpAxisL;
+        final int footUpAxisR;
+        final float ankle;
+        final Matrix4f[] chain;
+        final float[] effX;
+        final float[] effY;
+        final float[] effZ;
+
+        public Layout(Object owner, String[] names, int[] parents, Matrix4f[] bindModel) {
+            this.owner = owner;
+            this.count = names.length;
+            this.parent = new int[this.count];
+            this.group = new int[this.count];
+            this.chain = new Matrix4f[this.count];
+            this.effX = new float[this.count];
+            this.effY = new float[this.count];
+            this.effZ = new float[this.count];
+
+            int rootIdx = -1;
+            int left = -1;
+            int right = -1;
+            for (int i = 0; i < this.count; i++) {
+                int p = parents[i];
+                this.parent[i] = p >= 0 && p < i ? p : -1;
+                this.group[i] = groupOfBone(names[i]);
+                this.chain[i] = new Matrix4f();
+                if (isRootBone(names[i])) {
+                    rootIdx = i;
+                } else if (LEFT_FOOT_BONE.equalsIgnoreCase(names[i])) {
+                    left = i;
+                } else if (RIGHT_FOOT_BONE.equalsIgnoreCase(names[i])) {
+                    right = i;
+                }
+            }
+
+            this.root = rootIdx < 0 && this.count > 0 ? 0 : rootIdx;
+            boolean feet = left >= 0 && right >= 0 && bindModel != null;
+            this.footL = feet ? left : -1;
+            this.footR = feet ? right : -1;
+            this.footUpAxisL = feet ? upAxis(bindModel[left]) : 0;
+            this.footUpAxisR = feet ? upAxis(bindModel[right]) : 0;
+            float ankleHeight = feet ? (bindModel[left].m13 + bindModel[right].m13) * 0.5F : 0.0F;
+            this.ankle = ankleHeight < 0.0F ? 0.0F : Math.min(ankleHeight, MAX_ANKLE);
+        }
+
+        public boolean isFor(Object owner, int count) {
+            return this.owner == owner && this.count == count;
+        }
+
+        private static int upAxis(Matrix4f m) {
+            float x = Math.abs(m.m10);
+            float y = Math.abs(m.m11);
+            float z = Math.abs(m.m12);
+            return x >= y && x >= z ? 0 : (y >= z ? 1 : 2);
+        }
+    }
+
+    /**
+     * {@code local} is only read; {@code model} is vanilla on entry, resized on return. Engine row-vector
+     * matrices, Y up, floor at 0. No scale enters the composed chain, so nothing inherits or shears.
+     */
+    public static void compose(Layout layout, Rig rig, Matrix4f[] local, Matrix4f[] model) {
+        int count = layout.count;
+        float u = rig.overall;
+        float invU = 1.0F / u;
+        Matrix4f[] chain = layout.chain;
+        float[] ex = layout.effX;
+        float[] ey = layout.effY;
+        float[] ez = layout.effZ;
+
+        boolean feet = layout.footL >= 0;
+        float vanillaL = feet ? model[layout.footL].m13 : 0.0F;
+        float vanillaR = feet ? model[layout.footR].m13 : 0.0F;
+
+        for (int i = 0; i < count; i++) {
+            int p = layout.parent[i];
+            float px = p >= 0 ? ex[p] : 1.0F;
+            float py = p >= 0 ? ey[p] : 1.0F;
+            float pz = p >= 0 ? ez[p] : 1.0F;
+
+            Matrix4f d = chain[i];
+            d.load(local[i]);
+            d.m03 *= px;
+            d.m13 *= py;
+            d.m23 *= pz;
+
+            int group = layout.group[i];
+            int prop = propOfGroup(group);
+            if (i == layout.root) {
+                ex[i] = 1.0F;
+                ey[i] = 1.0F;
+                ez[i] = 1.0F;
+            } else if (prop >= 0) {
+                d.m03 += rig.propOffsetX[prop] * invU;
+                d.m13 += rig.propOffsetY[prop] * invU;
+                d.m23 += rig.propOffsetZ[prop] * invU;
+                ex[i] = rig.propScaleX[prop] * invU;
+                ey[i] = rig.propScaleY[prop] * invU;
+                ez[i] = rig.propScaleZ[prop] * invU;
+            } else if (group >= 0) {
+                ex[i] = rig.scaleX[group];
+                ey[i] = rig.scaleY[group];
+                ez[i] = rig.scaleZ[group];
+            } else {
+                ex[i] = px;
+                ey[i] = py;
+                ez[i] = pz;
+            }
+
+            if (p >= 0) {
+                Matrix4f.mul(d, chain[p], d);
+            }
+        }
+
+        float lift = 0.0F;
+        if (feet) {
+            float liftL = groundTarget(layout, vanillaL, layout.footL, layout.footUpAxisL) - chain[layout.footL].m13;
+            float liftR = groundTarget(layout, vanillaR, layout.footR, layout.footUpAxisR) - chain[layout.footR].m13;
+            float weightL = 1.0F / (1.0F + (float)Math.exp((vanillaL - vanillaR) / FOOT_BLEND));
+            lift = liftL * weightL + liftR * (1.0F - weightL);
+        }
+
+        float offX = 0.0F;
+        float offY = lift;
+        float offZ = 0.0F;
+        float nx = rig.nudgeX * invU;
+        float ny = rig.nudgeY * invU;
+        float nz = rig.nudgeZ * invU;
+        if (nx != 0.0F || ny != 0.0F || nz != 0.0F) {
+            // The offset is authored in the root's PARENT frame (Z up there), so turn it into model space.
+            int rootParent = layout.root >= 0 ? layout.parent[layout.root] : -1;
+            if (rootParent >= 0) {
+                Matrix4f b = chain[rootParent];
+                offX += nx * b.m00 + ny * b.m01 + nz * b.m02;
+                offY += nx * b.m10 + ny * b.m11 + nz * b.m12;
+                offZ += nx * b.m20 + ny * b.m21 + nz * b.m22;
+            } else {
+                offX += nx;
+                offY += ny;
+                offZ += nz;
+            }
+        }
+
+        for (int i = 0; i < count; i++) {
+            Matrix4f d = chain[i];
+            Matrix4f o = model[i];
+            float sx = ex[i] * u;
+            float sy = ey[i] * u;
+            float sz = ez[i] * u;
+            o.m00 = d.m00 * sx;
+            o.m10 = d.m10 * sx;
+            o.m20 = d.m20 * sx;
+            o.m30 = d.m30;
+            o.m01 = d.m01 * sy;
+            o.m11 = d.m11 * sy;
+            o.m21 = d.m21 * sy;
+            o.m31 = d.m31;
+            o.m02 = d.m02 * sz;
+            o.m12 = d.m12 * sz;
+            o.m22 = d.m22 * sz;
+            o.m32 = d.m32;
+            o.m03 = (d.m03 + offX) * u;
+            o.m13 = (d.m13 + offY) * u;
+            o.m23 = (d.m23 + offZ) * u;
+            o.m33 = d.m33;
+        }
+    }
+
+    private static float groundTarget(Layout layout, float vanillaY, int foot, int upAxis) {
+        float up = upAxis == 0 ? layout.effX[foot] : (upAxis == 1 ? layout.effY[foot] : layout.effZ[foot]);
+        return vanillaY - layout.ankle * (1.0F - up);
     }
 
     //============================================================//

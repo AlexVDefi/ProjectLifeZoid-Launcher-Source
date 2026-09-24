@@ -2321,6 +2321,7 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
       this.setFemale(animal.isFemale());
       this.data.parent = this;
       this.wild = animal.wild;
+      zombie.plz.PLZAnimalOwner.relocate(animal, this);
    }
 
    public void fertilize(IsoAnimal male, boolean force) {
