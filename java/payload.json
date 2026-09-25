@@ -157,6 +157,7 @@
     "zombie/core/TransactionManager",
     "zombie/core/raknet/UdpConnection",
     "zombie/core/skinnedmodel/advancedanimation/AnimationSet",
+    "zombie/entity/GameEntityManager",
     "zombie/entity/components/crafting/DryingCraftLogic",
     "zombie/entity/components/spriteconfig/SpriteConfig",
     "zombie/inventory/CompressIdenticalItems",
