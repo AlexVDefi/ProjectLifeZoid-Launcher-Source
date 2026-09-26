@@ -13,7 +13,13 @@ function arg(name, fallback) {
 
 const distDir = resolve(repo, "java", "dist");
 const outDir = resolve(repo, arg("out", "release"));
-const privPath = resolve(here, "keys", "release-private.pem");
+const unsigned = process.argv.includes("--unsigned");
+const signingKeyPem = process.env.PLZ_MANIFEST_SIGNING_KEY ?? "";
+if (!unsigned && !signingKeyPem.trim()) {
+    console.error("PLZ_MANIFEST_SIGNING_KEY is not set. The key lives only in the public repo's release environment:");
+    console.error("sign with tools\\ci-manifest.ps1, or pass --unsigned to build the manifest without signing it.");
+    process.exit(1);
+}
 
 const builtAgainstPath = join(distDir, "built-against.json");
 let builtAgainst;
@@ -248,16 +254,18 @@ const manifest = {
 const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8");
 writeFileSync(join(outDir, "manifest.json"), bytes);
 
-let privateKey;
-try {
-    privateKey = createPrivateKey(readFileSync(privPath));
-} catch {
-    console.error(`missing signing key: ${privPath}`);
-    console.error("run: node tools/keygen.mjs");
-    process.exit(1);
+if (!unsigned) {
+    let privateKey;
+    try {
+        privateKey = createPrivateKey(signingKeyPem);
+    } catch (e) {
+        console.error(`PLZ_MANIFEST_SIGNING_KEY is not a usable private key: ${e.message ?? e}`);
+        process.exit(1);
+    }
+    writeFileSync(join(outDir, "manifest.json.sig"), sign(null, bytes, privateKey));
 }
-writeFileSync(join(outDir, "manifest.json.sig"), sign(null, bytes, privateKey));
 
+console.log(`signature        ${unsigned ? "NONE (--unsigned)" : "manifest.json.sig"}`);
 console.log(`build            ${build}`);
 console.log(`client files     ${files.length}`);
 console.log(`server files     ${serverFiles.length}`);

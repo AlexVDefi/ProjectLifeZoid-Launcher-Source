@@ -1,0 +1,79 @@
+name: sign-updater
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Launcher release (vX.Y.Z) whose bundles to sign
+        required: true
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+jobs:
+  sign:
+    if: github.repository == 'AlexVDefi/ProjectLifeZoid-Launcher-Source'
+    runs-on: ubuntu-24.04
+    environment: release
+    concurrency:
+      group: sign-updater-${{ inputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      TAURI_CLI: 2.11.4
+    steps:
+      - name: Check the input
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must look like v1.2.3, got '$TAG'"; exit 1; }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Download the updater bundles
+        run: |
+          mkdir bundles
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir bundles \
+            --pattern '*-setup.exe' --pattern '*.AppImage' --pattern '*.app.tar.gz'
+          ls -la bundles
+          ls bundles/*-setup.exe >/dev/null || { echo "::error::$TAG has no Windows installer"; exit 1; }
+
+      - name: Sign only what the build workflow attested, all from one commit
+        run: |
+          set -o pipefail
+          signer="$GITHUB_REPOSITORY/.github/workflows/build.yml"
+          : > commits
+          for f in bundles/*; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
+              --deny-self-hosted-runners --format json \
+              | jq -r '.[].verificationResult.signature.certificate.sourceRepositoryDigest' >> commits \
+              || { echo "::error::$(basename "$f") has no attestation from $signer"; exit 1; }
+          done
+          n=$(sort -u commits | wc -l)
+          [ "$n" = "1" ] || { echo "::error::the bundles in $TAG come from $n different commits"; exit 1; }
+          echo "all bundles built by $signer from $(sort -u commits)"
+
+      - name: Install the Tauri CLI
+        run: npm install --no-save --ignore-scripts --prefix "$RUNNER_TEMP/tauri" "@tauri-apps/cli@$TAURI_CLI"
+
+      - name: Sign with the updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          for f in bundles/*; do
+            "$RUNNER_TEMP/tauri/node_modules/.bin/tauri" signer sign --password= "$f" >/dev/null
+          done
+
+      - name: Check every signature against the key tauri.conf.json pins
+        run: |
+          shopt -s extglob
+          node tools/verify-updater-sig.mjs bundles/!(*.sig)
+
+      - name: Attach the signatures to the release
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber bundles/*.sig

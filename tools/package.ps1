@@ -8,6 +8,9 @@ param(
 )
 
 if ($Portable) { $LocalTest = $true }
+if ($LocalBuild -and -not $LocalTest) {
+    throw "-LocalBuild can only make a -LocalTest build: the updater key lives only in the public repo's release environment, so a local installer can never be signed for players."
+}
 $fromCi = -not ($LocalTest -or $LocalBuild)
 
 $ErrorActionPreference = "Stop"
@@ -257,10 +260,9 @@ if ($fromCi) {
 } else {
     try { & (Join-Path $PSScriptRoot "cargo-target-on-d.ps1") } catch { "WARNING: $_" }
     "Building..."
-    $signKey = Join-Path $repo "tools\keys\updater-private.key"
-    if (-not (Test-Path -LiteralPath $signKey)) {
-        throw "missing $signKey -- run: cargo tauri signer generate -w ..\tools\keys\updater-private.key"
-    }
+    $signKey = Join-Path ([System.IO.Path]::GetTempPath()) ("plz-throwaway-" + [guid]::NewGuid().ToString("N") + ".key")
+    & cargo tauri signer generate --ci "--password=" -w $signKey | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $signKey)) { throw "could not make a throwaway updater key" }
     $buildVars = @{
         PLZ_MANIFEST_URL_BAKED             = $bakedUrl
         TAURI_SIGNING_PRIVATE_KEY          = (Get-Content -LiteralPath $signKey -Raw).Trim()
@@ -275,6 +277,7 @@ if ($fromCi) {
         Start-Sleep -Seconds 20
         $buildExit = Invoke-TauriBuild -WorkDir $buildDir -Vars $buildVars
     }
+    Remove-Item -Path "$signKey*" -Force -ErrorAction SilentlyContinue
     if ($buildExit -ne 0) { throw "cargo tauri build failed with exit code $buildExit" }
 
     $nsisDir = Join-Path $repo "src-tauri\target\release\bundle\nsis"

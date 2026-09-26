@@ -44,6 +44,12 @@ installers are both built by GitHub Actions in this repository, from a public co
 build carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
 signed by GitHub naming the commit and workflow that produced it.
 
+The signing keys are not on a maintainer's machine either. The manifest key and the launcher
+updater key are secrets of this repository's `release` environment, which only runs from `main`
+and only after the maintainer approves the run. `sign-manifest.yml` signs a manifest only for a
+payload `payload.yml` attested, and `sign-updater.yml` signs only installers `build.yml` attested,
+so neither can sign a file built anywhere else.
+
 **1. Check the installer you downloaded**
 
 ```powershell
@@ -70,6 +76,16 @@ Add `--dir release` to check a local copy, or `--server` to include the server-s
 
 A hostile or broken host can withhold files. It cannot make the launcher install anything that
 was not signed.
+
+To check the manifest itself was signed by this repository's workflow, download the live
+`manifest.json` from the launcher's release URL and run:
+
+```powershell
+gh attestation verify manifest.json --repo AlexVDefi/ProjectLifeZoid-Launcher-Source --signer-workflow AlexVDefi/ProjectLifeZoid-Launcher-Source/.github/workflows/sign-manifest.yml
+```
+
+`node tools/verify-updater-sig.mjs <installer>` checks a launcher update's `.sig` against the
+updater key `tauri.conf.json` pins.
 
 **3. Prove those class files came from this source**
 
@@ -195,8 +211,9 @@ Requires Rust, Node, a JDK, and a Project Zomboid install.
 
 ```powershell
 .\java\build.ps1 -Build <n>            # compile the Java payload
-node tools\keygen.mjs                  # one-time: create the signing key
-node tools\make-manifest.mjs --build <n>   # produce release/ (manifest + signature + files)
+node tools\keygen.mjs                  # one-time: create a signing key of your own
+$env:PLZ_MANIFEST_SIGNING_KEY = Get-Content tools\keys\release-private.pem -Raw
+node tools\make-manifest.mjs --build <n> --allow-unverified   # produce release/ (manifest + signature + files)
 .\tools\make-server-patch.ps1          # package the dedicated-server half
 .\tools\package.ps1                    # build the installer
 ```

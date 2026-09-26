@@ -90,8 +90,7 @@ jobs:
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      # The real updater key never enters GitHub: the maintainer signs these bundles locally after
-      # checking their attestation, so the signatures made here are thrown away.
+      # Tauri will not bundle without a key; the sign job re-signs the attested bundles with the real one.
       - name: Make a throwaway updater key
         shell: bash
         run: |
@@ -131,3 +130,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.prepare.outputs.tag }}" --clobber out/*
+
+  sign:
+    needs: [prepare, build]
+    uses: ./.github/workflows/sign-updater.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}

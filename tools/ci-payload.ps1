@@ -9,12 +9,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$cfg = Get-Content -LiteralPath (Join-Path $PSScriptRoot "public-repo.json") -Raw | ConvertFrom-Json
-if (-not $Repo) { $Repo = $cfg.repo }
+if (-not $Repo) { $Repo = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "public-repo.json") -Raw | ConvertFrom-Json).repo }
 $workflowFile = "payload.yml"
 $signer = "$Repo/.github/workflows/$workflowFile"
 $tag = "payload-build-$Build"
-$distDir = Join-Path $root "java\dist"
+$distDir = Join-Path $root "java/dist"
 
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
