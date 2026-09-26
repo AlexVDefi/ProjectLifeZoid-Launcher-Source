@@ -1,5 +1,12 @@
 [
     {
+        "title": "Launcher 0.6.2",
+        "url": "https://projectlifezoid.com",
+        "date": "2026-09-26",
+        "tag": "Update",
+        "excerpt": "Magazines and newspapers printed in game by Press businesses now reach you. Before the game starts, the launcher downloads every approved issue and checks each one against the Press signing key, and it keeps fetching new ones every two minutes while you play. Without this version the in-game reader says your launcher is out of date. Updating is also easier: when a new version is ready, the version number in the corner says so, and clicking it installs the update."
+    },
+    {
         "title": "Launcher 0.6.1",
         "url": "https://projectlifezoid.com",
         "date": "2026-09-20",
