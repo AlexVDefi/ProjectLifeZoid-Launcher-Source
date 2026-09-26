@@ -182,9 +182,74 @@ body {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
+    background: none;
     padding: 4px 8px;
     border: 1px solid var(--border);
     border-radius: 6px;
+}
+
+.build:disabled {
+    cursor: default;
+}
+
+.build.has-update {
+    color: var(--warn);
+    border-color: var(--warn);
+    cursor: pointer;
+    transition: background var(--t);
+}
+
+.build.has-update:hover {
+    background: rgba(251, 191, 36, 0.1);
+}
+
+.modal {
+    margin: auto;
+    width: min(440px, calc(100vw - 32px));
+    padding: 22px 24px 20px;
+    color: var(--text);
+    background: var(--raised);
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-lg);
+}
+
+.modal::backdrop {
+    background: rgba(9, 9, 11, 0.7);
+    backdrop-filter: blur(3px);
+}
+
+.modal h2 {
+    margin: 0 0 10px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.modal p {
+    margin: 0 0 8px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--muted);
+}
+
+.modal-note:empty {
+    display: none;
+}
+
+.modal-note.bad {
+    color: var(--bad);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.modal-actions .btn-primary {
+    min-width: 0;
+    padding: 9px 20px;
+    font-size: 13px;
 }
 
 .memory-chip {
@@ -233,21 +298,6 @@ body {
     height: 100%;
 }
 
-#btn-details {
-    position: relative;
-}
-
-#btn-details.has-update::after {
-    content: "";
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--warn);
-    box-shadow: 0 0 0 2px var(--surface);
-}
 
 main {
     flex: 1;

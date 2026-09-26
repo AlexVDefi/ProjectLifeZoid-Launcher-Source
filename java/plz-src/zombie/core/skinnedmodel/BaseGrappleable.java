@@ -40,8 +40,43 @@ public class BaseGrappleable implements IGrappleable {
     private boolean isPerformingGrappleGrabAnim;
     private Invokers.Params0.ICallback onGrappleBeginCallback;
     private Invokers.Params0.ICallback onGrappleEndCallback;
+    private volatile IGrappleable plzAnchor;
+    private volatile String plzAttachSlot = "";
 
     public BaseGrappleable() {
+    }
+
+    // PLZ. Placed every frame from the anchor's rendered position, as a held character is; never
+    // from its own network position, which is what keeps it from jittering.
+    public void plzAttach(IGrappleable anchor, String slot) {
+        boolean selfOrCycle = anchor == null || anchor == this || anchor == this.parentGrappleable || plzAnchorOf(anchor) == this.parentGrappleable;
+        if (selfOrCycle || slot == null || slot.trim().isEmpty()) {
+            this.plzDetach();
+            return;
+        }
+
+        this.plzAttachSlot = slot.trim();
+        this.plzAnchor = anchor;
+    }
+
+    public void plzDetach() {
+        this.plzAnchor = null;
+        this.plzAttachSlot = "";
+    }
+
+    public IGrappleable plzGetAnchor() {
+        return this.plzAnchor;
+    }
+
+    public String plzGetAttachSlot() {
+        return this.plzAttachSlot;
+    }
+
+    private static IGrappleable plzAnchorOf(IGrappleable grappleable) {
+        if (grappleable instanceof IGrappleableWrapper wrapper && wrapper.getWrappedGrappleable() instanceof BaseGrappleable base) {
+            return base.plzAnchor;
+        }
+        return grappleable instanceof BaseGrappleable base ? base.plzAnchor : null;
     }
 
     public BaseGrappleable(IsoGameCharacter character) {

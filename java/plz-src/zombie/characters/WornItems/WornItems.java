@@ -85,6 +85,11 @@ public final class WornItems {
         return PLZWornLock.isLocked(this.plzOwner, location.getTranslationName());
     }
 
+    /** PLZ. Whether this list's owner stacks every location. See {@link PLZWornLock#setLayered}. */
+    private boolean plzIsLayered() {
+        return PLZWornLock.isActive() && this.plzOwner != null && PLZWornLock.isLayered(this.plzOwner);
+    }
+
     public BodyLocationGroup getBodyLocationGroup() {
         return this.group;
     }
@@ -121,14 +126,21 @@ public final class WornItems {
         // beside the old one. Everything downstream copes: getItem answers with the first entry at
         // a location, getItemVisuals walks the whole list, and SyncClothingPacket sends one
         // ItemDescription per ENTRY rather than per location, so the stack reaches every client.
-        if (!plzLocked && !this.group.isMultiItem(location)) {
+        boolean plzLayered = this.plzIsLayered();
+        if (plzLayered && item == null) {
             int index = this.indexOf(location);
             if (index != -1) {
                 this.items.remove(index);
             }
+        } else if (!plzLocked && !plzLayered && !this.group.isMultiItem(location)) {
+            // PLZ: every entry, not the first, so layers left over from a layered session collapse on the next wear.
+            int index;
+            while ((index = this.indexOf(location)) != -1) {
+                this.items.remove(index);
+            }
         }
 
-        for (int i = 0; i < this.items.size(); i++) {
+        for (int i = 0; !plzLayered && i < this.items.size(); i++) {
             WornItem wornItem = this.items.get(i);
             if (this.group.isExclusive(location, wornItem.getLocation())) {
                 // PLZ: EXCLUSIVITY IS SKIPPED FOR A PINNED ENTRY, which is the half of this that
@@ -370,6 +382,14 @@ public final class WornItems {
 
     public static boolean plzWornLockIsLocked(String username, String location) {
         return PLZWornLock.isLocked(username, location);
+    }
+
+    public static void plzWornLayerSet(String username, boolean on) {
+        PLZWornLock.setLayered(username, on);
+    }
+
+    public static boolean plzWornLayerIsOn(String username) {
+        return PLZWornLock.isLayered(username);
     }
 
     public static int plzWornLockCount() {

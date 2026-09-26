@@ -9,6 +9,26 @@ pub const DEFAULT_MANIFEST_URL: &str = match option_env!("PLZ_MANIFEST_URL_BAKED
 
 pub const STEAM_APP_ID: &str = "108600";
 
+pub const PRESS_URL_ENV: &str = "PLZ_PRESS_URL";
+
+pub const DEFAULT_PRESS_URL: &str = match option_env!("PLZ_PRESS_URL_BAKED") {
+    Some(url) => url,
+    None => "https://launcher.projectlifezoid.com/press",
+};
+
+pub fn press_pages_dir() -> PathBuf {
+    zomboid_home().join("Lua").join("PLZPress").join("pages")
+}
+
+/// The game reads this exact path (PressCore.LAUNCHER_MARKER) to tell a Press-capable launcher from an old one.
+pub fn press_marker_path() -> PathBuf {
+    zomboid_home().join("Lua").join("PLZPress").join("launcher.json")
+}
+
+pub fn press_seq_guard_path() -> PathBuf {
+    app_dir().join("security").join("press-seq.json")
+}
+
 pub fn app_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))

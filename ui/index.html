@@ -29,7 +29,7 @@
                     </select>
                     <span class="memory-warn" id="memory-warn" title="Still at the default 3 GB. More helps if you run mods." hidden></span>
                 </div>
-                <span class="build" id="chip-version">v&mdash;</span>
+                <button class="build" id="chip-version" type="button" disabled>v&mdash;</button>
                 <button class="btn btn-ghost" id="btn-details" aria-expanded="false">Details</button>
             </div>
         </header>
@@ -272,6 +272,16 @@
     </aside>
 
     <div id="toast" role="status"><div class="t"></div><div class="s"></div></div>
+
+    <dialog class="modal" id="update-dialog" aria-labelledby="update-dialog-title">
+        <h2 id="update-dialog-title">Launcher update available</h2>
+        <p id="update-dialog-body"></p>
+        <p class="modal-note" id="update-dialog-note"></p>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" id="update-dialog-later" type="button">Not now</button>
+            <button class="btn btn-primary" id="update-dialog-install" type="button">Install</button>
+        </div>
+    </dialog>
 
     <script src="app.js"></script>
 </body>

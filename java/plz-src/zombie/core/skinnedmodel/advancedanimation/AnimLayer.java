@@ -7,6 +7,7 @@ import zombie.core.math.PZMath;
 import zombie.core.profiling.AbstractPerformanceProfileProbe;
 import zombie.core.profiling.PerformanceProfileProbe;
 import zombie.core.random.Rand;
+import zombie.core.skinnedmodel.BaseGrappleable;
 import zombie.core.skinnedmodel.IGrappleable;
 import zombie.core.skinnedmodel.advancedanimation.events.LocalAnimEvent;
 import zombie.core.skinnedmodel.animation.AnimationMultiTrack;
@@ -327,6 +328,7 @@ public final class AnimLayer extends PooledObject implements IAnimListener {
             this.currentSyncTrack = syncTrack;
             float syncValue = syncTrack != null ? syncTrack.getCurrentTimeFraction() : -1.0F;
             IGrappleable thisGrappleable = this.character.getGrappleable();
+            float plzAttachFraction = this.parentLayer == null ? this.plzAttachedClipFraction() : -1.0F;
             int anIdxx = 0;
 
             for (int liveNodeCount = this.liveAnimNodes.size(); anIdxx < liveNodeCount; anIdxx++) {
@@ -349,6 +351,10 @@ public final class AnimLayer extends PooledObject implements IAnimListener {
                 }
 
                 this.updateInternalGrapple(thisGrappleable, liveAnimNode);
+                if (plzAttachFraction >= 0.0F) {
+                    this.plzSyncAttachedClip(liveAnimNode, plzAttachFraction);
+                }
+
                 if (this.parentAnimator != null && !liveAnimNode.getSourceNode().events.isEmpty()) {
                     float animPercent = liveAnimNode.nodeAnimTime / duration;
                     float animPrevPercent = liveAnimNode.prevNodeAnimTime / duration;
@@ -418,6 +424,91 @@ public final class AnimLayer extends PooledObject implements IAnimListener {
                 this.logCurrentState();
             }
         }
+
+        if (this.parentLayer == null) {
+            this.plzUpdateAttachment();
+        }
+    }
+
+    private BaseGrappleable plzAttachedSelf() {
+        if (!(this.character instanceof IsoGameCharacter self)) {
+            return null;
+        }
+
+        BaseGrappleable mine = self.getWrappedGrappleable();
+        if (mine == null || mine.plzGetAnchor() == null) {
+            return null;
+        }
+
+        // A real grapple owns the position; an attachment never fights it.
+        return self.isGrappling() || self.isBeingGrappled() ? null : mine;
+    }
+
+    private static boolean plzAnchorUsable(IGrappleable anchor) {
+        if (anchor instanceof IsoGameCharacter a) {
+            return !a.isDead() && a.getCurrentSquare() != null;
+        }
+        return anchor != null;
+    }
+
+    private static String plzAnchorNode(IGrappleable anchor) {
+        return anchor.isGrappling() ? anchor.getSharedGrappleAnimNode() : "";
+    }
+
+    private static float plzAnchorFraction(IGrappleable anchor) {
+        return anchor.isGrappling() ? anchor.getSharedGrappleAnimFraction() : PLZGrappleEdit.fraction(0.0F);
+    }
+
+    private float plzAttachedClipFraction() {
+        BaseGrappleable mine = this.plzAttachedSelf();
+        IGrappleable anchor = mine == null ? null : mine.plzGetAnchor();
+        if (!plzAnchorUsable(anchor)) {
+            return -1.0F;
+        }
+
+        String key = PLZGrappleEdit.resolveAttach(plzAnchorNode(anchor), mine.plzGetAttachSlot());
+        return PLZGrappleEdit.phase(key, plzAnchorFraction(anchor));
+    }
+
+    private void plzSyncAttachedClip(LiveAnimNode liveAnimNode, float fraction) {
+        if (!PLZGrappleEdit.isAttachSyncedNode(liveAnimNode.getName())) {
+            return;
+        }
+
+        for (int trackIdx = 0, count = liveAnimNode.getPlayingTrackCount(); trackIdx < count; trackIdx++) {
+            AnimationTrack track = liveAnimNode.getPlayingTrackAt(trackIdx);
+            if (track.isPlaying && track.isPrimary) {
+                track.moveCurrentTimeValueTo(fraction * track.getDuration());
+                liveAnimNode.nodeAnimTime = track.getCurrentTimeValue();
+            }
+        }
+    }
+
+    private void plzUpdateAttachment() {
+        BaseGrappleable mine = this.plzAttachedSelf();
+        IGrappleable anchor = mine == null ? null : mine.plzGetAnchor();
+        if (!plzAnchorUsable(anchor)) {
+            return;
+        }
+
+        String key = PLZGrappleEdit.resolveAttach(plzAnchorNode(anchor), mine.plzGetAttachSlot());
+        float fraction = plzAnchorFraction(anchor);
+        float forward = PLZGrappleEdit.attachForward(key, fraction);
+        float yaw = PLZGrappleEdit.yaw(key, 0.0F, fraction);
+        float side = PLZGrappleEdit.attachSide(key, fraction);
+
+        Vector3 anchorPos = this.reusables.grappledByPos;
+        Vector3 offsetPos = this.reusables.grappledPos;
+        Vector2 forwardDir = this.reusables.animForwardDirection;
+        anchor.getAnimForwardDirection(forwardDir);
+        float rightX = -forwardDir.y;
+        float rightY = forwardDir.x;
+        forwardDir.rotate((float) (Math.PI / 180.0) * yaw);
+        anchor.getPosition(anchorPos);
+        offsetPos.x = anchorPos.x + forwardDir.x * forward + rightX * side;
+        offsetPos.y = anchorPos.y + forwardDir.y * forward + rightY * side;
+        offsetPos.z = anchorPos.z;
+        this.setGrappleablePosAndRotation((IGrappleable) this.character, offsetPos, forwardDir, false);
     }
 
     private void updateInternalGrapple(IGrappleable thisGrappleable, LiveAnimNode liveAnimNode) {

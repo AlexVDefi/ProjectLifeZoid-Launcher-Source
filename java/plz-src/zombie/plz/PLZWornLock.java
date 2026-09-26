@@ -48,6 +48,9 @@ public final class PLZWornLock {
      */
     private static final Map<String, Set<String>> LOCKS = new ConcurrentHashMap<>();
 
+    /** Accounts whose every body location stacks instead of replacing, and ignores exclusivity. Nothing is pinned by it. */
+    private static final Set<String> LAYERED = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
     /**
      * The fast-out. {@code WornItems.setItem} runs for every worn item of every character in every
      * clothing packet, and almost every server has nobody locked, so the whole feature has to cost
@@ -76,17 +79,41 @@ public final class PLZWornLock {
         active = true;
     }
 
+    public static void setLayered(String username, boolean on) {
+        String user = key(username);
+        if (user == null || user.isEmpty()) {
+            return;
+        }
+
+        if (on) {
+            LAYERED.add(user);
+        } else {
+            LAYERED.remove(user);
+        }
+        active = !LOCKS.isEmpty() || !LAYERED.isEmpty();
+    }
+
+    public static boolean isLayered(String username) {
+        if (!active) {
+            return false;
+        }
+        String user = key(username);
+        return user != null && LAYERED.contains(user);
+    }
+
     /** Drop every lock an account holds. What turning the mode off does. */
     public static void clear(String username) {
         String user = key(username);
         if (user != null) {
             LOCKS.remove(user);
+            LAYERED.remove(user);
         }
-        active = !LOCKS.isEmpty();
+        active = !LOCKS.isEmpty() || !LAYERED.isEmpty();
     }
 
     public static void clearAll() {
         LOCKS.clear();
+        LAYERED.clear();
         active = false;
     }
 
@@ -114,13 +141,16 @@ public final class PLZWornLock {
     }
 
     public static String status() {
-        if (LOCKS.isEmpty()) {
+        if (LOCKS.isEmpty() && LAYERED.isEmpty()) {
             return "PLZWornLock: nothing locked";
         }
 
         StringBuilder out = new StringBuilder("PLZWornLock:");
         for (Map.Entry<String, Set<String>> entry : LOCKS.entrySet()) {
             out.append(' ').append(entry.getKey()).append('=').append(new HashSet<>(entry.getValue()));
+        }
+        if (!LAYERED.isEmpty()) {
+            out.append(" layered=").append(new HashSet<>(LAYERED));
         }
         return out.toString();
     }

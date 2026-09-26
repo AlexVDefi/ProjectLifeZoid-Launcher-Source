@@ -11,6 +11,7 @@ pub mod patch;
 pub mod payload;
 pub mod perfmode;
 pub mod perfmode_commands;
+pub mod press;
 pub mod query;
 pub mod selfupdate;
 pub mod serverlist;
@@ -634,6 +635,14 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
     if fetched > 0 {
         notes.push(format!("Downloaded {fetched} patch file(s)."));
     }
+    progress("download", "Updating the Press library");
+    let press_outcome = press::sync().await;
+    press::log_outcome(&press_outcome);
+    if let Ok(Some(report)) = &press_outcome {
+        if report.downloaded > 0 {
+            notes.push(format!("Downloaded {} Press page(s).", report.downloaded));
+        }
+    }
     st.installed_build = Some(m.build);
     st.install_dir = Some(install_dir.clone());
     st.jar = Some(fp);
@@ -676,6 +685,8 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         // moment the join lands, and an idle kick overwrites it two hours later - latching on
         // the first result would swallow every mid-session result there will ever be.
         let mut last_code: Option<String> = None;
+        let press_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tauri::async_runtime::spawn(press::refresh_until(press_stop.clone()));
         launch::wait_for_exit_with(&mut watch, || {
             let Some(result) = bootstrap::read_join_result() else {
                 return;
@@ -691,6 +702,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
                 );
             }
         });
+        press_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(stamp)
     })();
 

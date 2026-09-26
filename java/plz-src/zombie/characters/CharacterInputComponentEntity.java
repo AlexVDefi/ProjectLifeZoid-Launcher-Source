@@ -346,6 +346,37 @@ public interface CharacterInputComponentEntity extends ECSEntity {
         return PLZGrappleEdit.keyValueAt(node, kind, index);
     }
 
+    /** PLZ. Unlike the registry calls above, the receiver matters: it is the character being attached. */
+    default void plzAttachTo(IsoGameCharacter anchor, String slot) {
+        if (this instanceof IsoGameCharacter self) {
+            self.getWrappedGrappleable().plzAttach(anchor, slot);
+        }
+    }
+
+    default void plzDetach() {
+        if (this instanceof IsoGameCharacter self) {
+            self.getWrappedGrappleable().plzDetach();
+        }
+    }
+
+    default IsoGameCharacter plzGetAnchor() {
+        return this instanceof IsoGameCharacter self && self.getWrappedGrappleable().plzGetAnchor() instanceof IsoGameCharacter anchor ? anchor : null;
+    }
+
+    default String plzGetAttachSlot() {
+        return this instanceof IsoGameCharacter self ? self.getWrappedGrappleable().plzGetAttachSlot() : "";
+    }
+
+    /** The registry key this attachment reads right now, which is what the editor must write. */
+    default String plzGetAttachKey() {
+        IsoGameCharacter anchor = this.plzGetAnchor();
+        if (anchor == null) {
+            return "";
+        }
+        String anchorNode = anchor.isGrappling() ? anchor.getSharedGrappleAnimNode() : "";
+        return PLZGrappleEdit.attachKey(anchorNode, this.plzGetAttachSlot());
+    }
+
     /**
      * PLZ. Per-bone proportions for a named account. The work is in zombie.plz.PLZBoneScale;
      * these exist because Lua cannot reach that package, and neither AnimationPlayer, where the

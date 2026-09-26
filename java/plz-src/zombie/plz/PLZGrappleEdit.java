@@ -359,6 +359,43 @@ public final class PLZGrappleEdit {
         return side(relativeTo.getSharedGrappleAnimNode(), relativeTo.getSharedGrappleAnimFraction());
     }
 
+    // ------------------------------------------------------------------ attachments
+
+    /** Beside the anchor rather than inside it, for a slot nobody has tuned yet. */
+    public static final float DEFAULT_ATTACH_SIDE = 0.6F;
+
+    /** Attached anim nodes whose names start with this play in step with the anchor's clip. */
+    public static final String ATTACH_SYNC_PREFIX = "plzassist";
+
+    /** anchorNode.slot, or the bare slot when the anchor is not grappling. */
+    public static String attachKey(String anchorNode, String slot) {
+        String s = slot == null ? "" : slot.trim();
+        if (s.isEmpty()) {
+            return "";
+        }
+
+        String n = anchorNode == null ? "" : anchorNode.trim();
+        return n.isEmpty() ? s : n + "." + s;
+    }
+
+    /** The per-node entry when one is registered, else the bare slot, so one entry can cover every node. */
+    public static String resolveAttach(String anchorNode, String slot) {
+        String composite = attachKey(anchorNode, slot);
+        return find(composite) != null ? composite : attachKey("", slot);
+    }
+
+    public static float attachForward(String key, float fraction) {
+        return forward(key, 0.0F, fraction);
+    }
+
+    public static float attachSide(String key, float fraction) {
+        return find(key) == null ? DEFAULT_ATTACH_SIDE : side(key, fraction);
+    }
+
+    public static boolean isAttachSyncedNode(String nodeName) {
+        return nodeName != null && nodeName.toLowerCase(Locale.ROOT).startsWith(ATTACH_SYNC_PREFIX);
+    }
+
     /** Never null: an unregistered node, or one whose behaviour never parsed, keeps the fallback. */
     public static GrappleOffsetBehaviour behaviour(String node, GrappleOffsetBehaviour fallback) {
         Entry e = find(node);

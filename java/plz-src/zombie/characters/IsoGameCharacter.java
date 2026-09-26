@@ -3435,6 +3435,10 @@ public abstract class IsoGameCharacter
     }
 
     public void setWornItem(ItemBodyLocation location, InventoryItem item, boolean forceDropTooHeavy) {
+        this.plzSetWornItem(location, item, forceDropTooHeavy, null);
+    }
+
+    private void plzSetWornItem(ItemBodyLocation location, InventoryItem item, boolean forceDropTooHeavy, InventoryItem plzLayerToRemove) {
         // PLZ: a locked body location refuses the change down in WornItems.setItem, which is where
         // every route that takes a worn item off meets - but the rest of THIS method would still
         // run against an item that never moved, and its force-drop branch would take the piece out
@@ -3444,14 +3448,23 @@ public abstract class IsoGameCharacter
             return;
         }
 
-        InventoryItem itemCur = this.wornItems.getItem(location);
+        InventoryItem itemCur = plzLayerToRemove != null ? plzLayerToRemove : this.wornItems.getItem(location);
         if (item != itemCur) {
             IsoCell cell = IsoWorld.instance.currentCell;
+            if (plzLayerToRemove != null) {
+                this.wornItems.remove(plzLayerToRemove);
+            } else {
+                this.wornItems.setItem(location, item);
+            }
+
+            // PLZ: a layered wear leaves the previous piece on, so it must not be un-processed or force-dropped.
+            if (itemCur != null && this.wornItems.contains(itemCur)) {
+                itemCur = null;
+            }
+
             if (itemCur != null && cell != null) {
                 cell.addToProcessItemsRemove(itemCur);
             }
-
-            this.wornItems.setItem(location, item);
             if (item != null && cell != null) {
                 if (item.getContainer() != null) {
                     item.getContainer().parent = this;
@@ -3508,7 +3521,11 @@ public abstract class IsoGameCharacter
 
     @Override
     public void removeWornItem(InventoryItem item, boolean forceDropTooHeavy) {
-        this.setWornItem(this.wornItems.getLocation(item), null, forceDropTooHeavy);
+        ItemBodyLocation location = this.wornItems.getLocation(item);
+        // PLZ: setItem(location, null) takes the FIRST entry there, which is the wrong layer when several are stacked.
+        boolean plzLayer = item != null && location != null && this.wornItems.getItem(location) != item
+            && this instanceof IsoPlayer player && zombie.plz.PLZWornLock.isLayered(player.getUsername());
+        this.plzSetWornItem(location, null, forceDropTooHeavy, plzLayer ? item : null);
     }
 
     /**

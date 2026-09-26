@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLongArray;
 import zombie.ZomboidFileSystem;
 import zombie.characters.IsoPlayer;
+import zombie.core.raknet.RakVoice;
 import zombie.core.raknet.UdpConnection;
 import zombie.core.znet.ZNetStatistics;
 import zombie.debug.DebugLog;
@@ -45,6 +46,9 @@ public final class PLZNetProbe {
     private static long nextConfigMs;
     private static long nextSampleMs;
     private static final Map<Long, Totals> previous = new HashMap<>();
+    private static final Map<Long, long[]> voice = new HashMap<>();
+    private static final long[] voiceRead = new long[2];
+    private static volatile boolean voiceDisabled;
 
     private PLZNetProbe() {
     }
@@ -83,6 +87,10 @@ public final class PLZNetProbe {
                 reloadConfig();
             }
 
+            if (!watched.isEmpty()) {
+                drainVoice(connections);
+            }
+
             if (nowMs < nextSampleMs) {
                 return;
             }
@@ -94,6 +102,34 @@ public final class PLZNetProbe {
             String reason = t.getClass().getSimpleName() + ": " + t.getMessage();
             DebugLog.log("PLZNetProbe: DISABLED after " + reason);
             writeLines(List.of(STAMP.format(Instant.now()) + " PLZNetProbe DISABLED after " + reason));
+        }
+    }
+
+    // RakVoice.GetChannelStatistics zeroes its counters on read and vanilla reads them every
+    // MultiplayerStatisticsPeriod, so drain every tick or most of the window is lost to it.
+    private static void drainVoice(List<UdpConnection> connections) {
+        if (voiceDisabled) {
+            return;
+        }
+
+        try {
+            for (int i = 0; i < connections.size(); i++) {
+                UdpConnection c = connections.get(i);
+                if (c.plzNetTally == null) {
+                    continue;
+                }
+
+                voiceRead[0] = 0L;
+                voiceRead[1] = 0L;
+                if (RakVoice.GetChannelStatistics(c.getConnectedGUID(), voiceRead)) {
+                    long[] acc = voice.computeIfAbsent(c.getConnectedGUID(), k -> new long[2]);
+                    acc[0] += voiceRead[0];
+                    acc[1] += voiceRead[1];
+                }
+            }
+        } catch (Throwable t) {
+            voiceDisabled = true;
+            DebugLog.log("PLZNetProbe: voice counters DISABLED after " + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
     }
 
@@ -180,6 +216,7 @@ public final class PLZNetProbe {
                 return false;
             }
             lines.add(STAMP.format(Instant.ofEpochMilli(nowMs)) + " user=\"" + e.getValue().user + "\" LEFT or unwatched");
+            voice.remove(e.getKey());
             return true;
         });
 
@@ -232,6 +269,16 @@ public final class PLZNetProbe {
             .append(" wire=").append(rate(b.actualSent - a.actualSent, secs));
         sb.append(" | in_Bps wire=").append(rate(b.actualReceived - a.actualReceived, secs))
             .append(" processed=").append(rate(b.receivedProcessed - a.receivedProcessed, secs));
+        long[] v = voice.get(c.getConnectedGUID());
+        if (voiceDisabled) {
+            sb.append(" | voice DISABLED");
+        } else if (v == null) {
+            sb.append(" | voice no_channel");
+        } else {
+            sb.append(" | voice from_player_Bps=").append(rate(v[0], secs)).append(" relayed_to_player_Bps=").append(rate(v[1], secs));
+            v[0] = 0L;
+            v[1] = 0L;
+        }
         if (tally != null) {
             appendTally(sb, tally, secs);
         }

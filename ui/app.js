@@ -661,7 +661,7 @@ async function refreshStatus() {
     $("chip-steam").textContent = st.steamId ? "Steam ready" : "Steam offline";
     $("chip-steam").classList.toggle("off", !st.steamId);
     $("chip-build").textContent = st.build != null ? "Build " + st.build : "Build —";
-    $("chip-version").textContent = "v" + st.launcherVersion;
+    paintVersionChip();
     paintMemory(st);
     paintIdentity(st);
     paintChecks(st);
@@ -1036,6 +1036,21 @@ $("btn-restore").addEventListener("click", async () => {
 });
 
 let updateReady = null;
+let installing = false;
+
+function paintVersionChip() {
+    const chip = $("chip-version");
+    const current = state.status ? state.status.launcherVersion : null;
+    chip.textContent = current ? "v" + current : "v—";
+    chip.classList.toggle("has-update", !!updateReady);
+    chip.disabled = !updateReady;
+    if (updateReady) {
+        chip.textContent += " · update";
+        chip.title = "Version " + updateReady.version + " is available. Click to install.";
+    } else {
+        chip.title = "";
+    }
+}
 
 function paintUpdate(info) {
     const note = $("update-note");
@@ -1051,9 +1066,57 @@ function paintUpdate(info) {
         note.classList.remove("ready");
         btn.textContent = "Check for updates";
     }
-    $("btn-details").classList.toggle("has-update", !!updateReady);
-    $("btn-details").title = updateReady ? "An update is available" : "";
+    paintVersionChip();
 }
+
+async function installUpdate(report) {
+    if (installing) return;
+    installing = true;
+    report("Downloading " + updateReady.version + "...", false);
+    try {
+        await invoke("install_update");
+    } catch (e) {
+        report(String(e), true);
+        toast("Update failed", String(e), true);
+        log("error", "update install: " + String(e), true);
+    } finally {
+        installing = false;
+    }
+}
+
+function openUpdateDialog() {
+    if (!updateReady) return;
+    const dialog = $("update-dialog");
+    const current = state.status ? state.status.launcherVersion : "?";
+    $("update-dialog-body").textContent =
+        "Version " + updateReady.version + " is ready (you have " + current + "). " +
+        "Install it now? The launcher closes, updates and opens again.";
+    const note = $("update-dialog-note");
+    note.textContent = "";
+    note.classList.remove("bad");
+    $("update-dialog-install").disabled = false;
+    $("update-dialog-later").disabled = false;
+    dialog.showModal();
+}
+
+$("chip-version").addEventListener("click", openUpdateDialog);
+$("update-dialog-later").addEventListener("click", () => $("update-dialog").close());
+$("update-dialog").addEventListener("cancel", (e) => {
+    if (installing) e.preventDefault();
+});
+$("update-dialog-install").addEventListener("click", async () => {
+    const install = $("update-dialog-install");
+    const later = $("update-dialog-later");
+    const note = $("update-dialog-note");
+    install.disabled = true;
+    later.disabled = true;
+    await installUpdate((text, bad) => {
+        note.textContent = text;
+        note.classList.toggle("bad", bad);
+    });
+    install.disabled = false;
+    later.disabled = false;
+});
 
 async function checkForUpdate(quiet) {
     try {
@@ -1080,15 +1143,10 @@ $("btn-update").addEventListener("click", async () => {
         return;
     }
     btn.disabled = true;
-    $("update-note").textContent = "Downloading " + updateReady.version + "...";
-    try {
-        await invoke("install_update");
-    } catch (e) {
-        $("update-note").textContent = String(e);
-        toast("Update failed", String(e), true);
-        log("error", "update install: " + String(e), true);
-        btn.disabled = false;
-    }
+    await installUpdate((text) => {
+        $("update-note").textContent = text;
+    });
+    btn.disabled = false;
 });
 
 async function refreshSteamAccounts() {
@@ -1196,5 +1254,6 @@ loadPerformanceMode();
 refreshServer();
 refreshCommunity();
 checkForUpdate(true);
+setInterval(() => checkForUpdate(true), 30 * 60 * 1000);
 setInterval(refreshServer, 30000);
 setInterval(refreshMods, 15000);
