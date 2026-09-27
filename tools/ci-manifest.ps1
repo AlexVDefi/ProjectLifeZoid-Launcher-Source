@@ -24,7 +24,9 @@ function Invoke-Gh {
 }
 function To-Utc($value) {
     if ($value -is [datetime]) { return $value.ToUniversalTime() }
-    return ([datetimeoffset]::Parse([string]$value)).UtcDateTime
+    $parsed = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse([string]$value, [ref]$parsed)) { return $parsed.UtcDateTime }
+    return [DateTime]::MinValue
 }
 
 if ($Commit -notmatch '^[0-9a-f]{40}$') { throw "-Commit must be a full 40-character sha" }
