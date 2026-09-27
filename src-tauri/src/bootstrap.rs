@@ -20,6 +20,7 @@ local armed = false
 local reported = false
 local roleWritten = false
 local ours = false
+local workshopNote = nil
 
 local function readIntent()
     local reader = getFileReader(JOIN_FILE, false)
@@ -30,6 +31,7 @@ local function readIntent()
         username = reader:readLine(),
         serverPassword = reader:readLine(),
         serverName = reader:readLine(),
+        workshopNote = reader:readLine(),
     }
     reader:close()
     if not intent.host or intent.host == "" then return nil end
@@ -328,13 +330,31 @@ local function onConnectionStateChanged(state, message, arg)
     setStatus(serverText(state, CONNECTING), nil)
 end
 
-local function onServerWorkshopItems(state)
+local function megabytes(bytes)
+    local mb = (tonumber(bytes) or 0) / 1048576
+    return tostring(mb - mb % 1)
+end
+
+local function onServerWorkshopItems(state, arg1, arg2, arg3)
     if not ours then return end
     if state == "Error" then
         removeStatus()
         return
     end
     if state == "Success" then return end
+    if state == "Required" or state == "Details" then
+        local notes = {}
+        if workshopNote then notes[#notes + 1] = workshopNote end
+        notes[#notes + 1] = "Click Install at the bottom of the screen to download it."
+        setStatus("A server mod was updated since you last played", notes)
+        return
+    end
+    if state == "Progress" then
+        setStatus("Downloading the updated mod", {
+            megabytes(arg2) .. " of " .. megabytes(arg3) .. " MB",
+        })
+        return
+    end
     setStatus("Checking your Workshop mods against the server...", nil)
 end
 
@@ -344,6 +364,9 @@ local function join()
     clearIntent()
     armed = true
     ours = true
+    if intent.workshopNote and intent.workshopNote ~= "" then
+        workshopNote = intent.workshopNote
+    end
 
     local server = ensureServer(intent)
     local account = ensureAccount(server, intent.username)
@@ -477,13 +500,19 @@ pub fn install() -> Result<()> {
     enable_in_default_mods()
 }
 
-pub fn write_join_intent(host: &str, port: u16, username: &str, server_name: &str) -> Result<()> {
-    for value in [host, username, server_name] {
+pub fn write_join_intent(
+    host: &str,
+    port: u16,
+    username: &str,
+    server_name: &str,
+    workshop_note: &str,
+) -> Result<()> {
+    for value in [host, username, server_name, workshop_note] {
         if value.contains(['\r', '\n']) {
             return Err(Error::Other("invalid newline in join settings".into()));
         }
     }
-    let contents = format!("{host}\n{port}\n{username}\n\n{server_name}\n");
+    let contents = format!("{host}\n{port}\n{username}\n\n{server_name}\n{workshop_note}\n");
     state::write_no_bom(&config::join_intent_path(), &contents)
 }
 

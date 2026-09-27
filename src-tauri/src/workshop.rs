@@ -335,6 +335,172 @@ pub fn report(req: Requirements<'_>) -> ModReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveItem {
+    pub time_updated: u64,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveGap {
+    pub id: String,
+    pub name: String,
+    pub local: Option<u64>,
+    pub live: u64,
+    pub size_bytes: u64,
+}
+
+const DETAILS_URL: &str =
+    "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
+const DETAILS_BATCH: usize = 100;
+const SERVER_CLOCK_SLACK: u64 = 60;
+
+// None means "could not ask", never "nothing changed": callers must skip the live checks.
+pub async fn live_details(ids: &[String]) -> Option<BTreeMap<String, LiveItem>> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let mut out = BTreeMap::new();
+    for chunk in ids.chunks(DETAILS_BATCH) {
+        let mut form: Vec<(String, String)> =
+            vec![("itemcount".to_string(), chunk.len().to_string())];
+        for (i, id) in chunk.iter().enumerate() {
+            form.push((format!("publishedfileids[{i}]"), id.clone()));
+        }
+        let resp = client.post(DETAILS_URL).form(&form).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body = resp.bytes().await.ok()?;
+        parse_details(&body, &mut out)?;
+    }
+    Some(out)
+}
+
+fn json_u64(v: Option<&serde_json::Value>) -> u64 {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(serde_json::Value::String(s)) => s.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn parse_details(body: &[u8], out: &mut BTreeMap<String, LiveItem>) -> Option<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let details = v.get("response")?.get("publishedfiledetails")?.as_array()?;
+    for d in details {
+        if json_u64(d.get("result")) != 1 {
+            continue;
+        }
+        let Some(id) = d.get("publishedfileid").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let time_updated = json_u64(d.get("time_updated"));
+        if time_updated == 0 {
+            continue;
+        }
+        out.insert(
+            id.to_string(),
+            LiveItem {
+                time_updated,
+                size_bytes: json_u64(d.get("file_size")),
+            },
+        );
+    }
+    Some(())
+}
+
+pub fn unique_ids(mods: &[ModStatus]) -> Vec<String> {
+    let mut ids: Vec<String> = mods.iter().map(|m| m.id.clone()).collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn gap(m: &ModStatus, live: &LiveItem) -> LiveGap {
+    LiveGap {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        local: m.time_updated,
+        live: live.time_updated,
+        size_bytes: live.size_bytes,
+    }
+}
+
+// The game's own join check is exact inequality between Steam's live time_updated and the
+// install timestamp, so this matches it rather than the manifest check's 30-minute slack.
+pub fn behind_steam(mods: &[ModStatus], live: &BTreeMap<String, LiveItem>) -> Vec<LiveGap> {
+    let mut seen = std::collections::BTreeSet::new();
+    mods.iter()
+        .filter(|m| m.installed && seen.insert(m.id.clone()))
+        .filter_map(|m| {
+            let l = live.get(&m.id)?;
+            let local = m.time_updated?;
+            (l.time_updated != local).then(|| gap(m, l))
+        })
+        .collect()
+}
+
+// The server fetched every item's newest version when its Workshop sync began at `synced_at`,
+// so anything Steam published after that is a version the server does not have.
+pub fn server_behind(
+    mods: &[ModStatus],
+    live: &BTreeMap<String, LiveItem>,
+    synced_at: u64,
+) -> Vec<LiveGap> {
+    let mut seen = std::collections::BTreeSet::new();
+    mods.iter()
+        .filter(|m| seen.insert(m.id.clone()))
+        .filter_map(|m| {
+            let l = live.get(&m.id)?;
+            (l.time_updated > synced_at + SERVER_CLOCK_SLACK).then(|| gap(m, l))
+        })
+        .collect()
+}
+
+pub fn describe_size(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if bytes >= 1024 * MB {
+        format!("{:.1} GB", bytes as f64 / (1024 * MB) as f64)
+    } else {
+        format!("{} MB", bytes.div_ceil(MB))
+    }
+}
+
+pub fn describe_gaps(gaps: &[LiveGap]) -> String {
+    gaps.iter()
+        .map(|g| {
+            format!(
+                "{} (updated {}, {})",
+                g.name,
+                describe_time(Some(g.live)),
+                describe_size(g.size_bytes)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+const GAME_NOTE_NAMES: usize = 3;
+
+pub fn describe_for_game(gaps: &[LiveGap]) -> String {
+    let mut named: Vec<String> = gaps
+        .iter()
+        .take(GAME_NOTE_NAMES)
+        .map(|g| format!("{} ({})", g.name, describe_size(g.size_bytes)))
+        .collect();
+    if gaps.len() > GAME_NOTE_NAMES {
+        named.push(format!("and {} more", gaps.len() - GAME_NOTE_NAMES));
+    }
+    named
+        .join(", ")
+        .chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .collect()
+}
+
 pub fn open_in_steam(url: &str) -> Result<()> {
     if !url.starts_with("https://steamcommunity.com/") {
         return Err(Error::Other("refusing to open a non-Steam URL".into()));
@@ -609,5 +775,136 @@ mod acf_tests {
             all.values().any(|i| !i.manifest.is_empty()),
             "no manifest was read, so the keys are wrong"
         );
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    fn installed(id: &str, local: Option<u64>) -> ModStatus {
+        ModStatus {
+            id: id.to_string(),
+            name: format!("mod {id}"),
+            installed: true,
+            downloading: false,
+            out_of_date: false,
+            behind_server: false,
+            ahead_of_server: false,
+            time_updated: local,
+            size_bytes: 0,
+        }
+    }
+
+    fn live(pairs: &[(&str, u64)]) -> BTreeMap<String, LiveItem> {
+        pairs
+            .iter()
+            .map(|(id, t)| {
+                (
+                    id.to_string(),
+                    LiveItem {
+                        time_updated: *t,
+                        size_bytes: 491_967_897,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parses_numbers_or_strings_and_skips_failed_results() {
+        let body = br#"{"response":{"result":1,"resultcount":3,"publishedfiledetails":[
+            {"publishedfileid":"3788360646","result":1,"file_size":"491967897","time_updated":1790431636},
+            {"publishedfileid":"1","result":1,"file_size":10,"time_updated":"1700000000"},
+            {"publishedfileid":"2","result":9}
+        ]}}"#;
+        let mut out = BTreeMap::new();
+        parse_details(body, &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out["3788360646"].time_updated, 1_790_431_636);
+        assert_eq!(out["3788360646"].size_bytes, 491_967_897);
+        assert_eq!(out["1"].time_updated, 1_700_000_000);
+    }
+
+    #[test]
+    fn garbage_is_none_so_the_check_is_skipped() {
+        assert!(parse_details(b"<html>", &mut BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_local_copy_older_than_steam_is_named_once() {
+        let mods = vec![
+            installed("a", Some(1_788_392_035)),
+            installed("b", Some(1_700_000_000)),
+            installed("a", Some(1_788_392_035)),
+        ];
+        let gaps = behind_steam(&mods, &live(&[("a", 1_790_431_636), ("b", 1_700_000_000)]));
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].id, "a");
+        assert_eq!(gaps[0].local, Some(1_788_392_035));
+    }
+
+    #[test]
+    fn unknown_or_uninstalled_items_are_left_to_the_other_checks() {
+        let mut missing = installed("a", None);
+        missing.installed = false;
+        let mods = vec![missing, installed("b", None), installed("c", Some(5))];
+        assert!(behind_steam(&mods, &live(&[("a", 9), ("b", 9)])).is_empty());
+    }
+
+    #[test]
+    fn server_is_behind_only_for_updates_after_its_sync_began() {
+        let synced = 1_790_430_000;
+        let mods = vec![installed("old", Some(1)), installed("new", Some(1))];
+        let l = live(&[
+            ("old", synced - 10),
+            ("new", synced + SERVER_CLOCK_SLACK + 1),
+        ]);
+        let gaps = server_behind(&mods, &l, synced);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].id, "new");
+        assert!(server_behind(&mods, &live(&[("new", synced + 30)]), synced).is_empty());
+    }
+
+    #[test]
+    fn gaps_read_as_a_name_a_date_and_a_size() {
+        let gaps = behind_steam(
+            &[installed("3788360646", Some(1))],
+            &live(&[("3788360646", 1_790_431_636)]),
+        );
+        assert_eq!(
+            describe_gaps(&gaps),
+            "mod 3788360646 (updated 2026-09-26 14:07 UTC, 470 MB)"
+        );
+        assert_eq!(describe_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_steam_answers_for_the_real_acf() {
+        let acf = acf_items();
+        let ids: Vec<String> = acf.keys().cloned().collect();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let live = rt
+            .block_on(live_details(&ids))
+            .expect("Steam did not answer");
+        let mods: Vec<ModStatus> = acf
+            .iter()
+            .map(|(id, a)| installed(id, Some(a.time_updated).filter(|t| *t > 0)))
+            .collect();
+        let gaps = behind_steam(&mods, &live);
+        eprintln!(
+            "{} asked, {} answered, {} behind Steam",
+            ids.len(),
+            live.len(),
+            gaps.len()
+        );
+        for g in &gaps {
+            eprintln!("  {} local={:?} live={}", g.id, g.local, g.live);
+        }
+        assert!(!live.is_empty());
     }
 }

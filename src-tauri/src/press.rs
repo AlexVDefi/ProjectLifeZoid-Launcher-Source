@@ -427,18 +427,45 @@ pub fn log_outcome(outcome: &Result<Option<Report>>) {
     }
 }
 
-pub async fn refresh_until(stop: Arc<AtomicBool>) {
-    loop {
-        let mut waited = Duration::ZERO;
-        while waited < REFRESH {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            waited += Duration::from_secs(1);
-        }
-        log_outcome(&sync().await);
+// Its own thread and runtime: run_play blocks its worker for the whole session, and a task spawned
+// there sits in that worker's LIFO slot, which no other worker steals, until the game exits.
+fn run_every<F, Fut>(stop: Arc<AtomicBool>, period: Duration, job: F)
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = ()>,
+{
+    let step = period.min(Duration::from_secs(1));
+    let spawned = std::thread::Builder::new()
+        .name("press-refresh".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    session_log::log("press", &format!("refresh not started: {e}"));
+                    return;
+                }
+            };
+            runtime.block_on(async {
+                loop {
+                    let mut waited = Duration::ZERO;
+                    while waited < period {
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        tokio::time::sleep(step).await;
+                        waited += step;
+                    }
+                    job().await;
+                }
+            });
+        });
+    if let Err(e) = spawned {
+        session_log::log("press", &format!("refresh not started: {e}"));
     }
+}
+
+pub fn refresh_until(stop: Arc<AtomicBool>) {
+    run_every(stop, REFRESH, || async { log_outcome(&sync().await) });
 }
 
 #[cfg(test)]
@@ -538,6 +565,25 @@ mod tests {
 
     fn run<F: Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn the_refresh_runs_while_the_caller_blocks_its_runtime() {
+        use std::sync::atomic::AtomicUsize;
+        let stop = Arc::new(AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        run(async {
+            run_every(stop.clone(), Duration::from_millis(20), move || {
+                let counted = counted.clone();
+                async move {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(runs.load(Ordering::Relaxed) >= 3, "ran {} times", runs.load(Ordering::Relaxed));
     }
 
     #[test]

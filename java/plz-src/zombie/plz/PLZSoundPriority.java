@@ -36,7 +36,14 @@ public final class PLZSoundPriority {
     public static final int MIN_LOOP_PRIORITY = 5;
     public static final int MAX_LOOP_PRIORITY = 9;
 
+    // Lifestyle files its music under the generic Item/DJ categories, so only the clip path tells it from sfx.
+    private static final String[] MUSIC_PATHS = {
+        "media/sound/instruments/", "media/sound/genre/", "media/sound/djbooth/", "media/sound/voice/sing/", "media/music/"
+    };
+    private static final String[] NOT_MUSIC_PATHS = {"media/sound/djbooth/effects/"};
+
     private static int applied;
+    private static int musicApplied;
     private static int scanned;
     private static boolean ran;
     private static String failure = "";
@@ -51,19 +58,27 @@ public final class PLZSoundPriority {
      * a one-shot: GameSounds.OnReloadSound rebuilds clips with the vanilla default back in place.
      */
     public static void apply() {
-        if (GameServer.server || !PLZFixes.on(PLZFixes.SOUND_LOOP_PRIORITY)) {
+        boolean loops = PLZFixes.on(PLZFixes.SOUND_LOOP_PRIORITY);
+        boolean music = PLZFixes.on(PLZFixes.SOUND_MUSIC_PRIORITY);
+        if (GameServer.server || !loops && !music) {
             return;
         }
 
         try {
             int priority = readLoopPriority();
             int count = 0;
+            int musicCount = 0;
             int seen = 0;
 
             for (String category : GameSounds.getCategories()) {
                 for (GameSound sound : GameSounds.getSoundsInCategory(category)) {
                     seen++;
-                    if (sound == null || !sound.loop) {
+                    if (sound == null) {
+                        continue;
+                    }
+
+                    boolean isMusic = music && isMusic(sound);
+                    if (!isMusic && !(loops && sound.loop)) {
                         continue;
                     }
 
@@ -72,16 +87,20 @@ public final class PLZSoundPriority {
                         if (clip != null && clip.priority < priority) {
                             clip.priority = priority;
                             count++;
+                            if (isMusic) {
+                                musicCount++;
+                            }
                         }
                     }
                 }
             }
 
             applied = count;
+            musicApplied = musicCount;
             scanned = seen;
             ran = true;
             failure = "";
-            DebugLog.log("PLZSoundPriority: lifted " + count + " looping clips to priority " + priority
+            DebugLog.log("PLZSoundPriority: lifted " + count + " clips (" + musicCount + " music) to priority " + priority
                 + " across " + seen + " sounds.");
         } catch (Throwable var5) {
             // Throwable: GameSounds touches Lua-backed script state, whose class init fails as an
@@ -89,6 +108,36 @@ public final class PLZSoundPriority {
             failure = var5.getClass().getSimpleName() + ": " + String.valueOf(var5.getMessage());
             DebugLog.log("PLZSoundPriority: disabled after " + failure);
         }
+    }
+
+    private static boolean isMusic(GameSound sound) {
+        if (sound.master == GameSound.MasterVolume.Music) {
+            return true;
+        }
+
+        for (GameSoundClip clip : sound.clips) {
+            if (clip != null && clip.file != null && matchesMusicPath(clip.file.replace('\\', '/').toLowerCase(java.util.Locale.ROOT))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean matchesMusicPath(String file) {
+        for (String path : NOT_MUSIC_PATHS) {
+            if (file.contains(path)) {
+                return false;
+            }
+        }
+
+        for (String path : MUSIC_PATHS) {
+            if (file.contains(path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int readLoopPriority() {
@@ -111,6 +160,10 @@ public final class PLZSoundPriority {
 
     public static int getApplied() {
         return applied;
+    }
+
+    public static int getMusicApplied() {
+        return musicApplied;
     }
 
     public static int getScanned() {

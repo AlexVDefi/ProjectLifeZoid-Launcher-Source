@@ -150,6 +150,7 @@ import zombie.iso.sprite.shapers.WallShaperWhole;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.plz.PLZSyncWatch;
+import zombie.plz.PLZUtilities;
 import zombie.network.PacketTypes;
 import zombie.network.packets.INetworkPacket;
 import zombie.scripting.ScriptManager;
@@ -2807,6 +2808,10 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
             || this.getModData().rawget("canBeWaterPiped") instanceof Boolean canBePiped && canBePiped;
     }
 
+    private boolean isPLZMainsEverywhere() {
+        return this.sprite.getProperties().has(IsoFlagType.waterPiped) && PLZUtilities.waterEverywhere();
+    }
+
     private boolean isWaterInfinite() {
         if (this.sprite == null) {
             return false;
@@ -2821,7 +2826,7 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         // one inside a room the map declared, out of a derelict zone, and before the water shuts
         // off; on a build-anywhere server that rules out most of the places one ever gets placed,
         // and there is no Lua reachable equivalent of any of those three gates.
-        if (this.isPLZPlacedWaterFixture()) {
+        if (this.isPLZPlacedWaterFixture() || this.isPLZMainsEverywhere()) {
             return true;
         }
 
@@ -2850,7 +2855,7 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         // mutually exclusive by construction - `canBeWaterPiped` being set is exactly what makes
         // isUnmovedPipedWaterSource say no - and without it a placed sink would run tap water the
         // switch below calls TAINTED. The tap is the tap wherever the sink stands.
-        if (this.isUnmovedPipedWaterSource() || this.isPLZPlacedWaterFixture()) {
+        if (this.isUnmovedPipedWaterSource() || this.isPLZPlacedWaterFixture() || this.isPLZMainsEverywhere()) {
             return FluidType.Water;
         }
 

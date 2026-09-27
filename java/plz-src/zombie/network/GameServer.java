@@ -265,6 +265,7 @@ public class GameServer {
     public static final ArrayList<Long> WorkshopItems = new ArrayList<>();
     public static String[] workshopInstallFolders;
     public static long[] workshopTimeStamps;
+    private static long plzWorkshopSyncedAt;
     public static String serverName = "servertest";
     public static final DiscordBot discordBot = new DiscordBot(
         serverName, (user, msg) -> ChatServer.getInstance().sendMessageFromDiscordToGeneralChat(user, msg)
@@ -706,9 +707,13 @@ public class GameServer {
                             CoopSlave.status("UI_ServerStatus_Downloading_Workshop_Items");
                         }
 
+                        long plzSyncStarted = System.currentTimeMillis() / 1000L;
                         if (!GameServerWorkshopItems.Install(WorkshopItems)) {
                             return;
                         }
+                        // PLZ: the launcher reads this over A2S to tell players the server is behind a Workshop update.
+                        plzWorkshopSyncedAt = plzSyncStarted;
+                        SteamGameServer.SetKeyValue("plzws", String.valueOf(plzWorkshopSyncedAt));
                         break;
                     }
 
@@ -1238,6 +1243,9 @@ public class GameServer {
 
         SteamGameServer.SetKeyValue("mods", modsString);
         SteamGameServer.SetKeyValue("modCount", String.valueOf(totalMods));
+        if (plzWorkshopSyncedAt > 0L) {
+            SteamGameServer.SetKeyValue("plzws", String.valueOf(plzWorkshopSyncedAt));
+        }
     }
 
     public static Server steamGetInternetServerDetails(GameServerDetails steamServer) {

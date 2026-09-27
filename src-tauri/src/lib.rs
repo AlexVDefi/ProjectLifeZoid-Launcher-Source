@@ -379,6 +379,13 @@ fn parse_plzpatch(text: &str) -> Option<u64> {
     None
 }
 
+pub fn server_workshop_synced_at(s: &query::ServerStatus) -> Option<u64> {
+    s.rules
+        .get("plzws")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|t| *t > 0)
+}
+
 pub fn server_build_from_rules(s: &query::ServerStatus) -> Option<u64> {
     s.rules
         .get("description")
@@ -521,7 +528,9 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
 
     progress("server", "Checking the server");
     let sv = effective_server(&m, &st);
-    match query::query(&sv.host, sv.query_port, 3000).await {
+    let status = query::query(&sv.host, sv.query_port, 3000).await;
+    let server_synced_at = status.as_ref().ok().and_then(server_workshop_synced_at);
+    match status {
         Ok(s) => match server_build_from_rules(&s) {
             Some(server_build) if server_build != m.required_server_build => {
                 return Err(Error::BuildMismatch {
@@ -591,6 +600,39 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         });
     }
 
+    let mut workshop_note = String::new();
+    progress("mods", "Checking the server's mods against Steam");
+    match workshop::live_details(&workshop::unique_ids(&mods.mods)).await {
+        Some(live) => {
+            if let Some(at) = server_synced_at {
+                let stale = workshop::server_behind(&mods.mods, &live, at);
+                if !stale.is_empty() {
+                    return Err(Error::ServerWorkshopBehind {
+                        mods: workshop::describe_gaps(&stale),
+                        since: workshop::describe_time(Some(at)),
+                    });
+                }
+            }
+            // Not a block: Steam often has not noticed the update yet, and the game's Install
+            // button is the one thing that reliably makes it download.
+            let gaps = workshop::behind_steam(&mods.mods, &live);
+            if !gaps.is_empty() {
+                let note = format!(
+                    "A server mod was updated since your copy: {}. The game will ask you to \
+                     download it when you join. Click Install on the Server Workshop Items screen.",
+                    workshop::describe_gaps(&gaps)
+                );
+                progress("mods", &note);
+                notes.push(note);
+                workshop_note = workshop::describe_for_game(&gaps);
+            }
+        }
+        None => session_log::log(
+            "mods",
+            "Steam's Workshop API did not answer; skipped the live version check",
+        ),
+    }
+
     // Deliberately a warning and not a block, unlike WorkshopBehind above. Being ahead means
     // Steam updated the mod and the server has not been rebuilt against it yet -- nothing the
     // player can do, and blocking Play would lock everyone out on the mod author's schedule.
@@ -657,7 +699,13 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         bootstrap::clear_join_result();
         bootstrap::clear_role();
         let _ = serverlist::seed(&sv.name, &sv.host, sv.connect_port, &username)?;
-        bootstrap::write_join_intent(&sv.host, sv.connect_port, &username, &sv.name)?;
+        bootstrap::write_join_intent(
+            &sv.host,
+            sv.connect_port,
+            &username,
+            &sv.name,
+            &workshop_note,
+        )?;
 
         progress(
             "launch",
@@ -686,7 +734,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         // the first result would swallow every mid-session result there will ever be.
         let mut last_code: Option<String> = None;
         let press_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        tauri::async_runtime::spawn(press::refresh_until(press_stop.clone()));
+        press::refresh_until(press_stop.clone());
         launch::wait_for_exit_with(&mut watch, || {
             let Some(result) = bootstrap::read_join_result() else {
                 return;

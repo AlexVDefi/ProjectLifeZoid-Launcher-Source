@@ -433,6 +433,22 @@ public interface CharacterInputComponentEntity extends ECSEntity {
         return PLZBoneScale.isAllowed(username);
     }
 
+    default void plzBoneScaleSetHipSpacing(String username, float value) {
+        PLZBoneScale.setHipSpacing(username, value);
+    }
+
+    default float plzBoneScaleGetHipSpacing(String username) {
+        return PLZBoneScale.getHipSpacing(username);
+    }
+
+    default String plzBoneScalePreviewKey() {
+        return PLZBoneScale.PREVIEW_KEY;
+    }
+
+    default boolean plzBoneScaleBindPreview(Object ui3dModel, String key) {
+        return PLZBoneScale.bindPreview(ui3dModel, key);
+    }
+
     /** Also the patch probe: an unpatched client throws here rather than answering. */
     default int plzBoneScaleGroupCount() {
         return PLZBoneScale.groupCount();

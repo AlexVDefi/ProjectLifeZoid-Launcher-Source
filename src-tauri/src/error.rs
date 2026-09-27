@@ -57,6 +57,15 @@ pub enum Error {
     )]
     WorkshopNotReady { mods: String },
 
+    #[error(
+        "The server is running an older copy of a mod than Steam has: {mods}.\n\
+         The server last loaded its Workshop mods at {since}, before that update, so it will \
+         refuse every player until it restarts and downloads it.\n\
+         This is not something you can fix from here. Tell an admin the server needs a \
+         restart, then press Play again."
+    )]
+    ServerWorkshopBehind { mods: String, since: String },
+
     #[error("{url} returned {status}")]
     Http { url: String, status: u16 },
 

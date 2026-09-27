@@ -107,6 +107,9 @@ public class VoiceManager {
     // Written on the voice thread and read from Lua on the main one, hence the locks.
     private static final ArrayList<Short> plzRadioOnlyPeers = new ArrayList<>();
     private static final java.util.HashMap<Short, Integer> plzFrameCounts = new java.util.HashMap<>();
+    // A voice channel sits at priority 0, so every idle one held open takes a real FMOD voice from game sound.
+    private static final long PLZ_VOICE_IDLE_CLOSE_MS = 5000L;
+    private static final java.util.HashMap<Short, Long> plzLastFrameMs = new java.util.HashMap<>();
 
     // THE MEGAPHONE HISS, per speaker, on the LISTENER's machine.
     //
@@ -1151,8 +1154,10 @@ public class VoiceManager {
                 }
 
                 if (d.userplaychannel != 0L & !online) {
-                    javafmod.FMOD_Channel_Stop(d.userplaychannel);
-                    d.userplaychannel = 0L;
+                    this.plzCloseVoiceChannel(d);
+                } else if (d.userplaychannel != 0L && this.plzVoiceIdle(d.index) && PLZFixes.on(PLZFixes.VOICE_IDLE_CHANNEL)) {
+                    this.plzCloseVoiceChannel(d);
+                    PLZFixes.hit(PLZFixes.VOICE_IDLE_CHANNEL);
                 }
             }
 
@@ -1171,10 +1176,12 @@ public class VoiceManager {
                         while (RakVoice.ReceiveFrame(player.getOnlineID(), this.buf)) {
                             d.voicetimeout = 10L;
                             plzCountFrame(player.getOnlineID());
-                            if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
-                                PLZChannelProbe.observe(d.userplaychannel);
-                            }
                             if (!d.userplaymute) {
+                                // Open the channel before it is positioned, or the first frame after an idle close plays unplaced.
+                                this.getUserPlaySound(player.getOnlineID());
+                                if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
+                                    PLZChannelProbe.observe(d.userplaychannel);
+                                }
                                 float range = IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY());
                                 if (me.canHearAll()) {
                                     javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
@@ -1320,6 +1327,8 @@ public class VoiceManager {
                     continue;
                 }
 
+                this.getUserPlaySound(d.index);
+
                 // Non-positional, at the listening radio's own volume - the same treatment the
                 // loop above gives a radio match, because a voice arriving out of a speaker has
                 // no direction to come from.
@@ -1354,6 +1363,29 @@ public class VoiceManager {
         synchronized (plzFrameCounts) {
             Integer seen = plzFrameCounts.get(onlineId);
             plzFrameCounts.put(onlineId, seen == null ? 1 : seen + 1);
+            plzLastFrameMs.put(onlineId, System.currentTimeMillis());
+        }
+    }
+
+    private boolean plzVoiceIdle(short onlineId) {
+        synchronized (plzFrameCounts) {
+            Long last = plzLastFrameMs.get(onlineId);
+            return last == null || System.currentTimeMillis() - last >= PLZ_VOICE_IDLE_CLOSE_MS;
+        }
+    }
+
+    // Releases the RAW sound too: getUserPlaySound drops the old handle when it reopens, so a bare stop leaks it.
+    private void plzCloseVoiceChannel(VoiceManagerData d) throws InterruptedException {
+        this.recDevSemaphore.acquire();
+        try {
+            javafmod.FMOD_Channel_Stop(d.userplaychannel);
+            d.userplaychannel = 0L;
+            if (d.userplaysound != 0L) {
+                javafmod.FMOD_RAWPlaySound_Release(d.userplaysound);
+                d.userplaysound = 0L;
+            }
+        } finally {
+            this.recDevSemaphore.release();
         }
     }
 

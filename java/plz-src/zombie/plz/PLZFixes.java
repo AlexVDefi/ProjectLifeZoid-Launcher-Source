@@ -49,6 +49,7 @@ public final class PLZFixes {
     public static final String CHANNEL_PROBE = "channelProbe";
     public static final String CHAT_JOIN_RECOVERY = "chatJoinRecovery";
     public static final String CHAT_SERVER_DISCONNECT = "chatServerDisconnect";
+    public static final String CHAT_SAY_SAME_FLOOR = "chatSaySameFloor";
     public static final String COMPRESS_IDENTICAL_ITEMS = "compressIdenticalItems";
     public static final String CONNECT_EXTRA_INFO_FANOUT = "connectExtraInfoFanout";
     public static final String CONNECT_VARIABLE_SYNC_ONCE = "connectVariableSyncOnce";
@@ -65,6 +66,7 @@ public final class PLZFixes {
     public static final String SAVE_CELL_SUPPRESS = "saveCellSuppress";
     public static final String SERVER_MAP_RELEVANCE_STAMP = "serverMapRelevanceStamp";
     public static final String SOUND_LOOP_PRIORITY = "soundLoopPriority";
+    public static final String SOUND_MUSIC_PRIORITY = "soundMusicPriority";
     public static final String SPRITE_CONFIG_IDEMPOTENT = "spriteConfigIdempotent";
     public static final String SPRITE_TRANSMIT_GUARD = "spriteTransmitGuard";
     public static final String TRANSACTION_CANCEL = "transactionCancel";
@@ -72,6 +74,7 @@ public final class PLZFixes {
     public static final String TRANSLATOR_ARGS = "translatorArgs";
     public static final String VEHICLE_CHUNK_REHOME = "vehicleChunkRehome";
     public static final String VOICE_ROUTING_SLACK = "voiceRoutingSlack";
+    public static final String VOICE_IDLE_CHANNEL = "voiceIdleChannel";
     public static final String VEHICLE_GHOST_REPORT = "vehicleGhostReport";
     public static final String VEHICLE_SAVE_ANIMALS = "vehicleSaveAnimals";
     public static final String VEHICLE_SOUNDS_CLIENT = "vehicleSoundsClient";

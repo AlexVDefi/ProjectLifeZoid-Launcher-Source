@@ -198,6 +198,7 @@ local armed = false
 local reported = false
 local roleWritten = false
 local ours = false
+local workshopNote = nil
 
 local function readIntent()
     local reader = getFileReader(JOIN_FILE, false)
@@ -208,6 +209,7 @@ local function readIntent()
         username = reader:readLine(),
         serverPassword = reader:readLine(),
         serverName = reader:readLine(),
+        workshopNote = reader:readLine(),
     }
     reader:close()
     if not intent.host or intent.host == "" then return nil end
@@ -506,13 +508,31 @@ local function onConnectionStateChanged(state, message, arg)
     setStatus(serverText(state, CONNECTING), nil)
 end
 
-local function onServerWorkshopItems(state)
+local function megabytes(bytes)
+    local mb = (tonumber(bytes) or 0) / 1048576
+    return tostring(mb - mb % 1)
+end
+
+local function onServerWorkshopItems(state, arg1, arg2, arg3)
     if not ours then return end
     if state == "Error" then
         removeStatus()
         return
     end
     if state == "Success" then return end
+    if state == "Required" or state == "Details" then
+        local notes = {}
+        if workshopNote then notes[#notes + 1] = workshopNote end
+        notes[#notes + 1] = "Click Install at the bottom of the screen to download it."
+        setStatus("A server mod was updated since you last played", notes)
+        return
+    end
+    if state == "Progress" then
+        setStatus("Downloading the updated mod", {
+            megabytes(arg2) .. " of " .. megabytes(arg3) .. " MB",
+        })
+        return
+    end
     setStatus("Checking your Workshop mods against the server...", nil)
 end
 
@@ -522,6 +542,9 @@ local function join()
     clearIntent()
     armed = true
     ours = true
+    if intent.workshopNote and intent.workshopNote ~= "" then
+        workshopNote = intent.workshopNote
+    end
 
     local server = ensureServer(intent)
     local account = ensureAccount(server, intent.username)
@@ -775,12 +798,40 @@ enterMenu()
 HANDLERS.OnConnectionStateChanged("UDPConnecting")
 RENDER_ALL()
 check("the engine wording is shown", DRAWN_HAS("Opening the connection"), true)
-HANDLERS.OnServerWorkshopItems("Required", "1234")
+HANDLERS.OnServerWorkshopItems("Unknown")
 RENDER_ALL()
 check("the workshop pass is named", DRAWN_HAS("Checking your Workshop mods against the server..."), true)
+HANDLERS.OnServerWorkshopItems("Required", "1234")
+RENDER_ALL()
+check("a required update is not called a check", DRAWN_HAS("Checking your Workshop mods against the server..."), false)
+check("it says a mod was updated", DRAWN_HAS("A server mod was updated since you last played"), true)
+check("it says to click Install", DRAWN_HAS("Click Install at the bottom of the screen to download it."), true)
+HANDLERS.OnServerWorkshopItems("Progress", "1234", 52428800, 471859200)
+RENDER_ALL()
+check("the download shows megabytes", DRAWN_HAS("50 of 450 MB"), true)
 HANDLERS.OnConnectionStateChanged("AuthPending")
 RENDER_ALL()
 check("an untranslated state falls back", DRAWN_HAS("Contacting the server..."), true)
+
+print("")
+print("--- 15b. the launcher names the updated mod ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\nPuffin's Retro Relics (470 MB)\n"
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnServerWorkshopItems("Required", "3788360646")
+RENDER_ALL()
+check("the mod is named on screen", DRAWN_HAS("Puffin's Retro Relics (470 MB)"), true)
+check("and the instruction stays", DRAWN_HAS("Click Install at the bottom of the screen to download it."), true)
+
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectionStateChanged("UDPConnecting")
 
 print("")
 print("--- 16. the last frame before ResetLua explains the freeze ---")

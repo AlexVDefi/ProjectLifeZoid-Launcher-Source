@@ -306,6 +306,10 @@ public final class AnimationPlayer extends PooledObject {
         this.ragdollAnimationClip = null;
         this.ragdollAnimationWeight = 0.0F;
         this.character = null;
+        this.plzPreviewKey = null;
+        this.plzRigUser = null;
+        this.plzRigVersion = -1;
+        this.plzRig = null;
     }
 
     public SkinningData getSkinningData() {
@@ -1481,13 +1485,37 @@ public final class AnimationPlayer extends PooledObject {
     // PLZ: boneTransforms stay vanilla so the twist, turn flip and blending never see the resize.
     private PLZBoneScale.Layout plzLayout;
     private Matrix4f[] plzLocal;
+    private String plzPreviewKey;
+    private String plzRigUser;
+    private int plzRigVersion = -1;
+    private PLZBoneScale.Rig plzRig;
+
+    public void plzSetPreviewKey(String key) {
+        this.plzPreviewKey = key;
+    }
 
     private void plzApplyBoneScale() {
-        if (!PLZBoneScale.isActive() || !(this.character instanceof IsoPlayer player)) {
+        if (!PLZBoneScale.isActive()) {
             return;
         }
 
-        PLZBoneScale.Rig rig = PLZBoneScale.rigFor(player.getUsername());
+        String user;
+        if (this.character instanceof IsoPlayer player) {
+            user = player.getUsername();
+        } else if (this.character == null && this.plzPreviewKey != null) {
+            user = this.plzPreviewKey;
+        } else {
+            return;
+        }
+
+        int version = PLZBoneScale.version();
+        if (user != this.plzRigUser || version != this.plzRigVersion) {
+            this.plzRig = PLZBoneScale.rigFor(user);
+            this.plzRigUser = user;
+            this.plzRigVersion = version;
+        }
+
+        PLZBoneScale.Rig rig = this.plzRig;
         if (rig == null || this.skinningData == null || this.boneTransforms == null) {
             return;
         }

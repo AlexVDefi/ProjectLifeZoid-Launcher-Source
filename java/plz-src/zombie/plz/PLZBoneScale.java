@@ -11,10 +11,7 @@ import org.lwjgl.util.vector.Matrix4f;
  * PLZ. Per-bone proportions for a named account: the registry of who is scaled and by how much,
  * and {@link #compose}, which resizes the drawn palette without touching the animation's own bones.
  *
- * <p>WHO MAY BE SCALED IS DECIDED HERE, not only in the UI, the same shape
- * {@link PLZVoiceChanger} uses: the management row is hidden from everyone else and this refuses
- * to record a rig for them either, so a client that reached the command some other way still
- * cannot make the server see a giant. Widening it later is this one constant.
+ * <p>Any account may carry a rig; the server's Lua decides what each one is allowed to be.
  *
  * <p>CLIENT-SIDE ONLY. Bodies are drawn by clients; the server neither renders nor needs this.
  * The rig itself IS synced - the server holds it and relays it - but that travels as a Lua
@@ -24,17 +21,8 @@ public final class PLZBoneScale {
     private PLZBoneScale() {
     }
 
-    /**
-     * The accounts that may carry a rig. Compared case-insensitively against
-     * {@code IsoPlayer.getUsername()}, which is the ACCOUNT rather than the character name - the
-     * character name is a second identity layer and a player may change it.
-     *
-     * <p>MUST STAY IN STEP WITH {@code PLZBoneScaleCore.ACCOUNTS} on the Lua side: the server
-     * validates a rig in Lua without any of these classes present, and each client's java records
-     * it here. A name in one list and not the other is a body that scales on some screens and not
-     * others.
-     */
-    public static final String[] ALLOWED_ACCOUNTS = { "RedChili5", "Spiffo Fairy" };
+    /** The registry key a UI preview renders from. DEL, so no username can collide and trim() keeps it. */
+    public static final String PREVIEW_KEY = "\u007Fpreview";
 
     /**
      * Group ids, in the order Lua enumerates them through {@code plzBoneScaleGroupAt}. The Lua
@@ -53,6 +41,7 @@ public final class PLZBoneScale {
         "thighs",
         "calves",
         "feet",
+        "belly",
     };
 
     /**
@@ -115,6 +104,8 @@ public final class PLZBoneScale {
      */
     public static final int GROUP_PROP_FIRST = GROUPS.length;
 
+    private static final int THIGHS_GROUP = Arrays.asList(GROUPS).indexOf("thighs");
+
     /** A bone nothing named: it inherits its parent and is never written. */
     public static final int GROUP_INHERIT = -1;
 
@@ -156,7 +147,7 @@ public final class PLZBoneScale {
         // that IS named and should follow it without a slider of their own.
         bone("Bip01_Head", "head");
         bone("Bip01_Neck", "neck");
-        bone("Bip01_Spine", "torso");
+        bone("Bip01_Spine", "belly");
         bone("Bip01_Spine1", "torso");
         bone("Bip01_L_Clavicle", "shoulders");
         bone("Bip01_R_Clavicle", "shoulders");
@@ -195,6 +186,9 @@ public final class PLZBoneScale {
         public volatile float nudgeX;
         public volatile float nudgeY;
         public volatile float nudgeZ;
+
+        /** How far apart the hip joints sit: the thigh roots' sideways offset from the spine. */
+        public volatile float hipSpacing = 1.0F;
 
         /**
          * Per prop bone, per axis. Separate arrays from the body groups because a prop is not part
@@ -245,6 +239,9 @@ public final class PLZBoneScale {
             if (this.overall != 1.0F) {
                 return false;
             }
+            if (this.hipSpacing != 1.0F) {
+                return false;
+            }
             if (this.nudgeX != 0.0F || this.nudgeY != 0.0F || this.nudgeZ != 0.0F) {
                 return false;
             }
@@ -285,25 +282,23 @@ public final class PLZBoneScale {
      */
     private static volatile boolean active = false;
 
+    /** Bumped whenever a rig enters or leaves the registry, so a render-path cache knows to look again. */
+    private static volatile int version = 0;
+
     //============================================================//
     // the gate
     //============================================================//
 
     /**
      * @param username an account name, normally {@code IsoPlayer.getUsername()}
-     * @return true when that account is one a rig may be recorded for
+     * @return true when a rig may be recorded under that key
      */
     public static boolean isAllowed(String username) {
-        if (username == null) {
-            return false;
-        }
-        String trimmed = username.trim();
-        for (String allowed : ALLOWED_ACCOUNTS) {
-            if (allowed.equalsIgnoreCase(trimmed)) {
-                return true;
-            }
-        }
-        return false;
+        return username != null && !username.trim().isEmpty();
+    }
+
+    public static int version() {
+        return version;
     }
 
     //============================================================//
@@ -336,7 +331,17 @@ public final class PLZBoneScale {
         if (k == null || k.isEmpty()) {
             return null;
         }
-        return RIGS.computeIfAbsent(k, unused -> new Rig());
+        Rig rig = RIGS.get(k);
+        if (rig != null) {
+            return rig;
+        }
+        Rig created = new Rig();
+        rig = RIGS.putIfAbsent(k, created);
+        if (rig != null) {
+            return rig;
+        }
+        version++;
+        return created;
     }
 
     /**
@@ -344,8 +349,8 @@ public final class PLZBoneScale {
      * map lookup on every character on screen.
      */
     private static void settle(String username, Rig rig) {
-        if (rig != null && rig.isIdentity()) {
-            RIGS.remove(key(username), rig);
+        if (rig != null && rig.isIdentity() && RIGS.remove(key(username), rig)) {
+            version++;
         }
         active = !RIGS.isEmpty();
     }
@@ -640,6 +645,26 @@ public final class PLZBoneScale {
         return out[0] != 1.0F || out[1] != 1.0F || out[2] != 1.0F;
     }
 
+    public static final float MIN_HIP_SPACING = 0.5F;
+    public static final float MAX_HIP_SPACING = 2.0F;
+
+    public static void setHipSpacing(String username, float value) {
+        Rig rig = editable(username);
+        if (rig == null) {
+            return;
+        }
+        float clamped = Float.isNaN(value) ? 1.0F : value;
+        rig.hipSpacing = clamped < MIN_HIP_SPACING ? MIN_HIP_SPACING : (clamped > MAX_HIP_SPACING ? MAX_HIP_SPACING : clamped);
+        active = true;
+        settle(username, rig);
+    }
+
+    public static float getHipSpacing(String username) {
+        String k = key(username);
+        Rig rig = k == null ? null : RIGS.get(k);
+        return rig == null ? 1.0F : rig.hipSpacing;
+    }
+
     public static void setNudge(String username, float x, float y, float z) {
         Rig rig = editable(username);
         if (rig == null) {
@@ -678,15 +703,54 @@ public final class PLZBoneScale {
 
     public static void clear(String username) {
         String k = key(username);
-        if (k != null) {
-            RIGS.remove(k);
+        if (k != null && RIGS.remove(k) != null) {
+            version++;
         }
         active = !RIGS.isEmpty();
     }
 
+    /** Everyone's rig goes; the preview's survives, because an open editor is not a roster. */
     public static void clearAll() {
+        Rig preview = RIGS.get(key(PREVIEW_KEY));
         RIGS.clear();
-        active = false;
+        if (preview != null) {
+            RIGS.put(key(PREVIEW_KEY), preview);
+        }
+        version++;
+        active = !RIGS.isEmpty();
+    }
+
+    //============================================================//
+    // the editor's preview
+    //============================================================//
+
+    private static java.lang.reflect.Field uiAnimatedModel;
+
+    /**
+     * Point the AnimationPlayer behind a Lua {@code ISUI3DModel.javaObject} at a registry key, or
+     * at nothing with a null key. UI3DModel keeps its model private, hence the reflection.
+     *
+     * @return true when the preview is bound
+     */
+    public static boolean bindPreview(Object ui, String key) {
+        if (!(ui instanceof zombie.ui.UI3DModel)) {
+            return false;
+        }
+        try {
+            if (uiAnimatedModel == null) {
+                java.lang.reflect.Field field = zombie.ui.UI3DModel.class.getDeclaredField("animatedModel");
+                field.setAccessible(true);
+                uiAnimatedModel = field;
+            }
+            Object model = uiAnimatedModel.get(ui);
+            if (!(model instanceof zombie.core.skinnedmodel.advancedanimation.AnimatedModel animated)) {
+                return false;
+            }
+            animated.getAnimationPlayer().plzSetPreviewKey(key);
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
     }
 
     //============================================================//
@@ -798,13 +862,18 @@ public final class PLZBoneScale {
             float py = p >= 0 ? ey[p] : 1.0F;
             float pz = p >= 0 ? ez[p] : 1.0F;
 
+            // Girth (Y/Z) is soft tissue: only the parent's length (X, along the bone) moves this joint.
             Matrix4f d = chain[i];
             d.load(local[i]);
             d.m03 *= px;
-            d.m13 *= py;
-            d.m23 *= pz;
+            d.m13 *= px;
+            d.m23 *= px;
 
             int group = layout.group[i];
+            if (group == THIGHS_GROUP && (p < 0 || layout.group[p] != THIGHS_GROUP)) {
+                // The spine's Y is sideways in the B42 rig (thighs bind at Spine +-Y).
+                d.m13 *= rig.hipSpacing;
+            }
             int prop = propOfGroup(group);
             if (i == layout.root) {
                 ex[i] = 1.0F;

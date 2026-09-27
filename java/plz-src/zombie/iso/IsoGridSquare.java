@@ -168,7 +168,9 @@ import zombie.tileDepth.CutawayAttachedModifier;
 import zombie.tileDepth.TileDepthMapManager;
 import zombie.tileDepth.TileSeamModifier;
 import zombie.plz.PLZAssetRefusals;
+import zombie.plz.PLZUtilities;
 import zombie.chat.ChatManager;
+import zombie.network.chat.ChatServer;
 import zombie.plz.PLZChannelProbe;
 import zombie.plz.PLZSoundProbe;
 import zombie.plz.PLZSoundPriority;
@@ -8060,6 +8062,10 @@ public final class IsoGridSquare {
         PLZChannelProbe.reset();
     }
 
+    public static boolean plzSetSayRange(double tiles) {
+        return GameServer.server && ChatServer.getInstance().plzSetSayRange((float)tiles);
+    }
+
     // ChatManager is not on LuaManager's whitelist either, so the client's poll reaches it here.
     public static void plzChatHealthCheck() {
         ChatManager manager = ChatManager.getInstance();
@@ -10732,6 +10738,10 @@ public final class IsoGridSquare {
     }
 
     public boolean haveElectricity() {
+        if (PLZUtilities.powerEverywhere()) {
+            return true;
+        }
+
         return !SandboxOptions.getInstance().allowExteriorGenerator.getValue() && this.has(IsoFlagType.exterior)
             ? false
             : this.chunk != null && this.chunk.isGeneratorPoweringSquare(this.x, this.y, this.z);

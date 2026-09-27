@@ -13,6 +13,7 @@ import zombie.characters.Faction;
 import zombie.characters.IsoPlayer;
 import zombie.chat.ChatBase;
 import zombie.chat.ChatMessage;
+import zombie.chat.ChatSettings;
 import zombie.chat.ChatTab;
 import zombie.chat.ChatUtility;
 import zombie.chat.ServerChatMessage;
@@ -342,6 +343,20 @@ public class ChatServer {
 
     // Membership is deliberately not touched: the server's view is the correct one, it is the
     // client's copy that is short. See java-patch/README.md, "ChatManager".
+    // Players already connected keep the old bubble range until they rejoin; the filter is live at once.
+    public boolean plzSetSayRange(float range) {
+        ChatBase say = defaultChats.get(ChatType.say);
+        if (say == null || !(range > 0.0F)) {
+            return false;
+        }
+
+        ChatSettings settings = SayChat.getDefaultSettings();
+        settings.setRange(range);
+        say.setSettings(settings);
+        logger.write("Say chat range set to " + range + " tiles", "info");
+        return true;
+    }
+
     public boolean plzResendJoins(short playerID, boolean full) {
         UdpConnection connection = ChatUtility.findConnection(playerID);
         if (connection == null) {
@@ -680,9 +695,37 @@ public class ChatServer {
         synchronized (chats) {
             if (chats.containsKey(msg.getChatID())) {
                 ChatBase chat = chats.get(msg.getChatID());
-                chat.sendMessageToChatMembers(msg);
+                if (chat.getType() == ChatType.say && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CHAT_SAY_SAME_FLOOR)) {
+                    this.plzSendSayOnFloor(chat, msg);
+                } else {
+                    chat.sendMessageToChatMembers(msg);
+                }
             }
         }
+    }
+
+    // Vanilla RangeBasedChat measures flat distance only, so /say carried through floors and ceilings.
+    private void plzSendSayOnFloor(ChatBase chat, ChatMessage msg) {
+        IsoPlayer author = ChatUtility.findPlayer(msg.getAuthor());
+        if (author == null) {
+            logger.write("Say author '" + msg.getAuthor() + "' not found; message dropped", "warning");
+            return;
+        }
+
+        float range = chat.getRange();
+        int floor = author.getZi();
+        for (IsoPlayer player : GameServer.Players) {
+            if (player == null || player.getOnlineID() == author.getOnlineID() || player.getZi() != floor) {
+                continue;
+            }
+
+            short playerID = player.getOnlineID();
+            if (chat.plzHasMember(playerID) && ChatUtility.getDistance(author, player) < range) {
+                chat.sendMessageToPlayer(playerID, msg);
+            }
+        }
+
+        zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CHAT_SAY_SAME_FLOOR);
     }
 
     private void sendInitPlayerChatPacket(UdpConnection connection) {

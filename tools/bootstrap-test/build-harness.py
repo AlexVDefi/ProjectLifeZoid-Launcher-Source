@@ -381,12 +381,40 @@ enterMenu()
 HANDLERS.OnConnectionStateChanged("UDPConnecting")
 RENDER_ALL()
 check("the engine wording is shown", DRAWN_HAS("Opening the connection"), true)
-HANDLERS.OnServerWorkshopItems("Required", "1234")
+HANDLERS.OnServerWorkshopItems("Unknown")
 RENDER_ALL()
 check("the workshop pass is named", DRAWN_HAS("Checking your Workshop mods against the server..."), true)
+HANDLERS.OnServerWorkshopItems("Required", "1234")
+RENDER_ALL()
+check("a required update is not called a check", DRAWN_HAS("Checking your Workshop mods against the server..."), false)
+check("it says a mod was updated", DRAWN_HAS("A server mod was updated since you last played"), true)
+check("it says to click Install", DRAWN_HAS("Click Install at the bottom of the screen to download it."), true)
+HANDLERS.OnServerWorkshopItems("Progress", "1234", 52428800, 471859200)
+RENDER_ALL()
+check("the download shows megabytes", DRAWN_HAS("50 of 450 MB"), true)
 HANDLERS.OnConnectionStateChanged("AuthPending")
 RENDER_ALL()
 check("an untranslated state falls back", DRAWN_HAS("Contacting the server..."), true)
+
+print("")
+print("--- 15b. the launcher names the updated mod ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\nPuffin's Retro Relics (470 MB)\n"
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnServerWorkshopItems("Required", "3788360646")
+RENDER_ALL()
+check("the mod is named on screen", DRAWN_HAS("Puffin's Retro Relics (470 MB)"), true)
+check("and the instruction stays", DRAWN_HAS("Click Install at the bottom of the screen to download it."), true)
+
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectionStateChanged("UDPConnecting")
 
 print("")
 print("--- 16. the last frame before ResetLua explains the freeze ---")
