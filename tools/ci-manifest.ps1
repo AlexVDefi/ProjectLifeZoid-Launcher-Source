@@ -24,9 +24,7 @@ function Invoke-Gh {
 }
 function To-Utc($value) {
     if ($value -is [datetime]) { return $value.ToUniversalTime() }
-    $parsed = [datetimeoffset]::MinValue
-    if ([datetimeoffset]::TryParse([string]$value, [ref]$parsed)) { return $parsed.UtcDateTime }
-    return [DateTime]::MinValue
+    return ([datetimeoffset]::Parse([string]$value)).UtcDateTime
 }
 
 if ($Commit -notmatch '^[0-9a-f]{40}$') { throw "-Commit must be a full 40-character sha" }
@@ -54,7 +52,7 @@ try {
         Start-Sleep -Seconds 4
         $listed = Invoke-Gh run list --repo $Repo --workflow $workflowFile --event workflow_dispatch --limit 10 --json "databaseId,headSha,createdAt"
         if ($ghExit -ne 0) { continue }
-        $mine = @($listed | ConvertFrom-Json | Where-Object { $_.headSha -eq $Commit -and (To-Utc $_.createdAt) -ge $since } |
+        $mine = @($listed | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.headSha -eq $Commit -and (To-Utc $_.createdAt) -ge $since } |
             Sort-Object { To-Utc $_.createdAt } -Descending)
         if ($mine.Count -gt 0) { $runId = $mine[0].databaseId }
     }
