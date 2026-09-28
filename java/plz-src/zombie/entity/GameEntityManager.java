@@ -335,14 +335,14 @@ public class GameEntityManager {
                             DebugType.Entity.error("idToEntityMap(%d)=%s, expected %s", oldID, storedOld, entity);
                         }
 
-                        if (storedNew instanceof IsoObject newObject) {
-                            newObject.getEntityNetID();
+                        if (storedNew instanceof IsoObject newObject && newObject.getEntityNetID() == -1L) {
+                            idToEntityMap.remove(newID);
                         }
 
                         if (idToEntityMap.get(newID) == null) {
                             idToEntityMap.put(newID, entity);
                         } else {
-                            DebugType.Entity.error("idToEntityMap(%d)=%s, expected null", newID, idToEntityMap.get(newID), entity);
+                            DebugType.Entity.error("idToEntityMap(%d)=%s, expected null for %s", newID, idToEntityMap.get(newID), entity);
                         }
                     }
                 }

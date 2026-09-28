@@ -43,6 +43,7 @@ import zombie.network.packets.INetworkPacket;
 
 @UsedFromLua
 public class IsoLightSwitch extends IsoObject {
+    public static final int DEFAULT_LIGHT_RADIUS = 8;
     public boolean activated;
     public final ArrayList<IsoLightSource> lights = new ArrayList<>();
     public boolean lightRoom;
@@ -109,20 +110,36 @@ public class IsoLightSwitch extends IsoObject {
             float r = Float.parseFloat(this.sprite.getProperties().get(IsoPropertyType.RED_LIGHT)) / 255.0F;
             float g = Float.parseFloat(this.sprite.getProperties().get(IsoPropertyType.GREEN_LIGHT)) / 255.0F;
             float b = Float.parseFloat(this.sprite.getProperties().get(IsoPropertyType.BLUE_LIGHT)) / 255.0F;
+            this.setPrimaryR(r);
+            this.setPrimaryG(g);
+            this.setPrimaryB(b);
             this.activated = false;
             this.setActive(true, true);
-            int radius = 10;
-            if (this.sprite.getProperties().has(IsoPropertyType.LIGHT_RADIUS)
-                && Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS)) > 0) {
-                radius = Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS));
-            }
-
-            IsoLightSource l = new IsoLightSource(this.square.getX(), this.square.getY(), this.square.getZ(), r, g, b, radius);
-            l.active = this.activated;
-            l.hydroPowered = true;
-            l.switches.add(this);
-            this.lights.add(l);
+            this.createLightSource();
         }
+    }
+
+    public void createLightSource() {
+        this.createLightSource(this.primaryR, this.primaryG, this.primaryB);
+    }
+
+    public void createLightSource(float r, float g, float b) {
+        if (!this.lights.isEmpty()) {
+            this.lights.clear();
+        }
+
+        int radius = 8;
+        if (this.sprite.getProperties().has(IsoPropertyType.LIGHT_RADIUS)
+            && Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS)) > 0) {
+            radius = Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS));
+        }
+
+        IsoLightSource l = new IsoLightSource(this.getXi(), this.getYi(), this.getZi(), r, g, b, radius);
+        l.active = this.activated;
+        l.wasActive = l.active;
+        l.hydroPowered = true;
+        l.switches.add(this);
+        this.lights.add(l);
     }
 
     public boolean getCanBeModified() {
@@ -269,7 +286,7 @@ public class IsoLightSwitch extends IsoObject {
     }
 
     private IsoLightSource getPrimaryLight() {
-        return !this.lights.isEmpty() ? this.lights.get(0) : null;
+        return this.lights.isEmpty() ? null : this.lights.getFirst();
     }
 
     public float getPrimaryR() {
@@ -365,18 +382,7 @@ public class IsoLightSwitch extends IsoObject {
                     }
                 }
 
-                int radius = 8;
-                if (this.sprite.getProperties().has(IsoPropertyType.LIGHT_RADIUS)
-                    && Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS)) > 0) {
-                    radius = Integer.parseInt(this.sprite.getProperties().get(IsoPropertyType.LIGHT_RADIUS));
-                }
-
-                IsoLightSource l = new IsoLightSource(this.getXi(), this.getYi(), this.getZi(), r, g, b, radius);
-                l.active = this.activated;
-                l.wasActive = l.active;
-                l.hydroPowered = true;
-                l.switches.add(this);
-                this.lights.add(l);
+                this.createLightSource(r, g, b);
             }
         }
     }

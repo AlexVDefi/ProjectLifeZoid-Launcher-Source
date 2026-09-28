@@ -26,6 +26,7 @@ import zombie.network.GameServer;
 import zombie.plz.PLZSaveGuard;
 
 public final class ServerPlayerDB {
+    public static final String PLAYER_FALLBACK_USERNAME = "Player%d";
     private static ServerPlayerDB instance;
     private static boolean allow;
     public Connection conn;
@@ -138,8 +139,8 @@ public final class ServerPlayerDB {
                     sqlSelect = "SELECT id FROM networkPlayers WHERE username=? AND world=? AND playerIndex=?";
                 }
 
-                String sqlInsert = "INSERT INTO networkPlayers(world,username,steamid, playerIndex,name,x,y,z,worldversion,isDead,data) VALUES(?,?,?,?,?,?,?,?,?,?,?)";
-                String sqlUpdate = "UPDATE networkPlayers SET x=?, y=?, z=?, worldversion = ?, isDead = ?, data = ?, name = ? WHERE id=?";
+                String sqlInsert = "INSERT INTO networkPlayers(world,username,steamid, playerIndex,name,x,y,z,worldversion,isDead,splitUsername,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+                String sqlUpdate = "UPDATE networkPlayers SET x=?, y=?, z=?, worldversion = ?, isDead = ?, data = ?, name = ?, splitUsername = ? WHERE id=?";
 
                 try (PreparedStatement pstmt = this.conn.prepareStatement(sqlSelect)) {
                     if (GameServer.coop && SteamUtils.isSteamModeEnabled()) {
@@ -155,7 +156,9 @@ public final class ServerPlayerDB {
                         int sqlId = rs.getInt(1);
 
                         try (PreparedStatement pstmtUpdate = this.conn
-                                .prepareStatement("UPDATE networkPlayers SET x=?, y=?, z=?, worldversion = ?, isDead = ?, data = ?, name = ? WHERE id=?")) {
+                                .prepareStatement(
+                                    "UPDATE networkPlayers SET x=?, y=?, z=?, worldversion = ?, isDead = ?, data = ?, name = ?, splitUsername = ? WHERE id=?"
+                                )) {
                             pstmtUpdate.setFloat(1, data.x);
                             pstmtUpdate.setFloat(2, data.y);
                             pstmtUpdate.setFloat(3, data.z);
@@ -163,14 +166,15 @@ public final class ServerPlayerDB {
                             pstmtUpdate.setBoolean(5, data.isDead);
                             pstmtUpdate.setBytes(6, data.buffer);
                             pstmtUpdate.setString(7, data.playerName);
-                            pstmtUpdate.setInt(8, sqlId);
+                            pstmtUpdate.setString(8, data.splitUsername);
+                            pstmtUpdate.setInt(9, sqlId);
                             int rowAffected = pstmtUpdate.executeUpdate();
                             this.conn.commit();
                         }
                     } else {
                         try (PreparedStatement pstmtInsert = this.conn
                                 .prepareStatement(
-                                    "INSERT INTO networkPlayers(world,username,steamid, playerIndex,name,x,y,z,worldversion,isDead,data) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                                    "INSERT INTO networkPlayers(world,username,steamid, playerIndex,name,x,y,z,worldversion,isDead,splitUsername,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
                                 )) {
                             pstmtInsert.setString(1, Core.gameSaveWorld);
                             pstmtInsert.setString(2, data.username);
@@ -182,7 +186,8 @@ public final class ServerPlayerDB {
                             pstmtInsert.setFloat(8, data.z);
                             pstmtInsert.setInt(9, data.worldVersion);
                             pstmtInsert.setBoolean(10, data.isDead);
-                            pstmtInsert.setBytes(11, data.buffer);
+                            pstmtInsert.setString(11, data.splitUsername);
+                            pstmtInsert.setBytes(12, data.buffer);
                             int rowAffected = pstmtInsert.executeUpdate();
                             this.conn.commit();
                         }
@@ -341,6 +346,7 @@ public final class ServerPlayerDB {
         float y;
         float z;
         boolean isDead;
+        String splitUsername;
         int worldVersion;
 
         public NetworkCharacterData(IsoPlayer player, int playerIndex, UdpConnection connection) {
@@ -350,6 +356,7 @@ public final class ServerPlayerDB {
             this.y = player.getY();
             this.z = player.getZ();
             this.isDead = player.isDead();
+            this.splitUsername = player.username;
             this.worldVersion = IsoWorld.getWorldVersion();
             int bufferSize = 32768;
 
@@ -391,6 +398,7 @@ public final class ServerPlayerDB {
             this.y = bb.getFloat();
             this.z = bb.getFloat();
             this.isDead = bb.get() != 0;
+            this.splitUsername = String.format("Player%d", this.playerIndex + 1);
             this.worldVersion = bb.getInt();
             int size = bb.getInt();
             this.buffer = new byte[size];

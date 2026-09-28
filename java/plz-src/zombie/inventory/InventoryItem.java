@@ -643,6 +643,7 @@ public class InventoryItem extends GameEntity {
             if (square != null) {
                 animal.setSquare(square);
                 animal.setCurrent(square);
+                animal.setMovingSquareNow();
             }
 
             IsoDeadBody corpse = new IsoDeadBody(animal, true, square != null);
@@ -838,13 +839,13 @@ public class InventoryItem extends GameEntity {
             y = y + lineSpacing + 5;
         }
 
-        if (this instanceof Food && ((Food)this).spices != null) {
+        if (this instanceof Food food && food.hasSpices()) {
             tooltipUI.DrawText(font, Translator.getText("Tooltip_item_Spices"), tooltipUI.padLeft, y, 1.0, 1.0, 0.8F, 1.0);
             int x = tooltipUI.padLeft + TextManager.instance.MeasureStringX(font, Translator.getText("Tooltip_item_Spices")) + 4;
             int dy = (lineSpacing - iconSize) / 2;
 
-            for (int i = 0; i < ((Food)this).spices.size(); i++) {
-                InventoryItem item = InventoryItemFactory.CreateItem(((Food)this).spices.get(i));
+            for (int i = 0; i < food.spices.size(); i++) {
+                InventoryItem item = InventoryItemFactory.CreateItem(food.spices.get(i));
                 float dx = this.drawTooltipItemTexture(tooltipUI, item.getTex(), x, y + dy, iconSize, iconSize, 1.0F, 1.0F, 1.0F, 1.0F);
                 x = x + (int)PZMath.ceil(dx) + 2;
             }
@@ -1498,7 +1499,7 @@ public class InventoryItem extends GameEntity {
             ItemContainer outermostContainer = this.getOutermostContainer();
             FluidContainer cont = this.getFluidContainer();
             if (outermostContainer != null) {
-                float temp = outermostContainer.getTemprature();
+                float temp = outermostContainer.getTemperature();
                 float tempChange = GameServer.server ? 0.06F : 0.001F;
                 if (temp == 1.0F && this.itemHeat < 1.0F) {
                     this.itemHeat = this.itemHeat + tempChange * this.timeMultiplier;
@@ -1587,7 +1588,9 @@ public class InventoryItem extends GameEntity {
                 return false;
             }
 
-            if (this.container != null && (this.itemHeat != 1.0F || this.itemHeat != this.container.getTemprature() || this.container.isTemperatureChanging())) {
+            if (this.container != null && (this.itemHeat != 1.0F || this.itemHeat != this.container.getTemperature() || this.container.isTemperatureChanging())
+                )
+             {
                 return false;
             }
         }
@@ -3048,7 +3051,7 @@ public class InventoryItem extends GameEntity {
     }
 
     public void setCondition(int condition, boolean doSound) {
-        if (!Core.debug || !DebugOptions.instance.cheat.player.unlimitedCondition.getValue() || this.condition <= condition) {
+        if ((!Core.debug || !DebugOptions.instance.cheat.player.unlimitedCondition.getValue()) && !Core.tutorial || this.condition <= condition) {
             condition = Math.max(0, condition);
             condition = Math.min(this.getConditionMax(), condition);
             if (doSound && this.condition > 0 && condition <= 0) {

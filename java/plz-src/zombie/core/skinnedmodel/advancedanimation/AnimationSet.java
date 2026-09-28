@@ -75,7 +75,7 @@ public final class AnimationSet {
             return n;
         }
 
-        DebugType.Animation.warn("AnimState not found: %s", name);
+        DebugType.Animation.trace("AnimState not found: %s", name);
         return new AnimState();
     }
 

@@ -7,6 +7,7 @@ import zombie.core.TransactionManager;
 import zombie.core.network.ByteBufferReader;
 import zombie.core.network.ByteBufferWriter;
 import zombie.core.raknet.UdpConnection;
+import zombie.debug.DebugType;
 import zombie.inventory.ItemPickerJava;
 import zombie.iso.IsoDirections;
 import zombie.network.GameServer;
@@ -19,8 +20,6 @@ import zombie.network.PacketTypes;
 public class ItemTransactionPacket extends Transaction implements INetworkPacket {
     @JSONField
     public long duration;
-    @JSONField
-    public byte consistent;
 
     @Override
     public void write(ByteBufferWriter b) {
@@ -109,16 +108,15 @@ public class ItemTransactionPacket extends Transaction implements INetworkPacket
                 this.zoff = b.getFloat();
             }
         }
+    }
 
-        if (GameServer.server) {
-            for (Transaction.TransactionEntry entry : this.entries) {
-                this.consistent = TransactionManager.isConsistent(
-                    entry.itemId, null, entry.sourceId.getContainer(), entry.destinationId.getContainer(), this.extra, this, this.playerId.getPlayer()
-                );
-                if (this.consistent != 0) {
-                    break;
-                }
-            }
+    @Override
+    public boolean isConsistent(IConnection connection) {
+        if (this.state != Transaction.TransactionState.Reject && this.playerId.getPlayer() == null) {
+            DebugType.Multiplayer.error("Player is not found");
+            return false;
+        } else {
+            return true;
         }
     }
 
@@ -139,8 +137,19 @@ public class ItemTransactionPacket extends Transaction implements INetworkPacket
 
     @Override
     public void processServer(PacketTypes.PacketType packetType, UdpConnection connection) {
+        byte consistent = 1;
+
+        for (Transaction.TransactionEntry entry : this.entries) {
+            consistent = TransactionManager.isConsistent(
+                entry.itemId, null, entry.sourceId.getContainer(), entry.destinationId.getContainer(), this.extra, this, this.playerId.getPlayer()
+            );
+            if (consistent != 0) {
+                break;
+            }
+        }
+
         if (this.state == Transaction.TransactionState.Request) {
-            if (this.consistent == 0) {
+            if (consistent == 0) {
                 this.setTimeData();
                 TransactionManager.add(this);
                 this.setState(Transaction.TransactionState.Accept);

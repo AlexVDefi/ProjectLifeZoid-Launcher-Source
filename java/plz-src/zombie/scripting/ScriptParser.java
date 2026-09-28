@@ -7,6 +7,7 @@ import zombie.util.StringUtils;
 
 public final class ScriptParser {
     public static final String DEFAULT_INDENTATION = "    ";
+    public static final String DEFAULT_EOL = "\n";
     private static final StringBuilder stringBuilder = new StringBuilder();
 
     public ScriptParser() {
@@ -164,6 +165,11 @@ public final class ScriptParser {
         }
 
         @Override
+        public void prettyPrint(int indent, StringBuilder sb) {
+            this.prettyPrint(indent, sb, "\n", "    ");
+        }
+
+        @Override
         public void prettyPrint(int indent, StringBuilder sb, String eol) {
             this.prettyPrint(indent, sb, eol, "    ");
         }
@@ -278,7 +284,9 @@ public final class ScriptParser {
 
         ScriptParser.Value asValue();
 
-        void prettyPrint(int var1, StringBuilder var2, String var3);
+        void prettyPrint(int var1, StringBuilder var2);
+
+        void prettyPrint(int indent, StringBuilder sb, String eol);
 
         void prettyPrint(int var1, StringBuilder var2, String var3, String var4);
     }
@@ -297,6 +305,11 @@ public final class ScriptParser {
         @Override
         public ScriptParser.Value asValue() {
             return this;
+        }
+
+        @Override
+        public void prettyPrint(int indent, StringBuilder sb) {
+            this.prettyPrint(indent, sb, "\n", "    ");
         }
 
         @Override

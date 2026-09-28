@@ -203,21 +203,6 @@ public class IsoWindow extends IsoObject implements BarricadeAble, Thumpable {
         }
     }
 
-    public IsoGridSquare getInsideSquare() {
-        if (this.square == null) {
-            return null;
-        } else {
-            return this.north
-                ? this.getCell().getGridSquare(this.square.getX(), this.square.getY() - 1, this.square.getZ())
-                : this.getCell().getGridSquare(this.square.getX() - 1, this.square.getY(), this.square.getZ());
-        }
-    }
-
-    @Override
-    public IsoGridSquare getOppositeSquare() {
-        return this.getInsideSquare();
-    }
-
     public boolean isExterior() {
         IsoGridSquare sq = this.getSquare();
         IsoGridSquare sqOpposite = this.getOppositeSquare();
@@ -1228,6 +1213,14 @@ public class IsoWindow extends IsoObject implements BarricadeAble, Thumpable {
     @Override
     public IsoBarricade getBarricadeOppositeCharacter(IsoGameCharacter chr) {
         return IsoBarricade.GetBarricadeOppositeCharacter(this, chr);
+    }
+
+    public boolean isBlocked() {
+        return !this.isDestroyed() && !this.IsOpen() || this.isBarricaded();
+    }
+
+    public boolean isBlocked(GridSquareEdgeFacingDirection facingDirection) {
+        return this.getGridSquareEdgeFacingDirection() == facingDirection && this.isBlocked();
     }
 
     @Override

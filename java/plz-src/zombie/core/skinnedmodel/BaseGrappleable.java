@@ -597,6 +597,12 @@ public class BaseGrappleable implements IGrappleable {
         }
     }
 
+    public void acceptBeingGrappledBy(IGrappleable grappler, String grappleType) {
+        this.beingGrappled = true;
+        this.grappledBy = grappler;
+        this.sharedGrappleType = grappleType;
+    }
+
     public void setOnGrappledBeginCallback(Invokers.Params0.ICallback onGrappleBegin) {
         this.onGrappleBeginCallback = onGrappleBegin;
     }

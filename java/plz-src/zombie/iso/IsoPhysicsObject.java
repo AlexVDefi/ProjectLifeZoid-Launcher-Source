@@ -60,8 +60,8 @@ public class IsoPhysicsObject extends IsoMovingObject {
         this.setNextY(this.getNextY() + this.velY * this.speedMod * 0.3F * fpsMod);
         float lastZ = this.getZ();
         this.setZ(this.getZ() + this.velZ * 0.4F * fpsMod);
-        if (this.getZ() < 0.0F) {
-            this.setZ(0.0F);
+        if (this.getZ() < -32.0F) {
+            this.setZ(-32.0F);
             this.velZ = -this.velZ * 0.5F;
             this.collideGround();
         }

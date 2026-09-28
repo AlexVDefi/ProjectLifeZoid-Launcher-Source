@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.function.Consumer;
 import org.joml.Matrix4f;
 import se.krka.kahlua.vm.KahluaTable;
@@ -146,6 +147,14 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
 
     public void setOpen(boolean open) {
         this.open = open;
+    }
+
+    public boolean isBlocked() {
+        return !this.isOpen() || this.isBarricaded();
+    }
+
+    public boolean isBlocked(GridSquareEdgeFacingDirection facingDirection) {
+        return this.getGridSquareEdgeFacingDirection() == facingDirection && this.isBlocked();
     }
 
     @Override
@@ -2065,10 +2074,12 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
     }
 
     void Damage(int amount) {
-        this.DirtySlice();
-        this.health -= amount;
-        if (GameServer.server) {
-            this.sync();
+        if (!Core.tutorial) {
+            this.DirtySlice();
+            this.health -= amount;
+            if (GameServer.server) {
+                this.sync();
+            }
         }
     }
 
@@ -2204,13 +2215,6 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
                 this.sync(-2);
             }
         }
-    }
-
-    @Override
-    public IsoGridSquare getOppositeSquare() {
-        return this.getNorth()
-            ? this.getCell().getGridSquare(this.getX(), this.getY() - 1.0F, this.getZ())
-            : this.getCell().getGridSquare(this.getX() - 1.0F, this.getY(), this.getZ());
     }
 
     public boolean isAdjacentToSquare(IsoGridSquare square2) {
@@ -3159,7 +3163,7 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
                 return null;
             }
 
-            ArrayList<IsoObject> specialObjects = sq.getSpecialObjects();
+            List<IsoObject> specialObjects = sq.getSpecialObjects();
             if (door != null) {
                 for (int i = 0; i < specialObjects.size(); i++) {
                     IsoObject obj = specialObjects.get(i);
@@ -3424,7 +3428,7 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
             return null;
         }
 
-        ArrayList<IsoObject> specialObjects = sq.getSpecialObjects();
+        List<IsoObject> specialObjects = sq.getSpecialObjects();
         if (door != null) {
             for (int i = 0; i < specialObjects.size(); i++) {
                 IsoObject obj = specialObjects.get(i);
@@ -3467,7 +3471,7 @@ public class IsoDoor extends IsoObject implements BarricadeAble, Thumpable, IHas
             return null;
         }
 
-        ArrayList<IsoObject> specialObjects = sq.getSpecialObjects();
+        List<IsoObject> specialObjects = sq.getSpecialObjects();
         if (door != null) {
             for (int i = 0; i < specialObjects.size(); i++) {
                 IsoObject obj = specialObjects.get(i);

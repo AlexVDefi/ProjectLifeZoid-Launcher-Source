@@ -83,13 +83,13 @@ public class ChatManager {
 
     public void init(boolean isSinglePlayer, IsoPlayer owner) {
         LoggerManager.init();
-        String loggerName = FileName.sanitize("client chat " + owner.getDisplayName());
+        String loggerName = FileName.sanitize("client chat " + owner.getUsername());
         LoggerManager.createLogger(loggerName, Core.debug);
         logger = LoggerManager.getLogger(loggerName);
         logger.write("Init chat system...", "info");
         logger.write("Mode: " + (isSinglePlayer ? "single player" : "multiplayer"), "info");
         if (SystemDisabler.printDetailedInfo()) {
-            logger.write("Chat owner: " + owner.getDisplayName(), "info");
+            logger.write("Chat owner: " + owner.getUsername(), "info");
         }
 
         this.chatManagerStage = ChatManager.Stage.starting;

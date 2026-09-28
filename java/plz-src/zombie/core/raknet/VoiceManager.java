@@ -21,6 +21,7 @@ import zombie.core.network.ByteBufferWriter;
 import zombie.debug.DebugType;
 import zombie.debug.LogSeverity;
 import zombie.input.GameKeyboard;
+import zombie.input.KeybindId;
 import zombie.inventory.InventoryItem;
 import zombie.inventory.types.Radio;
 import zombie.iso.IsoCell;
@@ -100,7 +101,7 @@ public class VoiceManager {
 
     private static volatile String plzRadioPttBinding = null;
 
-    // The peers serviced by plzServiceRadioOnlyPeers on the last pass, and how many voice frames
+    // The peers played through a radio with no character loaded on the last pass, and how many voice frames
     // have arrived from each peer since this client joined. Both exist so the MP suite can tell
     // "the channels line up" from "the audio actually reaches this machine" - which is the exact
     // pair of facts the walkie was failing on, and which look identical from Lua otherwise.
@@ -1099,7 +1100,7 @@ public class VoiceManager {
                         if ((IsoPlayer.getInstance() != null && GameClient.connection != null || FakeClientManager.isVOIPEnabled())
                             && (!is3D || !IsoPlayer.getInstance().isDead())) {
                             if (this.isModePpt) {
-                                if (GameKeyboard.isKeyDown("Enable voice transmit") || plzIsRadioPttDown()) {
+                                if (GameKeyboard.isKeyDown(KeybindId.ENABLE_VOICE_TRANSMIT) || plzIsRadioPttDown()) {
                                     RakVoice.SendFrame(
                                         GameClient.connection.getConnectedGUID(),
                                         IsoPlayer.getInstance().getOnlineID(),
@@ -1129,31 +1130,47 @@ public class VoiceManager {
             }
 
             ArrayList<IsoPlayer> players = GameClient.instance.getPlayers();
+
+            for (IsoPlayer player : players) {
+                if (player != null && player != IsoPlayer.getInstance() && player.getOnlineID() != -1) {
+                    VoiceManagerData.get(player.getOnlineID());
+                }
+            }
+
             ArrayList<VoiceManagerData> data = VoiceManagerData.data;
+            synchronized (plzRadioOnlyPeers) {
+                plzRadioOnlyPeers.clear();
+            }
 
             for (int i = 0; i < data.size(); i++) {
                 VoiceManagerData d = data.get(i);
-                boolean online = false;
+                d.online = false;
+                d.player = null;
 
-                for (int pn = 0; pn < players.size(); pn++) {
-                    IsoPlayer player = players.get(pn);
-                    if (player.onlineId == d.index) {
-                        online = true;
+                for (IsoPlayer player : players) {
+                    if (player != null && player.onlineId == d.index) {
+                        d.online = true;
+                        d.player = player;
                         break;
                     }
                 }
 
-                // A peer the world has forgotten but the radio has not counts as online here, or
-                // the loop below tears down the very channel plzServiceRadioOnlyPeers is feeding.
-                if (!online && this.plzRadioLink(d) != null) {
-                    online = true;
+                if (!d.online) {
+                    VoiceManagerData.RadioData rdata = this.checkForNearbyRadios(d);
+                    d.online = rdata != null && rdata.deviceData != null;
+                }
+
+                if (d.online && d.player == null) {
+                    synchronized (plzRadioOnlyPeers) {
+                        plzRadioOnlyPeers.add(d.index);
+                    }
                 }
 
                 if (false & d.index == 0) {
                     break;
                 }
 
-                if (d.userplaychannel != 0L & !online) {
+                if (d.userplaychannel != 0L & !d.online) {
                     this.plzCloseVoiceChannel(d);
                 } else if (d.userplaychannel != 0L && this.plzVoiceIdle(d.index) && PLZFixes.on(PLZFixes.VOICE_IDLE_CHANNEL)) {
                     this.plzCloseVoiceChannel(d);
@@ -1168,21 +1185,24 @@ public class VoiceManager {
                     return;
                 }
 
-                for (IsoPlayer player : players) {
+                for (int i = 0; i < data.size(); i++) {
+                    VoiceManagerData d = data.get(i);
                     IsoPlayer me = IsoPlayer.getInstance();
-                    if (player != me && player.getOnlineID() != -1) {
-                        VoiceManagerData d = VoiceManagerData.get(player.getOnlineID());
+                    IsoPlayer player = d.player;
+                    if (d.online && player != me) {
+                        while (RakVoice.ReceiveFrame(d.index, this.buf)) {
+                            if (player != null) {
+                                d.voicetimeout = 10L;
+                            }
 
-                        while (RakVoice.ReceiveFrame(player.getOnlineID(), this.buf)) {
-                            d.voicetimeout = 10L;
-                            plzCountFrame(player.getOnlineID());
+                            plzCountFrame(d.index);
                             if (!d.userplaymute) {
                                 // Open the channel before it is positioned, or the first frame after an idle close plays unplaced.
-                                this.getUserPlaySound(player.getOnlineID());
+                                this.getUserPlaySound(d.index);
                                 if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
                                     PLZChannelProbe.observe(d.userplaychannel);
                                 }
-                                float range = IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY());
+                                float range = player != null ? IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY()) : 0.0F;
                                 if (me.canHearAll()) {
                                     javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                     javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
@@ -1195,7 +1215,7 @@ public class VoiceManager {
                                         javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                         this.setUserPlaySound(d.userplaychannel, rdata.deviceData.getDeviceVolume());
                                         rdata.deviceData.doReceiveMPSignal(rdata.lastReceiveDistance);
-                                    } else {
+                                    } else if (player != null) {
                                         if (rdata == null && !plzSameVehicle) {
                                             // The one silent mute in the path. A frame arrived, was
                                             // decoded, and is dropped with nothing said - so say it.
@@ -1251,96 +1271,25 @@ public class VoiceManager {
                                     }
                                 }
 
-                                javafmod.FMOD_System_RAWPlayData(this.getUserPlaySound(player.getOnlineID()), this.buf, this.buf.length);
+                                javafmod.FMOD_System_RAWPlayData(this.getUserPlaySound(d.index), this.buf, this.buf.length);
                             }
                         }
 
-                        if (d.voicetimeout == 0L) {
-                            player.isSpeek = false;
-                            // The one place a hiss reliably ends. A speaker who
-                            // stops talking, walks out of range, or switches off
-                            // the megaphone all arrive here the same way: their
-                            // frames stop and the timeout runs out.
-                            plzStopMegaphoneStatic(player);
-                        } else {
-                            d.voicetimeout--;
-                            player.isSpeek = true;
+                        if (player != null) {
+                            if (d.voicetimeout == 0L) {
+                                player.isSpeek = false;
+                                // The one place a hiss reliably ends. A speaker who
+                                // stops talking, walks out of range, or switches off
+                                // the megaphone all arrive here the same way: their
+                                // frames stop and the timeout runs out.
+                                plzStopMegaphoneStatic(player);
+                            } else {
+                                d.voicetimeout--;
+                                player.isSpeek = true;
+                            }
                         }
                     }
                 }
-
-                this.plzServiceRadioOnlyPeers(players);
-            }
-        }
-    }
-
-    // WHY A RADIO WITH A MAP-WIDE RANGE STILL WENT SILENT ACROSS TOWN, and the whole of what the
-    // pass below fixes. The loop above only ever asks RakVoice for frames from players this client
-    // still holds an IsoPlayer for, and it stops holding one about five seconds after they leave
-    // its chunk-relevance box: the server relays PlayerPacket only to connections isRelevantTo the
-    // speaker's position, so GameClient.timeoutRemotePlayers drops them. Nothing about the routing
-    // array is wrong at that point - SyncRadioData is relayed to EVERY connection unconditionally,
-    // so the freq/range/position needed to decide "same channel, in range" is right here - there is
-    // simply nobody listening for the frames. So the walkie worked at the range you could have
-    // shouted at, and nowhere else.
-    //
-    // Nothing here touches an IsoPlayer or the world. The peers this services have no character
-    // loaded on this machine by design; propping their objects up to keep them out of the timeout
-    // would leave a frozen copy of everybody standing wherever they were last seen.
-    private void plzServiceRadioOnlyPeers(ArrayList<IsoPlayer> players) {
-        ArrayList<VoiceManagerData> data = VoiceManagerData.data;
-
-        synchronized (plzRadioOnlyPeers) {
-            plzRadioOnlyPeers.clear();
-        }
-
-        for (int i = 0; i < data.size(); i++) {
-            VoiceManagerData d = data.get(i);
-            boolean loaded = false;
-
-            for (int pn = 0; pn < players.size(); pn++) {
-                if (players.get(pn).onlineId == d.index) {
-                    loaded = true;
-                    break;
-                }
-            }
-
-            if (loaded) {
-                continue;
-            }
-
-            VoiceManagerData.RadioData link = this.plzRadioLink(d);
-            if (link == null) {
-                continue;
-            }
-
-            synchronized (plzRadioOnlyPeers) {
-                plzRadioOnlyPeers.add(d.index);
-            }
-
-            IsoPlayer me = IsoPlayer.getInstance();
-
-            while (RakVoice.ReceiveFrame(d.index, this.buf)) {
-                d.voicetimeout = 10L;
-                plzCountFrame(d.index);
-                if (d.userplaymute) {
-                    continue;
-                }
-
-                this.getUserPlaySound(d.index);
-
-                // Non-positional, at the listening radio's own volume - the same treatment the
-                // loop above gives a radio match, because a voice arriving out of a speaker has
-                // no direction to come from.
-                javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
-                javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
-                this.setUserPlaySound(d.userplaychannel, link.deviceData.getDeviceVolume());
-                link.deviceData.doReceiveMPSignal(link.lastReceiveDistance);
-                javafmod.FMOD_System_RAWPlayData(this.getUserPlaySound(d.index), this.buf, this.buf.length);
-            }
-
-            if (d.voicetimeout > 0L) {
-                d.voicetimeout--;
             }
         }
     }
@@ -1451,61 +1400,69 @@ public class VoiceManager {
 
     private VoiceManagerData.RadioData checkForNearbyRadios(VoiceManagerData radioData) {
         IsoPlayer me = IsoPlayer.getInstance();
-        VoiceManagerData myRadioData = VoiceManagerData.get(me.onlineId);
-        if (myRadioData.isCanHearAll) {
-            myRadioData.radioData.get(0).lastReceiveDistance = 0.0F;
-            return myRadioData.radioData.get(0);
-        }
+        if (me != null && me.onlineId != -1) {
+            VoiceManagerData myRadioData = VoiceManagerData.get(me.onlineId);
+            if (myRadioData == null) {
+                return null;
+            }
 
-        synchronized (myRadioData.radioData) {
-            for (int i = 1; i < myRadioData.radioData.size(); i++) {
-                if (PLZVoice.isVoiceChannel(myRadioData.radioData.get(i).freq)) {
-                    continue;
-                }
+            if (myRadioData.isCanHearAll) {
+                myRadioData.radioData.get(0).lastReceiveDistance = 0.0F;
+                return myRadioData.radioData.get(0);
+            }
 
-                synchronized (radioData.radioData) {
-                    for (int j = 1; j < radioData.radioData.size(); j++) {
-                        if (PLZVoice.isVoiceChannel(radioData.radioData.get(j).freq)) {
-                            continue;
-                        }
+            synchronized (myRadioData.radioData) {
+                for (int i = 1; i < myRadioData.radioData.size(); i++) {
+                    if (PLZVoice.isVoiceChannel(myRadioData.radioData.get(i).freq)) {
+                        continue;
+                    }
 
-                        if (myRadioData.radioData.get(i).freq == radioData.radioData.get(j).freq) {
-                            float dx = myRadioData.radioData.get(i).x - radioData.radioData.get(j).x;
-                            float dy = myRadioData.radioData.get(i).y - radioData.radioData.get(j).y;
-                            myRadioData.radioData.get(i).lastReceiveDistance = (float)Math.sqrt(dx * dx + dy * dy);
-                            if (myRadioData.radioData.get(i).lastReceiveDistance < radioData.radioData.get(j).distance) {
-                                return myRadioData.radioData.get(i);
+                    synchronized (radioData.radioData) {
+                        for (int j = 1; j < radioData.radioData.size(); j++) {
+                            if (PLZVoice.isVoiceChannel(radioData.radioData.get(j).freq)) {
+                                continue;
+                            }
+
+                            if (myRadioData.radioData.get(i).freq == radioData.radioData.get(j).freq) {
+                                float dx = myRadioData.radioData.get(i).x - radioData.radioData.get(j).x;
+                                float dy = myRadioData.radioData.get(i).y - radioData.radioData.get(j).y;
+                                myRadioData.radioData.get(i).lastReceiveDistance = (float)Math.sqrt(dx * dx + dy * dy);
+                                if (myRadioData.radioData.get(i).lastReceiveDistance < radioData.radioData.get(j).distance) {
+                                    return myRadioData.radioData.get(i);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        synchronized (myRadioData.radioData) {
-            synchronized (radioData.radioData) {
-                if (!radioData.radioData.isEmpty() && !myRadioData.radioData.isEmpty()) {
-                    float dx = myRadioData.radioData.get(0).x - radioData.radioData.get(0).x;
-                    float dy = myRadioData.radioData.get(0).y - radioData.radioData.get(0).y;
-                    myRadioData.radioData.get(0).lastReceiveDistance = (float)Math.sqrt(dx * dx + dy * dy);
-                    // gateRange, NOT audibleRange. Both positions in that subtraction came off a
-                    // routing entry that is republished once every 3010 ms and stored in whole
-                    // tiles, so at PLZ's eight-tile VoiceMaxDistance the error is a full speech
-                    // radius and a tight test here chops a standing conversation into three-second
-                    // pieces. The drift allowance costs nothing, because the RANGE is enforced
-                    // downstream by PLZVoice.volumeFor on the live distance - see PLZVoice.gateRange.
-                    float plzAudible = PLZVoice.gateRange(
-                        myRadioData.radioData.get(0).freq,
-                        radioData.radioData.get(0).freq,
-                        radioData.radioData.get(0).distance,
-                        maxDistance
-                    );
-                    if (myRadioData.radioData.get(0).lastReceiveDistance < plzAudible) {
-                        return myRadioData.radioData.get(0);
+            synchronized (myRadioData.radioData) {
+                synchronized (radioData.radioData) {
+                    if (!radioData.radioData.isEmpty() && !myRadioData.radioData.isEmpty()) {
+                        float dx = myRadioData.radioData.get(0).x - radioData.radioData.get(0).x;
+                        float dy = myRadioData.radioData.get(0).y - radioData.radioData.get(0).y;
+                        myRadioData.radioData.get(0).lastReceiveDistance = (float)Math.sqrt(dx * dx + dy * dy);
+                        // gateRange, NOT audibleRange. Both positions in that subtraction came off a
+                        // routing entry that is republished once every 3010 ms and stored in whole
+                        // tiles, so at PLZ's eight-tile VoiceMaxDistance the error is a full speech
+                        // radius and a tight test here chops a standing conversation into three-second
+                        // pieces. The drift allowance costs nothing, because the RANGE is enforced
+                        // downstream by PLZVoice.volumeFor on the live distance - see PLZVoice.gateRange.
+                        float plzAudible = PLZVoice.gateRange(
+                            myRadioData.radioData.get(0).freq,
+                            radioData.radioData.get(0).freq,
+                            radioData.radioData.get(0).distance,
+                            maxDistance
+                        );
+                        if (myRadioData.radioData.get(0).lastReceiveDistance < plzAudible) {
+                            return myRadioData.radioData.get(0);
+                        }
                     }
                 }
-            }
 
+                return null;
+            }
+        } else {
             return null;
         }
     }

@@ -941,7 +941,7 @@ public final class IsoChunkMap {
                     this.UpdateCellCache();
                     IsoCell cell = IsoWorld.instance.getCell();
                     if (!cell.getObjectList().contains(player) && !cell.getAddList().contains(player)) {
-                        cell.getAddList().add(player);
+                        cell.addMovingObject(player);
                     }
 
                     changed = true;

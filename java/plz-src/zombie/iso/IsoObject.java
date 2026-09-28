@@ -101,6 +101,7 @@ import zombie.iso.fboRenderChunk.FBORenderObjectOutline;
 import zombie.iso.fboRenderChunk.FBORenderObjectPicker;
 import zombie.iso.fboRenderChunk.ObjectRenderInfo;
 import zombie.iso.fboRenderChunk.ObjectRenderLayer;
+import zombie.iso.objects.GridSquareEdgeFacingDirection;
 import zombie.iso.objects.IsoAnimalTrack;
 import zombie.iso.objects.IsoBarbecue;
 import zombie.iso.objects.IsoBarricade;
@@ -156,6 +157,7 @@ import zombie.network.packets.INetworkPacket;
 import zombie.scripting.ScriptManager;
 import zombie.scripting.objects.ClockScript;
 import zombie.scripting.objects.ItemTag;
+import zombie.scripting.objects.SoundKey;
 import zombie.spnetwork.SinglePlayerServer;
 import zombie.tileDepth.CutawayAttachedModifier;
 import zombie.ui.ObjectTooltip;
@@ -282,6 +284,23 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         IsoFlagType.DoorWallN,
         IsoFlagType.WallN,
         IsoFlagType.FloorAttachmentN
+    );
+    private static final Set<IsoFlagType> WEST_FLAGS = Set.of(
+        IsoFlagType.collideW,
+        IsoFlagType.windowW,
+        IsoFlagType.doorW,
+        IsoFlagType.transparentW,
+        IsoFlagType.cutW,
+        IsoFlagType.tableW,
+        IsoFlagType.climbSheetW,
+        IsoFlagType.climbSheetTopW,
+        IsoFlagType.HoppableW,
+        IsoFlagType.attachedW,
+        IsoFlagType.WindowW,
+        IsoFlagType.TallHoppableW,
+        IsoFlagType.DoorWallW,
+        IsoFlagType.WallW,
+        IsoFlagType.FloorAttachmentW
     );
 
     public IsoObject(IsoCell cell) {
@@ -425,6 +444,10 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
     @Override
     public HashMap<Class<? extends ECSComponent>, ECSComponent> getECSComponentMap() {
         return this.ecsComponentMap;
+    }
+
+    public boolean isUnbentObject(GridSquareEdgeFacingDirection facingDirection) {
+        return BentFences.getInstance().isUnbentObject(this, facingDirection);
     }
 
     private static IsoObject.IsoObjectFactory addIsoObjectFactory(IsoObject.IsoObjectFactory f) {
@@ -989,6 +1012,10 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         if (this instanceof IHasHealth iHasHealth) {
             bb.putInt(iHasHealth.getHealth());
         }
+
+        if (this.sheetRope) {
+            bb.putFloat(this.sheetRopeHealth);
+        }
     }
 
     public void syncIsoObjectReceive(ByteBufferReader bb) {
@@ -1005,6 +1032,15 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
 
         if (this instanceof IHasHealth iHasHealth) {
             iHasHealth.setHealth(bb.getInt());
+        }
+
+        if (this.sheetRope) {
+            float newSheetRopeHealth = bb.getFloat();
+            boolean sheetRopeHealthChanged = this.sheetRopeHealth != newSheetRopeHealth;
+            this.sheetRopeHealth = newSheetRopeHealth;
+            if (GameServer.server && this.getSquare() != null && sheetRopeHealthChanged) {
+                this.getSquare().damageSpriteSheetRopeFromBottom();
+            }
         }
     }
 
@@ -1688,24 +1724,29 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
     public void HitByVehicle(BaseVehicle vehicle, float amount) {
         short previousDmg = this.damage;
         this.damage -= (short)(amount * 0.1);
-        BaseSoundEmitter emitter = IsoWorld.instance.getFreeEmitter(this.square.x + 0.5F, this.square.y + 0.5F, this.square.z);
-        long soundRef = emitter.playSound("VehicleHitObject");
-        emitter.setParameterValueByName(soundRef, "VehicleSpeed", vehicle.getCurrentSpeedKmHour());
+        if (GameServer.server) {
+            vehicle.sendObjectChange(IsoObjectChange.VEHICLE_HIT_OBJECT, "object", this);
+        } else {
+            BaseSoundEmitter emitter = IsoWorld.instance.getFreeEmitter(this.square.x + 0.5F, this.square.y + 0.5F, this.square.z);
+            long soundRef = emitter.playSoundImpl(SoundKey.VEHICLE_HIT_OBJECT.getSoundName(), (IsoObject)null);
+            emitter.setParameterValueByName(soundRef, "VehicleSpeed", vehicle.getCurrentSpeedKmHour());
+        }
+
         WorldSoundManager.instance.addSound(null, this.square.getX(), this.square.getY(), this.square.getZ(), 20, 20, true, 4.0F, 15.0F);
-        if (this.getProperties().has("HitByCar")
-            && this.getSprite().getProperties().get(IsoPropertyType.DAMAGED_SPRITE) != null
-            && !this.getSprite().getProperties().get(IsoPropertyType.DAMAGED_SPRITE).equals("")
+        if (this.hasProperty(IsoPropertyType.HIT_BY_CAR)
+            && this.getProperty(IsoPropertyType.DAMAGED_SPRITE) != null
+            && !this.getProperty(IsoPropertyType.DAMAGED_SPRITE).isEmpty()
             && this.damage <= 90
             && previousDmg > 90) {
-            this.setSprite(IsoSpriteManager.instance.getSprite(this.getSprite().getProperties().get(IsoPropertyType.DAMAGED_SPRITE)));
-            if (this.getSprite().getProperties().has("StopCar")) {
+            this.setSprite(IsoSpriteManager.instance.getSprite(this.getProperty(IsoPropertyType.DAMAGED_SPRITE)));
+            if (this.hasProperty(IsoPropertyType.STOP_CAR)) {
                 this.getSprite().setTileType(IsoObjectType.isMoveAbleObject);
             } else {
                 this.getSprite().setTileType(IsoObjectType.MAX);
             }
 
-            if (this instanceof IsoThumpable) {
-                ((IsoThumpable)this).setBlockAllTheSquare(false);
+            if (this instanceof IsoThumpable thumpable) {
+                thumpable.setBlockAllTheSquare(false);
             }
 
             if (GameServer.server) {
@@ -1717,29 +1758,29 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         }
 
         if (this.damage <= 40
-            && this.getProperties().has("HitByCar")
+            && this.hasProperty(IsoPropertyType.HIT_BY_CAR)
             && !BrokenFences.getInstance().isBreakableObject(this)
             && !BentFences.getInstance().isBendableFence(this)) {
             this.getSquare().transmitRemoveItemFromSquare(this);
         }
 
-        IsoPlayer driver = Type.tryCastTo(vehicle.getDriverRegardlessOfTow(), IsoPlayer.class);
-        if (driver != null && driver.isLocalPlayer()) {
-            driver.triggerMusicIntensityEvent("VehicleHitObject");
+        if (!GameServer.server) {
+            IsoPlayer driver = Type.tryCastTo(vehicle.getDriverRegardlessOfTow(), IsoPlayer.class);
+            if (driver != null && driver.isLocalPlayer()) {
+                driver.triggerMusicIntensityEvent("VehicleHitObject");
+            }
         }
     }
 
     public void Collision(Vector2 collision, IsoObject object) {
-        if (object instanceof BaseVehicle) {
-            if (this.getProperties().has("CarSlowFactor")) {
-                int carSlowFactor = Integer.parseInt(this.getProperties().get("CarSlowFactor"));
-                BaseVehicle vehicle = (BaseVehicle)object;
+        if (object instanceof BaseVehicle vehicle) {
+            if (this.hasProperty(IsoPropertyType.CAR_SLOW_FACTOR)) {
+                int carSlowFactor = Integer.parseInt(this.getProperty(IsoPropertyType.CAR_SLOW_FACTOR));
                 vehicle.applyImpulseFromHitObject(this, Math.abs(vehicle.getFudgedMass() * vehicle.getCurrentSpeedKmHour() * carSlowFactor / 100.0F));
             }
 
-            if (this.getProperties().has("HitByCar")) {
-                BaseVehicle vehicle = (BaseVehicle)object;
-                String min = this.getSprite().getProperties().get("MinimumCarSpeedDmg");
+            if (this.hasProperty(IsoPropertyType.HIT_BY_CAR)) {
+                String min = this.getProperty(IsoPropertyType.MINIMUM_CAR_SPEED_DMG);
                 if (min == null) {
                     min = "150";
                 }
@@ -2838,8 +2879,7 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
             } else if (this.getSquare().isNoWater()) {
                 return false;
             } else {
-                return (float)(GameTime.getInstance().getWorldAgeHours() / 24.0 + (SandboxOptions.instance.timeSinceApo.getValue() - 1) * 30)
-                        >= SandboxOptions.instance.getWaterShutModifier()
+                return GameTime.getInstance().getWorldAgeDaysSinceBegin() >= SandboxOptions.instance.getWaterShutModifier()
                     ? false
                     : !this.hasModData()
                         || !(this.getModData().rawget("canBeWaterPiped") instanceof Boolean)
@@ -3687,7 +3727,11 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
     }
 
     public boolean isHoppable() {
-        return this.sprite != null && (this.sprite.getProperties().has(IsoFlagType.HoppableN) || this.sprite.getProperties().has(IsoFlagType.HoppableW));
+        return this.getHoppableDirection() != null;
+    }
+
+    public boolean isHoppable(GridSquareEdgeFacingDirection facingDirection) {
+        return this.getHoppableDirection() == facingDirection;
     }
 
     public boolean isTallHoppable() {
@@ -3696,7 +3740,15 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
     }
 
     public boolean isNorthHoppable() {
-        return this.sprite != null && this.isHoppable() && this.sprite.getProperties().has(IsoFlagType.HoppableN);
+        return this.isHoppable(GridSquareEdgeFacingDirection.NORTH_SOUTH);
+    }
+
+    public GridSquareEdgeFacingDirection getHoppableDirection() {
+        if (this.hasProperty(IsoFlagType.HoppableN)) {
+            return GridSquareEdgeFacingDirection.NORTH_SOUTH;
+        } else {
+            return this.hasProperty(IsoFlagType.HoppableW) ? GridSquareEdgeFacingDirection.EAST_WEST : null;
+        }
     }
 
     public boolean isWall() {
@@ -7157,23 +7209,46 @@ public class IsoObject extends GameEntity implements Serializable, ILuaIsoObject
         return this.sprite != null && (this.sprite.getProperties().has(IsoFlagType.WindowN) || this.sprite.getProperties().has(IsoFlagType.WindowW));
     }
 
-    public boolean isNorthBlocked() {
+    public GridSquareEdgeFacingDirection getWindowFrameDirection() {
+        if (this.hasProperty(IsoFlagType.WindowN)) {
+            return GridSquareEdgeFacingDirection.NORTH_SOUTH;
+        } else {
+            return this.hasProperty(IsoFlagType.WindowW) ? GridSquareEdgeFacingDirection.EAST_WEST : null;
+        }
+    }
+
+    public boolean isWindowFrame(GridSquareEdgeFacingDirection facingDirection) {
+        return this.getWindowFrameDirection() == facingDirection;
+    }
+
+    public boolean isHoppableOrWindowFrame(GridSquareEdgeFacingDirection facingDirection) {
+        return this.isHoppable(facingDirection) || this.isWindowFrame(facingDirection);
+    }
+
+    @UsedFromLua
+    public GridSquareEdgeFacingDirection getBlockedEdgeDirection() {
         if (this.sprite == null) {
-            return false;
+            return null;
         }
 
         PropertyContainer properties = this.getProperties();
         if (properties == null) {
-            return false;
+            return null;
         }
 
         for (IsoFlagType isoFlagType : NORTH_FLAGS) {
             if (properties.has(isoFlagType)) {
-                return true;
+                return GridSquareEdgeFacingDirection.NORTH_SOUTH;
             }
         }
 
-        return false;
+        for (IsoFlagType isoFlagType : WEST_FLAGS) {
+            if (properties.has(isoFlagType)) {
+                return GridSquareEdgeFacingDirection.EAST_WEST;
+            }
+        }
+
+        return null;
     }
 
     public boolean isUseSnowSprite() {

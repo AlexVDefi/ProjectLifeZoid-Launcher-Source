@@ -2924,9 +2924,9 @@ public final class WorldMapRenderer {
                             if (pyramidTexture != null && pyramidTexture.isReady()) {
                                 TextureID textureID = pyramidTexture.getTextureID();
                                 if (textureID != null && textureID.isReady()) {
-                                    int ptx1 = pyramidTexture.x;
-                                    int pty1 = pyramidTexture.y;
-                                    ptz1 = pyramidTexture.z;
+                                    int ptx1 = pyramidTexture.getX();
+                                    int pty1 = pyramidTexture.getY();
+                                    ptz1 = pyramidTexture.getZ();
                                     double metersPerTile1 = pyramid.calculateMetersPerTile(ptz1);
                                     double worldX1 = images.getMinX() + ptx1 * metersPerTile1;
                                     double worldY1 = images.getMinY() + pty1 * metersPerTile1;
@@ -3155,9 +3155,9 @@ public final class WorldMapRenderer {
                                     if (pyramidTexture != null && pyramidTexture.isReady()) {
                                         TextureID textureID = pyramidTexture.getTextureID();
                                         if (textureID != null && textureID.isReady()) {
-                                            int ptx1 = pyramidTexture.x;
-                                            int pty1 = pyramidTexture.y;
-                                            ptz1 = pyramidTexture.z;
+                                            int ptx1 = pyramidTexture.getX();
+                                            int pty1 = pyramidTexture.getY();
+                                            ptz1 = pyramidTexture.getZ();
                                             double metersPerTile1 = pyramid.calculateMetersPerTile(ptz1);
                                             double worldX1 = images.getMinX() + ptx1 * metersPerTile1;
                                             double worldY1 = images.getMinY() + pty1 * metersPerTile1;

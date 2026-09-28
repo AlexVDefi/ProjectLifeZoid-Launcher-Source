@@ -1,4 +1,4 @@
-// Decompiled with Zomboid Decompiler v0.3.1 using Vineflower.
+// Decompiled with Zomboid Decompiler v0.3.2 using Vineflower.
 package zombie.network.packets.hit;
 
 import java.util.List;
@@ -17,6 +17,7 @@ import zombie.iso.objects.IsoDoor;
 import zombie.iso.objects.IsoThumpable;
 import zombie.iso.objects.IsoTree;
 import zombie.iso.objects.IsoWindow;
+import zombie.iso.objects.IsoWorldInventoryObject;
 import zombie.network.GameServer;
 import zombie.network.IConnection;
 import zombie.network.JSONField;
@@ -42,11 +43,11 @@ public class PlayerHitObjectPacket extends PlayerHit implements AntiCheatHitLong
 
     @Override
     public void setData(Object... values) {
-        this.set((IsoPlayer)values[0], (HandWeapon)values[1], (Boolean)values[2], (Boolean)values[3], (List<TracerInfo>)values[4], (IsoObject)values[5]);
+        this.set((IsoPlayer)values[0], (HandWeapon)values[1], (Boolean)values[2], (Integer)values[3], (List<TracerInfo>)values[4], (IsoObject)values[5]);
     }
 
-    public void set(IsoPlayer wielder, HandWeapon weapon, boolean isIgnoreDamage, boolean isCriticalHit, List<TracerInfo> tracers, IsoObject obj) {
-        this.set(wielder, weapon, isIgnoreDamage, isCriticalHit, tracers);
+    public void set(IsoPlayer wielder, HandWeapon weapon, boolean isCriticalHit, int hitCount, List<TracerInfo> tracers, IsoObject obj) {
+        this.set(wielder, weapon, isCriticalHit, tracers, hitCount);
         this.thumpable.set(obj);
     }
 
@@ -70,21 +71,26 @@ public class PlayerHitObjectPacket extends PlayerHit implements AntiCheatHitLong
     @Override
     public void process() {
         if (GameServer.server) {
-            CombatManager.getInstance().processMaintenanceCheck(this.wielder.getCharacter(), this.getHandWeapon(), this.thumpable.getIsoObject());
+            for (int i = 0; i < this.hitCount; i++) {
+                CombatManager.getInstance().processMaintenanceCheck(this.wielder.getCharacter(), this.getHandWeapon(), this.thumpable.getIsoObject());
+            }
         }
 
         if (this.thumpable.getIsoObject() instanceof IsoDoor
             || this.thumpable.getIsoObject() instanceof IsoTree
             || this.thumpable.getIsoObject() instanceof IsoWindow
             || this.thumpable.getIsoObject() instanceof IsoBarricade
-            || this.thumpable.getIsoObject() instanceof IsoThumpable) {
-            this.thumpable.getIsoObject().WeaponHit(this.wielder.getPlayer(), this.weapon.getWeapon());
+            || this.thumpable.getIsoObject() instanceof IsoThumpable
+            || this.thumpable.getIsoObject() instanceof IsoWorldInventoryObject) {
+            for (int i = 0; i < this.hitCount; i++) {
+                this.thumpable.getIsoObject().WeaponHit(this.wielder.getPlayer(), this.weapon.getWeapon());
+            }
         }
     }
 
     @Override
     public void attack() {
-        this.wielder.attack(this.getHandWeapon(), false, this.shotID);
+        this.wielder.attack(this.getHandWeapon(), false, this.shotID, this.hitCount);
         this.processTracers();
     }
 

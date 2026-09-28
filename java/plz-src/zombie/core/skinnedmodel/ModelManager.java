@@ -1671,7 +1671,7 @@ public final class ModelManager {
         }
 
         ArrayList<AnimationsMesh> animationsMeshes = ScriptManager.instance.getAllAnimationsMeshes();
-        ArrayList<String> modIDs = ZomboidFileSystem.instance.getModIDs();
+        List<String> modIDs = ZomboidFileSystem.instance.getModIDs();
 
         for (int i = 0; i < modIDs.size(); i++) {
             String modID = modIDs.get(i);

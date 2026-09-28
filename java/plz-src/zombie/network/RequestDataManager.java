@@ -60,7 +60,7 @@ public class RequestDataManager {
             return;
         }
 
-        for (int i = 0; i <= this.requests.size(); i++) {
+        for (int i = 0; i < this.requests.size(); i++) {
             if (this.requests.get(i).connectionGuid == connection.getConnectedGUID()) {
                 data = this.requests.get(i);
                 break;

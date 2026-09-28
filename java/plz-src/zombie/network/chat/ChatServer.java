@@ -154,7 +154,7 @@ public class ChatServer {
                 players.add(playerID);
             }
 
-            DebugType.DetailedInfo.trace("Player " + player.getUsername() + "(" + playerID + ") joined to chat server successfully", "info");
+            DebugType.DetailedInfo.println("Player " + player.getUsername() + "(" + playerID + ") joined to chat server successfully");
             logger.write("Player " + player.getOnlineID() + "(" + playerID + ") joined to chat server successfully", "info");
         } else {
             logger.write("Player or connection is not found on server!", "error");
@@ -317,9 +317,8 @@ public class ChatServer {
                 newPMChat.addMember(player2.getOnlineID());
                 chats.put(newPMChat.getID(), newPMChat);
                 DebugType.DetailedInfo
-                    .trace(
-                        "Whisper chat (id = " + newPMChat.getID() + ") between '" + player1.getUsername() + "' and '" + player2.getUsername() + "' started",
-                        "info"
+                    .println(
+                        "Whisper chat (id = " + newPMChat.getID() + ") between '" + player1.getUsername() + "' and '" + player2.getUsername() + "' started"
                     );
                 logger.write(
                     "Whisper chat (id = " + newPMChat.getID() + ") between '" + player1.getOnlineID() + "' and '" + player2.getOnlineID() + "' started", "info"

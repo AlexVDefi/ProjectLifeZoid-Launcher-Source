@@ -68,6 +68,8 @@ import zombie.core.SpriteRenderer;
 import zombie.core.Translator;
 import zombie.core.logger.ExceptionLogger;
 import zombie.core.math.PZMath;
+import zombie.core.network.ByteBufferReader;
+import zombie.core.network.ByteBufferWriter;
 import zombie.core.opengl.Shader;
 import zombie.core.physics.BallisticsController;
 import zombie.core.physics.Bullet;
@@ -77,6 +79,7 @@ import zombie.core.physics.RagdollController;
 import zombie.core.physics.Transform;
 import zombie.core.physics.WorldSimulation;
 import zombie.core.properties.IsoObjectChange;
+import zombie.core.properties.IsoPropertyType;
 import zombie.core.raknet.UdpConnection;
 import zombie.core.random.Rand;
 import zombie.core.skinnedmodel.ModelManager;
@@ -3068,6 +3071,43 @@ public final class BaseVehicle
     }
 
     @Override
+    public void saveChange(IsoObjectChange change, KahluaTable tbl, ByteBufferWriter bb) {
+        if (change == IsoObjectChange.VEHICLE_HIT_OBJECT) {
+            bb.putFloat(this.getCurrentSpeedKmHour());
+            if (tbl.rawget("object") instanceof IsoObject object) {
+                bb.putInt(object.getXi());
+                bb.putInt(object.getYi());
+                bb.putInt(object.getZi());
+            } else {
+                bb.putInt(this.getXi());
+                bb.putInt(this.getYi());
+                bb.putInt(this.getZi());
+            }
+        } else {
+            super.saveChange(change, tbl, bb);
+        }
+    }
+
+    @Override
+    public void loadChange(IsoObjectChange change, ByteBufferReader bb) {
+        if (change == IsoObjectChange.VEHICLE_HIT_OBJECT) {
+            float vehicleSpeed = bb.getFloat();
+            int x = bb.getInt();
+            int y = bb.getInt();
+            int z = bb.getInt();
+            BaseSoundEmitter emitter = IsoWorld.instance.getFreeEmitter(x + 0.5F, y + 0.5F, z);
+            long soundRef = emitter.playSound(SoundKey.VEHICLE_HIT_OBJECT.getSoundName());
+            emitter.setParameterValueByName(soundRef, "VehicleSpeed", vehicleSpeed);
+            IsoPlayer driver = Type.tryCastTo(this.getDriverRegardlessOfTow(), IsoPlayer.class);
+            if (driver != null && driver.isLocalPlayer()) {
+                driver.triggerMusicIntensityEvent("VehicleHitObject");
+            }
+        } else {
+            super.loadChange(change, bb);
+        }
+    }
+
+    @Override
     public void softReset() {
         this.keySpawned = 0;
         this.keyIsOnDoor = false;
@@ -3137,7 +3177,7 @@ public final class BaseVehicle
                                 if (!(object instanceof IsoWorldInventoryObject)) {
                                     Vector2 collision = null;
                                     if (!this.breakingObjectsList.contains(object) && object != null && object.getProperties() != null) {
-                                        if (object.getProperties().has("CarSlowFactor")) {
+                                        if (object.hasProperty(IsoPropertyType.CAR_SLOW_FACTOR)) {
                                             collision = this.testCollisionWithObject(object, 0.3F, vector2);
                                         }
 
@@ -3148,7 +3188,7 @@ public final class BaseVehicle
                                             }
                                         }
 
-                                        if (object.getProperties().has("HitByCar")) {
+                                        if (object.getProperties().has(IsoPropertyType.HIT_BY_CAR)) {
                                             collision = this.testCollisionWithObject(object, 0.3F, vector2);
                                         }
 
@@ -3304,6 +3344,10 @@ public final class BaseVehicle
 
     public void damageObjects(float damage) {
         if (this.isEngineRunning()) {
+            if (GameClient.client) {
+                GameClient.instance.sendClientCommandV(null, "vehicle", "damageObjects", "vehicle", this.getId(), "damage", damage);
+            }
+
             Vector3f ext = this.script.getExtents();
             Vector2 vector2 = Vector2ObjectPool.get().alloc();
             float radius = Math.max(ext.x / 2.0F, ext.z / 2.0F) + 0.3F + 1.0F;
@@ -3329,7 +3373,7 @@ public final class BaseVehicle
 
                             if (collision == null
                                 && object.sprite != null
-                                && (object.sprite.getProperties().has("HitByCar") || object.sprite.getProperties().has("CarSlowFactor"))) {
+                                && (object.hasProperty(IsoPropertyType.HIT_BY_CAR) || object.hasProperty(IsoPropertyType.CAR_SLOW_FACTOR))) {
                                 collision = this.testCollisionWithObject(object, 1.0F, vector2);
                             }
 
@@ -3347,7 +3391,7 @@ public final class BaseVehicle
                                 }
                             }
 
-                            if (collision != null) {
+                            if (!GameClient.client && collision != null) {
                                 object.Hit(collision, this, damage);
                             }
                         }
@@ -4202,15 +4246,15 @@ public final class BaseVehicle
         if (driver != null && this.getDriver() == null) {
             this.setNetPlayerAuthorization(BaseVehicle.Authorization.LocalCollide, driver.getOnlineID());
             this.authSimulationTime = System.currentTimeMillis();
-            this.interpolation.clear();
+            this.interpolation.clearAll();
             if (this.getVehicleTowing() != null) {
                 this.getVehicleTowing().setNetPlayerAuthorization(BaseVehicle.Authorization.LocalCollide, driver.getOnlineID());
                 this.getVehicleTowing().authSimulationTime = System.currentTimeMillis();
-                this.getVehicleTowing().interpolation.clear();
+                this.getVehicleTowing().interpolation.clearAll();
             } else if (this.getVehicleTowedBy() != null) {
                 this.getVehicleTowedBy().setNetPlayerAuthorization(BaseVehicle.Authorization.LocalCollide, driver.getOnlineID());
                 this.getVehicleTowedBy().authSimulationTime = System.currentTimeMillis();
-                this.getVehicleTowedBy().interpolation.clear();
+                this.getVehicleTowedBy().interpolation.clearAll();
             }
         }
     }
@@ -7042,7 +7086,7 @@ public final class BaseVehicle
                 float r = 1.0F;
                 float g = 1.0F;
                 float b = 1.0F;
-                if (this.isExitBlocked(seat) || exitPos.x - PZMath.fastfloor(exitPos.x) > 0.9F && exitPos.y - PZMath.fastfloor(exitPos.y) > 0.9F) {
+                if (this.isExitBlocked(seat)) {
                     b = 0.0F;
                     g = 0.0F;
                 }
@@ -7806,56 +7850,72 @@ public final class BaseVehicle
                     this.setPreviouslyMoved(true);
                     break;
                 case RetryingStarting:
-                    this.getEmitter().stopSoundByName(this.getVehicleSounds().getIgnitionFailSound());
-                    this.getEmitter().playSoundImpl(this.getVehicleSounds().getIgnitionFailSound(), (IsoObject)null);
+                    if (this.getVehicleSounds() != null) {
+                        this.getEmitter().stopSoundByName(this.getVehicleSounds().getIgnitionFailSound());
+                        this.getEmitter().playSoundImpl(this.getVehicleSounds().getIgnitionFailSound(), (IsoObject)null);
+                    }
+
                     this.checkVehicleFailsToStartWithZombiesTargeting();
                     break;
                 case StartingSuccess:
-                    this.getEmitter().stopSoundByName(this.getVehicleSounds().getIgnitionFailSound());
-                    if (!this.getVehicleSounds().isCombinedWithEngineSound(this.getVehicleSounds().getEngineStartSound())) {
-                        this.getEmitter().playSoundImpl(this.getVehicleSounds().getEngineStartSound(), (IsoObject)null);
+                    if (this.getVehicleSounds() != null) {
+                        this.getEmitter().stopSoundByName(this.getVehicleSounds().getIgnitionFailSound());
+                        if (!this.getVehicleSounds().isCombinedWithEngineSound(this.getVehicleSounds().getEngineStartSound())) {
+                            this.getEmitter().playSoundImpl(this.getVehicleSounds().getEngineStartSound(), (IsoObject)null);
+                        }
                     }
 
                     this.setKeysInIgnition(true);
                     this.checkVehicleStartsWithZombiesTargeting();
                     break;
-                case StartingFailed: {
-                    String sound = this.getVehicleSounds().getIgnitionFailSound();
-                    if (reason == VehicleEngineStateChangeReason.EngineConditionLow || reason == VehicleEngineStateChangeReason.EngineQualityLow) {
-                        sound = SoundKey.VEHICLE_ENGINE_FAILURE_DAMAGE.getSoundName();
-                    } else if (reason == VehicleEngineStateChangeReason.NoPower) {
-                        sound = this.getVehicleSounds().getIgnitionFailNoPowerSound();
-                    } else if (reason == VehicleEngineStateChangeReason.OutOfFuel) {
-                        sound = SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName();
+                case StartingFailed:
+                    if (this.getVehicleSounds() != null) {
+                        String sound = this.getVehicleSounds().getIgnitionFailSound();
+                        if (reason == VehicleEngineStateChangeReason.EngineConditionLow || reason == VehicleEngineStateChangeReason.EngineQualityLow) {
+                            sound = SoundKey.VEHICLE_ENGINE_FAILURE_DAMAGE.getSoundName();
+                        } else if (reason == VehicleEngineStateChangeReason.NoPower) {
+                            sound = this.getVehicleSounds().getIgnitionFailNoPowerSound();
+                        } else if (reason == VehicleEngineStateChangeReason.OutOfFuel) {
+                            sound = SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName();
+                        }
+
+                        this.getEmitter().stopSoundByName(sound);
+                        this.getEmitter().playSoundImpl(sound, (IsoObject)null);
                     }
 
-                    this.getEmitter().stopSoundByName(sound);
-                    this.getEmitter().playSoundImpl(sound, (IsoObject)null);
                     this.checkVehicleFailsToStartWithZombiesTargeting();
                     break;
-                }
                 case Running:
                     this.setNeedPartsUpdate(true);
                     break;
                 case Stalling:
-                    this.getEmitter().playSoundImpl(SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName(), (IsoObject)null);
+                    if (this.getVehicleSounds() != null) {
+                        this.getEmitter().playSoundImpl(SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName(), (IsoObject)null);
+                    }
+
                     this.checkVehicleFailsToStartWithZombiesTargeting();
                     if (!Core.getInstance().getOptionLeaveKeyInIgnition()) {
                         this.setKeysInIgnition(false);
                     }
                     break;
-                case ShuttingDown: {
-                    String sound = this.getVehicleSounds().getEngineTurnOffSound();
-                    if (reason == VehicleEngineStateChangeReason.EngineConditionLow || reason == VehicleEngineStateChangeReason.EngineNotWorking) {
-                        sound = SoundKey.VEHICLE_ENGINE_FAILURE_DAMAGE.getSoundName();
-                        this.checkVehicleFailsToStartWithZombiesTargeting();
-                    } else if (reason == VehicleEngineStateChangeReason.OutOfFuel) {
-                        sound = SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName();
-                        this.checkVehicleFailsToStartWithZombiesTargeting();
+                case ShuttingDown:
+                    if (this.getVehicleSounds() != null) {
+                        String sound = this.getVehicleSounds().getEngineTurnOffSound();
+                        if (reason == VehicleEngineStateChangeReason.EngineConditionLow || reason == VehicleEngineStateChangeReason.EngineNotWorking) {
+                            sound = SoundKey.VEHICLE_ENGINE_FAILURE_DAMAGE.getSoundName();
+                        } else if (reason == VehicleEngineStateChangeReason.OutOfFuel) {
+                            sound = SoundKey.VEHICLE_RUNNING_OUT_OF_GAS.getSoundName();
+                        }
+
+                        if (!this.getVehicleSounds().isCombinedWithEngineSound(sound)) {
+                            this.getEmitter().playSoundImpl(sound, (IsoObject)null);
+                        }
                     }
 
-                    if (!this.getVehicleSounds().isCombinedWithEngineSound(sound)) {
-                        this.getEmitter().playSoundImpl(sound, (IsoObject)null);
+                    if (reason == VehicleEngineStateChangeReason.EngineConditionLow
+                        || reason == VehicleEngineStateChangeReason.EngineNotWorking
+                        || reason == VehicleEngineStateChangeReason.OutOfFuel) {
+                        this.checkVehicleFailsToStartWithZombiesTargeting();
                     }
 
                     if (!Core.getInstance().getOptionLeaveKeyInIgnition()) {
@@ -7866,7 +7926,6 @@ public final class BaseVehicle
                     if (heater != null) {
                         heater.getModData().rawset("active", false);
                     }
-                }
             }
 
             this.transmitEngine();
@@ -10978,6 +11037,10 @@ public final class BaseVehicle
         return this.animals;
     }
 
+    public IsoAnimal getAnimalById(int animalId) {
+        return this.getAnimals().stream().filter(animal -> animal.getAnimalID() == animalId).findFirst().orElse(null);
+    }
+
     public void addAnimalFromHandsInTrailer(IsoAnimal animal, IsoPlayer player) {
         this.animals.add(animal);
         animal.setVehicle(this);
@@ -11059,7 +11122,6 @@ public final class BaseVehicle
                 toReturn = newAnimal;
                 if (animal.isDead()) {
                     IsoDeadBody body = new IsoDeadBody(newAnimal);
-                    body.setModData(animal.getModData());
                     if (newAnimal.getSquare() != null) {
                         newAnimal.getSquare().addCorpse(body, false);
                         body.invalidateCorpse();

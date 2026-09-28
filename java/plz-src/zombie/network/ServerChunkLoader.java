@@ -26,19 +26,11 @@ import zombie.iso.areas.IsoRoom;
 public class ServerChunkLoader {
     private final long debugSlowMapLoadingDelay = 0L;
     private boolean mapLoading;
-    private final ServerChunkLoader.LoaderThread threadLoad;
+    private final ServerChunkLoader.LoaderThread threadLoad = new ServerChunkLoader.LoaderThread();
     private final ServerChunkLoader.SaveChunkThread threadSave;
-    private final CRC32 crcSave = new CRC32();
     private final ServerChunkLoader.RecalcAllThread threadRecalc;
-    // PLZ: A CRC32 IS MUTABLE AND THESE TWO ARE REACHED FROM SEVERAL THREADS AT ONCE, which
-    // silently corrupts the checksum written into a chunk file. See the field comments at each
-    // use site below, and zombie.plz.PLZChunkCrc for the repair of files already written wrong.
-    // The vanilla fields above and in SaveChunkThread are left in place and simply go unused, so
-    // nothing reflecting on this class sees a member disappear.
-    private final ThreadLocal<CRC32> plzCrcSave = ThreadLocal.withInitial(CRC32::new);
 
     public ServerChunkLoader() {
-        this.threadLoad = new ServerChunkLoader.LoaderThread();
         this.threadLoad.setName("LoadChunk");
         this.threadLoad.setDaemon(true);
         this.threadLoad.start();
@@ -201,7 +193,7 @@ public class ServerChunkLoader {
 
                                     chunk.assignLoadID();
                                     ServerChunkLoader.this.threadSave.saveNow(wx, wy);
-                                    chunk.LoadChunk(wx, wy, null);
+                                    chunk.loaded = chunk.LoadChunk(wx, wy, null);
                                     if (chunk.loaded) {
                                         cell.chunks[x][y] = chunk;
                                     }
@@ -407,10 +399,6 @@ public class ServerChunkLoader {
         private final LinkedBlockingQueue<ServerChunkLoader.SaveTask> toThread = new LinkedBlockingQueue<>();
         private final LinkedBlockingQueue<ServerChunkLoader.SaveTask> fromThread = new LinkedBlockingQueue<>();
         private boolean quit;
-        private final CRC32 crc32 = new CRC32();
-        // PLZ: see plzCrcSave on the outer class. addLoadedJob below runs on whichever thread
-        // asked for the save, and ServerMap.SaveAll uses four of them at once.
-        private final ThreadLocal<CRC32> plzCrc32 = ThreadLocal.withInitial(CRC32::new);
         private final ClientChunkRequest ccr = new ClientChunkRequest();
         private final ArrayList<ServerChunkLoader.SaveTask> toSaveChunk = new ArrayList<>();
         private final ArrayList<ServerChunkLoader.SaveTask> savedChunks = new ArrayList<>();
@@ -447,18 +435,8 @@ public class ServerChunkLoader {
             this.ccr.getByteBuffer(reqChunk);
 
             try {
-                // PLZ: THIS RUNS ON FOUR THREADS AT ONCE. ServerMap.SaveAll starts four
-                // WorkerThreads and hands each of them a share of the loaded cells; every chunk
-                // of every cell arrives here. IsoChunk.Save does
-                // "crc.reset(); crc.update(body); ... putLong(crc.getValue())" on whatever CRC32
-                // it is given, so two threads sharing one instance write each other's checksum
-                // into their file - or a zero, when getValue() lands just after the other
-                // thread's reset(). The chunk body is fine either way, it is written into this
-                // task's own buffer; only the eight-byte checksum in the header is wrong. The
-                // next load of that chunk fails IsoChunk$SanityCheck.checkCRC, and LoadChunk
-                // answers a failed load by blamming the chunk and regenerating it from the map,
-                // so everything a player built there is gone with no warning to anybody.
-                chunk.SaveLoadedChunk(reqChunk, this.plzCrc32.get());
+                CRC32 crc32 = new CRC32();
+                chunk.SaveLoadedChunk(reqChunk, crc32);
             } catch (Exception ex) {
                 DebugType.General.printException(ex, LogSeverity.Error);
                 LoggerManager.getLogger("map").write(ex);
@@ -567,17 +545,11 @@ public class ServerChunkLoader {
 
         @Override
         public void save() throws Exception {
-            // PLZ: same hazard, one layer down. save() normally runs on the SaveChunk thread, but
-            // LoaderThread calls threadSave.saveNow(), which runs a queued task on the LoadChunk
-            // thread instead - so two threads can be in here at once. This checksum only decides
-            // whether the file is rewritten at all, so a crossed value costs a needless write or,
-            // worse, skips a write the chunk needed. Give each thread its own.
-            CRC32 plzCrc = ServerChunkLoader.this.plzCrcSave.get();
             long crc = ChunkChecksum.getChecksumIfExists(this.chunk.wx, this.chunk.wy);
-            plzCrc.reset();
-            plzCrc.update(this.chunk.bb.array(), 0, this.chunk.bb.position());
-            if (crc != plzCrc.getValue()) {
-                ChunkChecksum.setChecksum(this.chunk.wx, this.chunk.wy, plzCrc.getValue());
+            CRC32 crcSave = new CRC32();
+            crcSave.update(this.chunk.bb.array(), 0, this.chunk.bb.position());
+            if (crc != crcSave.getValue()) {
+                ChunkChecksum.setChecksum(this.chunk.wx, this.chunk.wy, crcSave.getValue());
                 IsoChunk.SafeWrite(this.chunk.wx, this.chunk.wy, this.chunk.bb);
             }
         }

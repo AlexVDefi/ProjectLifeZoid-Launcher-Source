@@ -49,7 +49,7 @@ public class VehiclePhysicsPacket extends VehicleInterpolationData implements IN
             this.engineSpeed = (float)vehicle.getEngineSpeed();
             this.throttle = vehicle.throttle;
             this.transmissionNumber = vehicle.getTransmissionNumberEnum();
-            this.wheelsCount = (short)buffer[i++];
+            this.setNumWheels((short)buffer[i++]);
 
             for (int w = 0; w < this.wheelsCount; w++) {
                 this.wheelSteering[w] = buffer[i++];

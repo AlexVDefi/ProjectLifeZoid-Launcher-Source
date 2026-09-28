@@ -2,14 +2,14 @@
 package zombie.popman;
 
 import gnu.trove.list.array.TIntArrayList;
+import gnu.trove.map.hash.TIntLongHashMap;
 import gnu.trove.set.hash.TIntHashSet;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import se.krka.kahlua.vm.KahluaTable;
 import zombie.DebugFileWatcher;
@@ -57,6 +57,13 @@ public final class ZombiePopulationManager {
     protected static final byte OLD_ZOMBIE_CRAWLER = 3;
     protected static final byte OLD_ZOMBIE_WALKER = 4;
     public static final int INVALID_PATH_XY = Integer.MIN_VALUE;
+    public static final int INVALID_PERSISTENT_ID = 0;
+    private static final int UNREGISTERED_ZOMBIE_REPORT_THRESHOLD = 64;
+    private static final int CELL_KEY_SHIFT = 16;
+    private static final int CELL_KEY_MASK = 65535;
+    private static final long REAL_ZOMBIE_UPDATE_INTERVAL_MS = 5000L;
+    private static final long SAVE_CELL_INTERVAL_MS = 5000L;
+    private static final long PUSH_BEFORE_SAVE_INTERVAL_MS = 1000L;
     protected int minX;
     protected int minY;
     protected int width;
@@ -65,19 +72,18 @@ public final class ZombiePopulationManager {
     private final DebugCommands dbgCommands = new DebugCommands();
     public static boolean debugLoggingEnabled;
     public static final ReentrantLock saveLock = new ReentrantLock();
-    private static final ConcurrentLinkedQueue<ZombiePopulationManager.PendingCellSave> pendingSaveCells = new ConcurrentLinkedQueue<>();
+    private static final Set<Integer> pendingSaveCellKeys = ConcurrentHashMap.newKeySet();
+    private static final TIntLongHashMap lastSaveCellTimeMs = new TIntLongHashMap();
+    private static final RealZombieMap realZombies = new RealZombieMap();
     private final LoadedAreas loadedAreas = new LoadedAreas(false);
     private final LoadedAreas loadedServerCells = new LoadedAreas(true);
     private final PlayerSpawns playerSpawns = new PlayerSpawns();
-    private short[] realZombieCount;
-    private short[] realZombieCount2;
-    private long realZombieUpdateTime;
-    private final ArrayList<IsoZombie> saveRealZombieHack = new ArrayList<>();
+    private int[] realZombieIdsAndStates;
+    private float[] realZombiePositions;
+    private long realZombieUpdateTimeMs;
+    private int lastReportedUnregisteredCount;
     private final ByteBuffer byteBuffer = ByteBuffer.allocateDirect(1024);
-    private final ByteBuffer readByteBuffer = ByteBuffer.allocateDirect(1024);
-    private final ByteBuffer writeByteBuffer = ByteBuffer.allocateDirect(1024);
     private final TIntHashSet newChunks = new TIntHashSet();
-    private final Set<Integer> zedClearedChunks = new HashSet<>();
     private final ArrayList<ChooseGameInfo.SpawnOrigin> spawnOrigins = new ArrayList<>();
     private float zombiesMinPerChunk;
     private float zombiesMaxPerChunk = 255.0F;
@@ -113,17 +119,17 @@ public final class ZombiePopulationManager {
 
     private static native boolean n_shouldWait();
 
-    private static native void n_beginSaveRealZombies(int var0);
-
-    private static native void n_saveRealZombies(int var0, ByteBuffer var1);
-
     private static native void n_save();
 
     private static native void n_saveCell(int var0, int var1);
 
     private static native void n_stop();
 
-    private static native void n_addZombie(float var0, float var1, float var2, byte var3, int var4, int var5, int var6, int var7);
+    private static native void n_addZombie(float var0, float var1, float var2, byte var3, int var4, int var5, int var6, int var7, int var8);
+
+    private static native int n_registerZombie(float var0, float var1, float var2, byte var3, int var4, int var5, int var6);
+
+    private static native void n_releaseZombie(int var0);
 
     private static native void n_aggroTarget(int var0, int var1, int var2);
 
@@ -131,7 +137,7 @@ public final class ZombiePopulationManager {
 
     private static native void n_loadedAreas(int var0, int[] var1, boolean var2);
 
-    protected static native void n_realZombieCount(short var0, short[] var1);
+    private static native void n_updateRealZombies(int var0, int[] var1, float[] var2);
 
     protected static native void n_spawnHorde(int var0, int var1, int var2, int var3, float var4, float var5, int var6);
 
@@ -146,6 +152,32 @@ public final class ZombiePopulationManager {
     private static native void n_requestRadarData();
 
     private static native int n_getRadarZombieData(float[] var0);
+
+    public static int registerZombie(IsoZombie zombie, int persistentId) {
+        if (GameClient.client) {
+            return 0;
+        }
+
+        int id = n_registerZombie(
+            zombie.getX(),
+            zombie.getY(),
+            zombie.getZ(),
+            (byte)zombie.getForwardIsoDirection().ordinal(),
+            zombie.getPersistentOutfitID(),
+            ZombieStateFlags.intFromZombie(zombie),
+            persistentId
+        );
+        realZombies.register(zombie, id);
+        return id;
+    }
+
+    public static void releaseZombie(IsoZombie zombie) {
+        if (!GameClient.client && zombie.persistentId != 0) {
+            if (realZombies.unregister(zombie)) {
+                n_releaseZombie(zombie.persistentId);
+            }
+        }
+    }
 
     private static void noise(String s) {
         if (debugLoggingEnabled && (Core.debug || GameServer.server && GameServer.debug)) {
@@ -171,93 +203,58 @@ public final class ZombiePopulationManager {
     }
 
     public void requestSaveCell(int popmanCellX, int popmanCellY) {
-        if (GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.SAVE_CELL_SUPPRESS)) {
-            // PLZ: IsoChunk.removeFromWorld calls this on every chunk unload, and the native
-            // n_saveCell APPENDS the snapshot to Saves/.../zpop/zpop_X_Y.bin rather than
-            // overwriting it. A single live zombie's 12-byte record therefore accumulates dozens
-            // of copies as a player roams one 256x256 pop cell, and on the next cell load native
-            // emits every copy - N identical zombies spawning on the same square with sequential
-            // online ids. That is the clone-cluster players call mitosis, and it is a different
-            // bug from the id-collision one in IsoObjectID.allocateID.
-            //
-            // The global autosave path (MapCollisionData.save -> beginSaveRealZombies -> native
-            // n_save writing zpop_virtual.bin) is independent and untouched, so live zombies are
-            // still persisted on the normal SaveWorldEveryMinutes cadence.
-            //
-            // NOTE: this only stops NEW duplicates being written. Existing zpop_X_Y.bin files
-            // still hold whatever has already accumulated and will keep spawning clones on cell
-            // load until they are cleaned up on the live server.
-            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.SAVE_CELL_SUPPRESS);
-            return;
-        }
-
         if (!GameClient.client) {
-            saveLock.lock();
-
-            try {
-                List<ZombiePopulationManager.ZombieSaveData> snapshot = new ArrayList<>();
-
-                for (IsoZombie z : IsoWorld.instance.currentCell.getZombieList()) {
-                    if (!z.isReanimatedPlayer() && (!GameServer.server || !z.indoorZombie) && !z.isDead()) {
-                        int zCellX = (int)Math.floor(z.getX() / 256.0F);
-                        int zCellY = (int)Math.floor(z.getY() / 256.0F);
-                        if (zCellX == popmanCellX && zCellY == popmanCellY) {
-                            snapshot.add(new ZombiePopulationManager.ZombieSaveData(z));
-                        }
-                    }
-                }
-
-                pendingSaveCells.offer(new ZombiePopulationManager.PendingCellSave(popmanCellX, popmanCellY, snapshot));
-            } finally {
-                saveLock.unlock();
+            if (!this.stopped) {
+                pendingSaveCellKeys.add(packCell(popmanCellX, popmanCellY));
             }
         }
     }
 
     public void processPendingSaveCells() {
-        if (!GameClient.client) {
-            ZombiePopulationManager.PendingCellSave req;
-            while ((req = pendingSaveCells.poll()) != null) {
-                saveLock.lock();
+        if (!GameClient.client && !pendingSaveCellKeys.isEmpty()) {
+            long currentTimeMs = System.currentTimeMillis();
+            Iterator<Integer> cells = pendingSaveCellKeys.iterator();
 
-                try {
-                    this.writeCellSnapshot(req);
-                } finally {
-                    saveLock.unlock();
+            while (cells.hasNext()) {
+                int cellKey = cells.next();
+                if (isCellDueForSave(cellKey, currentTimeMs)) {
+                    cells.remove();
+                    lastSaveCellTimeMs.put(cellKey, currentTimeMs);
+                    saveLock.lock();
+
+                    try {
+                        n_saveCell(unpackCellX(cellKey), unpackCellY(cellKey));
+                    } finally {
+                        saveLock.unlock();
+                    }
                 }
             }
         }
     }
 
-    private void writeCellSnapshot(ZombiePopulationManager.PendingCellSave req) {
-        int total = req.aliveZombies.size();
-        n_beginSaveRealZombies(total);
-        int i = 0;
+    private static boolean isCellDueForSave(int cellKey, long currentTimeMs) {
+        return currentTimeMs - lastSaveCellTimeMs.get(cellKey) >= 5000L;
+    }
 
-        while (i < total) {
-            this.byteBuffer.clear();
-            int count = 0;
+    private static int packCell(int popmanCellX, int popmanCellY) {
+        return popmanCellX << 16 | popmanCellY & 65535;
+    }
 
-            while (i < total) {
-                int position = this.byteBuffer.position();
-                ZombiePopulationManager.ZombieSaveData zd = req.aliveZombies.get(i++);
-                this.byteBuffer.putFloat(zd.x);
-                this.byteBuffer.putFloat(zd.y);
-                this.byteBuffer.putFloat(zd.z);
-                this.byteBuffer.put(zd.dir);
-                this.byteBuffer.putInt(zd.descriptorID);
-                this.byteBuffer.putInt(zd.state);
-                count++;
-                int numBytes = this.byteBuffer.position() - position;
-                if (this.byteBuffer.position() + numBytes > this.byteBuffer.capacity()) {
-                    break;
-                }
-            }
+    private static int unpackCellX(int cellKey) {
+        return cellKey >> 16;
+    }
 
-            n_saveRealZombies(count, this.byteBuffer);
+    private static int unpackCellY(int cellKey) {
+        return (short)(cellKey & 65535);
+    }
+
+    private static boolean isStaleRecord(int persistentId) {
+        if (!realZombies.isLive(persistentId)) {
+            return false;
         }
 
-        n_saveCell(req.popmanCellX, req.popmanCellY);
+        DebugType.General.warn("ZPOP: dropped a stale record for zombie %d, it is already alive", persistentId);
+        return true;
     }
 
     private static void onTriggeredZombieFile(String xmlFile) {
@@ -382,49 +379,57 @@ public final class ZombiePopulationManager {
                             if (sq != null && !sq.getMovingObjects().isEmpty()) {
                                 for (int i = 0; i < sq.getMovingObjects().size(); i++) {
                                     IsoMovingObject mo = sq.getMovingObjects().get(i);
-                                    if (mo instanceof IsoZombie realZombie
-                                        && (!GameServer.server || !realZombie.indoorZombie)
-                                        && !realZombie.isReanimatedPlayer()) {
-                                        int state = ZombieStateFlags.intFromZombie(realZombie);
-                                        saveLock.lock();
-
-                                        try {
-                                            if (z != 0
-                                                || sq.getRoom() != null
-                                                || realZombie.getCurrentState() != WalkTowardState.instance()
-                                                    && realZombie.getCurrentState() != PathFindState.instance()) {
-                                                DebugType.Zombie.debugln("Virtualizing stationary Zombie: %s", realZombie);
-                                                n_addZombie(
-                                                    realZombie.getX(),
-                                                    realZombie.getY(),
-                                                    realZombie.getZ(),
-                                                    (byte)realZombie.getForwardIsoDirection().ordinal(),
-                                                    realZombie.getPersistentOutfitID(),
-                                                    state,
-                                                    Integer.MIN_VALUE,
-                                                    Integer.MIN_VALUE
-                                                );
-                                                realZombie.removeFromWorld();
-                                                realZombie.removeFromSquare();
-                                                i--;
-                                            } else {
-                                                DebugType.Zombie.debugln("Virtualizing moving Zombie: %s", realZombie);
-                                                n_addZombie(
-                                                    realZombie.getX(),
-                                                    realZombie.getY(),
-                                                    realZombie.getZ(),
-                                                    (byte)realZombie.getForwardIsoDirection().ordinal(),
-                                                    realZombie.getPersistentOutfitID(),
-                                                    state,
-                                                    realZombie.getPathTargetX(),
-                                                    realZombie.getPathTargetY()
-                                                );
-                                                realZombie.removeFromWorld();
-                                                realZombie.removeFromSquare();
+                                    if (mo instanceof IsoZombie realZombie && !realZombie.isReanimatedPlayer()) {
+                                        if (realZombie.isDead()) {
+                                            int movingObjects = sq.getMovingObjects().size();
+                                            realZombie.die();
+                                            if (sq.getMovingObjects().size() < movingObjects) {
                                                 i--;
                                             }
-                                        } finally {
-                                            saveLock.unlock();
+                                        } else {
+                                            int state = ZombieStateFlags.intFromZombie(realZombie);
+                                            saveLock.lock();
+
+                                            try {
+                                                if (z != 0
+                                                    || sq.getRoom() != null
+                                                    || realZombie.getCurrentState() != WalkTowardState.instance()
+                                                        && realZombie.getCurrentState() != PathFindState.instance()) {
+                                                    DebugType.Zombie.debugln("Virtualizing stationary Zombie: %s", realZombie);
+                                                    n_addZombie(
+                                                        realZombie.getX(),
+                                                        realZombie.getY(),
+                                                        realZombie.getZ(),
+                                                        (byte)realZombie.getForwardIsoDirection().ordinal(),
+                                                        realZombie.getPersistentOutfitID(),
+                                                        state,
+                                                        Integer.MIN_VALUE,
+                                                        Integer.MIN_VALUE,
+                                                        realZombie.persistentId
+                                                    );
+                                                    realZombie.removeFromWorld();
+                                                    realZombie.removeFromSquare();
+                                                    i--;
+                                                } else {
+                                                    DebugType.Zombie.debugln("Virtualizing moving Zombie: %s", realZombie);
+                                                    n_addZombie(
+                                                        realZombie.getX(),
+                                                        realZombie.getY(),
+                                                        realZombie.getZ(),
+                                                        (byte)realZombie.getForwardIsoDirection().ordinal(),
+                                                        realZombie.getPersistentOutfitID(),
+                                                        state,
+                                                        realZombie.getPathTargetX(),
+                                                        realZombie.getPathTargetY(),
+                                                        realZombie.persistentId
+                                                    );
+                                                    realZombie.removeFromWorld();
+                                                    realZombie.removeFromSquare();
+                                                    i--;
+                                                }
+                                            } finally {
+                                                saveLock.unlock();
+                                            }
                                         }
                                     }
                                 }
@@ -456,7 +461,8 @@ public final class ZombiePopulationManager {
                 realZombie.getPersistentOutfitID(),
                 state,
                 realZombie.getPathTargetX(),
-                realZombie.getPathTargetY()
+                realZombie.getPathTargetY(),
+                realZombie.persistentId
             );
             realZombie.removeFromWorld();
             realZombie.removeFromSquare();
@@ -499,63 +505,70 @@ public final class ZombiePopulationManager {
         }
     }
 
-    private void updateRealZombieCount() {
-        if (this.realZombieCount == null || this.realZombieCount.length != this.width * this.height) {
-            this.realZombieCount = new short[this.width * this.height];
-            this.realZombieCount2 = new short[this.width * this.height * 3];
+    int packRealZombies(List<IsoZombie> zombies) {
+        if (this.realZombieIdsAndStates == null || this.realZombieIdsAndStates.length < zombies.size() * 2) {
+            this.realZombieIdsAndStates = new int[zombies.size() * 2];
+            this.realZombiePositions = new float[zombies.size() * 3];
         }
 
-        Arrays.fill(this.realZombieCount, (short)0);
-        ArrayList<IsoZombie> zombies = IsoWorld.instance.currentCell.getZombieList();
+        int count = 0;
+        int unregistered = 0;
 
         for (int i = 0; i < zombies.size(); i++) {
-            IsoZombie z = zombies.get(i);
-            int x = PZMath.fastfloor(z.getX() / 256.0F) - this.minX;
-            int y = PZMath.fastfloor(z.getY() / 256.0F) - this.minY;
-            int countIdx = x + y * this.width;
-            if (countIdx >= 0 && countIdx < this.realZombieCount.length) {
-                this.realZombieCount[countIdx]++;
+            IsoZombie zombie = zombies.get(i);
+            if (zombie.persistentId == 0) {
+                if (!zombie.isReanimatedPlayer() && !zombie.isDead()) {
+                    unregistered++;
+                }
+            } else {
+                this.realZombieIdsAndStates[count * 2] = zombie.persistentId;
+                this.realZombieIdsAndStates[count * 2 + 1] = ZombieStateFlags.intFromZombie(zombie);
+                this.realZombiePositions[count * 3] = zombie.getX();
+                this.realZombiePositions[count * 3 + 1] = zombie.getY();
+                this.realZombiePositions[count * 3 + 2] = zombie.getZ();
+                count++;
             }
         }
 
-        short nonZero = 0;
-
-        for (int i = 0; i < this.width * this.height; i++) {
-            if (this.realZombieCount[i] > 0) {
-                this.realZombieCount2[nonZero * 3 + 0] = (short)(i % this.width);
-                this.realZombieCount2[nonZero * 3 + 1] = (short)(i / this.width);
-                this.realZombieCount2[nonZero * 3 + 2] = this.realZombieCount[i];
-                nonZero++;
-            }
+        if (unregistered > 64 && unregistered > this.lastReportedUnregisteredCount) {
+            this.lastReportedUnregisteredCount = unregistered;
+            DebugType.General.error("ZPOP: %d zombies have no persistent id and will not be saved", unregistered);
         }
 
-        n_realZombieCount(nonZero, this.realZombieCount2);
+        return count;
+    }
+
+    public void updateRealZombies() {
+        if (!GameClient.client) {
+            int count = this.packRealZombies(IsoWorld.instance.currentCell.getZombieList());
+            n_updateRealZombies(count, this.realZombieIdsAndStates, this.realZombiePositions);
+        }
     }
 
     public void updateMain() {
         if (!GameClient.client) {
             long currentTimeMs = System.currentTimeMillis();
             n_updateMain(GameTime.getInstance().getMultiplier(), GameTime.getInstance().getWorldAgeHours());
-            this.zedClearedChunks.clear();
             int numStanding = 0;
             int numMoving = 0;
             int total = n_getAddZombieCount();
             int offset = 0;
 
             while (offset < total) {
-                this.readByteBuffer.clear();
-                int count = n_getAddZombieData(offset, this.readByteBuffer);
+                this.byteBuffer.clear();
+                int count = n_getAddZombieData(offset, this.byteBuffer);
                 offset += count;
 
                 for (int i = 0; i < count; i++) {
-                    float x = this.readByteBuffer.getFloat();
-                    float y = this.readByteBuffer.getFloat();
-                    float z = this.readByteBuffer.getFloat();
-                    IsoDirections dir = IsoDirections.fromIndex(this.readByteBuffer.get());
-                    int descriptorID = this.readByteBuffer.getInt();
-                    ZombieStateFlags state = ZombieStateFlags.fromInt(this.readByteBuffer.getInt());
-                    int pathTargetX = this.readByteBuffer.getInt();
-                    int pathTargetY = this.readByteBuffer.getInt();
+                    float x = this.byteBuffer.getFloat();
+                    float y = this.byteBuffer.getFloat();
+                    float z = this.byteBuffer.getFloat();
+                    IsoDirections dir = IsoDirections.fromIndex(this.byteBuffer.get());
+                    int descriptorID = this.byteBuffer.getInt();
+                    ZombieStateFlags state = ZombieStateFlags.fromInt(this.byteBuffer.getInt());
+                    int pathTargetX = this.byteBuffer.getInt();
+                    int pathTargetY = this.byteBuffer.getInt();
+                    int persistentId = this.byteBuffer.getInt();
                     int wx = PZMath.fastfloor(x) / 8;
                     int wy = PZMath.fastfloor(y) / 8;
                     int key = wy << 16 | wx;
@@ -572,10 +585,10 @@ public final class ZombiePopulationManager {
                     }
 
                     if (pathTargetX == Integer.MIN_VALUE) {
-                        this.addZombieStanding(x, y, z, dir, descriptorID, state);
+                        this.addZombieStanding(x, y, z, dir, descriptorID, state, persistentId);
                         numStanding++;
                     } else {
-                        this.addZombieMoving(x, y, z, dir, descriptorID, state, pathTargetX, pathTargetY);
+                        this.addZombieMoving(x, y, z, dir, descriptorID, state, pathTargetX, pathTargetY, persistentId);
                         numMoving++;
                     }
                 }
@@ -603,9 +616,10 @@ public final class ZombiePopulationManager {
             }
 
             this.updateLoadedAreas();
-            if (this.realZombieUpdateTime + 5000L < currentTimeMs) {
-                this.realZombieUpdateTime = currentTimeMs;
-                this.updateRealZombieCount();
+            long pushInterval = pendingSaveCellKeys.isEmpty() ? 5000L : 1000L;
+            if (this.realZombieUpdateTimeMs + pushInterval < currentTimeMs) {
+                this.realZombieUpdateTimeMs = currentTimeMs;
+                this.updateRealZombies();
             }
 
             if (GameServer.server) {
@@ -622,103 +636,63 @@ public final class ZombiePopulationManager {
         }
     }
 
-    private void clearChunkForReplace(IsoChunk chunk) {
-        if (chunk != null) {
-            int key = chunk.wy << 16 | chunk.wx;
-            if (this.zedClearedChunks.add(key)) {
-                for (int z = chunk.minLevel; z <= chunk.maxLevel; z++) {
-                    for (int y = 0; y < 8; y++) {
-                        for (int x = 0; x < 8; x++) {
-                            this.clearSquare(chunk.getGridSquare(x, y, z));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private void clearSquare(IsoGridSquare sq) {
-        if (sq != null) {
-            List<IsoMovingObject> mov = sq.getMovingObjects();
-            if (mov != null && !mov.isEmpty()) {
-                List<IsoZombie> toRemove = new ArrayList<>();
-
-                for (IsoMovingObject obj : mov) {
-                    if (obj instanceof IsoZombie zb && !zb.isReanimatedPlayer() && (!GameServer.server || !zb.indoorZombie)) {
-                        toRemove.add(zb);
-                    }
-                }
-
-                if (!toRemove.isEmpty()) {
-                    for (IsoZombie zb : toRemove) {
-                        if (GameServer.server) {
-                            NetworkZombiePacker.getInstance().deleteZombie(zb);
-                        }
-
-                        zb.removeFromWorld();
-                        zb.removeFromSquare();
-                    }
-                }
-            }
-        }
-    }
-
-    private void addZombieStanding(float x, float y, float z, IsoDirections dir, int descriptorID, ZombieStateFlags state) {
-        IsoGridSquare sq = IsoWorld.instance.currentCell.getGridSquare(PZMath.fastfloor(x), PZMath.fastfloor(y), PZMath.fastfloor(z));
-        if (sq != null && (sq.solidFloorCached ? sq.solidFloor : sq.TreatAsSolidFloor())) {
-            if (!Core.lastStand && !this.playerSpawns.allowZombie(sq)) {
-                noise("removed zombie near player spawn " + PZMath.fastfloor(x) + "," + PZMath.fastfloor(y) + "," + PZMath.fastfloor(z));
-            } else {
-                VirtualZombieManager.instance.choices.clear();
-                IsoGridSquare sqWall = null;
-                if (!state.isCrawling() && !state.isFakeDead() && Rand.Next(3) == 0) {
-                    sqWall = this.getSquareForSittingZombie(x, y, PZMath.fastfloor(z));
-                }
-
-                if (sqWall != null) {
-                    VirtualZombieManager.instance.choices.add(sqWall);
+    private void addZombieStanding(float x, float y, float z, IsoDirections dir, int descriptorID, ZombieStateFlags state, int persistentId) {
+        if (!isStaleRecord(persistentId)) {
+            IsoGridSquare sq = IsoWorld.instance.currentCell.getGridSquare(PZMath.fastfloor(x), PZMath.fastfloor(y), PZMath.fastfloor(z));
+            if (sq != null && (sq.solidFloorCached ? sq.solidFloor : sq.TreatAsSolidFloor())) {
+                if (!Core.lastStand && !this.playerSpawns.allowZombie(sq)) {
+                    noise("removed zombie near player spawn " + PZMath.fastfloor(x) + "," + PZMath.fastfloor(y) + "," + PZMath.fastfloor(z));
                 } else {
-                    VirtualZombieManager.instance.choices.add(sq);
-                }
+                    VirtualZombieManager.instance.choices.clear();
+                    IsoGridSquare sqWall = null;
+                    if (!state.isCrawling() && !state.isFakeDead() && Rand.Next(3) == 0) {
+                        sqWall = this.getSquareForSittingZombie(x, y, PZMath.fastfloor(z));
+                    }
 
-                this.clearChunkForReplace(sq.getChunk());
-                IsoZombie realZombie = VirtualZombieManager.instance.createRealZombieAlways(descriptorID, dir, false);
-                if (realZombie == null) {
-                    DebugType.Zombie.debugln("Failed to create standing Zombie.");
-                } else {
                     if (sqWall != null) {
-                        this.sitAgainstWall(realZombie, sqWall);
+                        VirtualZombieManager.instance.choices.add(sqWall);
                     } else {
-                        realZombie.setX(x);
-                        realZombie.setY(y);
+                        VirtualZombieManager.instance.choices.add(sq);
                     }
 
-                    if (state.isFakeDead()) {
-                        realZombie.setHealth(0.5F + Rand.Next(0.0F, 0.3F));
-                        realZombie.sprite = realZombie.legsSprite;
-                        realZombie.setFakeDead(true);
-                    } else if (state.isCrawling()) {
-                        realZombie.setCrawler(true);
-                        realZombie.setCanWalk(state.isCanWalk());
-                        realZombie.setOnFloor(true);
-                        realZombie.setFallOnFront(true);
-                        realZombie.walkVariant = "ZombieWalk";
-                        realZombie.DoZombieStats();
-                    }
-
-                    if (state.isInitialized()) {
-                        realZombie.setCanCrawlUnderVehicle(state.isCanCrawlUnderVehicle());
+                    IsoZombie realZombie = VirtualZombieManager.instance.createRealZombieAlways(descriptorID, dir, false, persistentId);
+                    if (realZombie == null) {
+                        DebugType.Zombie.debugln("Failed to create standing Zombie.");
                     } else {
-                        this.firstTimeLoaded(realZombie, state);
-                    }
+                        if (sqWall != null) {
+                            this.sitAgainstWall(realZombie, sqWall);
+                        } else {
+                            realZombie.setX(x);
+                            realZombie.setY(y);
+                        }
 
-                    realZombie.setReanimatedForGrappleOnly(state.isReanimatedForGrappleOnly());
-                    DebugType.Zombie.debugln("Created standing Zombie: %s", realZombie);
+                        if (state.isFakeDead()) {
+                            realZombie.setHealth(0.5F + Rand.Next(0.0F, 0.3F));
+                            realZombie.sprite = realZombie.legsSprite;
+                            realZombie.setFakeDead(true);
+                        } else if (state.isCrawling()) {
+                            realZombie.setCrawler(true);
+                            realZombie.setCanWalk(state.isCanWalk());
+                            realZombie.setOnFloor(true);
+                            realZombie.setFallOnFront(true);
+                            realZombie.walkVariant = "ZombieWalk";
+                            realZombie.DoZombieStats();
+                        }
+
+                        if (state.isInitialized()) {
+                            realZombie.setCanCrawlUnderVehicle(state.isCanCrawlUnderVehicle());
+                        } else {
+                            this.firstTimeLoaded(realZombie, state);
+                        }
+
+                        realZombie.setReanimatedForGrappleOnly(state.isReanimatedForGrappleOnly());
+                        DebugType.Zombie.debugln("Created standing Zombie: %s", realZombie);
+                    }
                 }
+            } else {
+                noise("real -> unloaded");
+                n_addZombie(x, y, z, (byte)dir.ordinal(), descriptorID, state.asInt(), Integer.MIN_VALUE, Integer.MIN_VALUE, persistentId);
             }
-        } else {
-            noise("real -> unloaded");
-            n_addZombie(x, y, z, (byte)dir.ordinal(), descriptorID, state.asInt(), Integer.MIN_VALUE, Integer.MIN_VALUE);
         }
     }
 
@@ -795,48 +769,51 @@ public final class ZombiePopulationManager {
         }
     }
 
-    private void addZombieMoving(float x, float y, float z, IsoDirections dir, int descriptorID, ZombieStateFlags state, int pathTargetX, int pathTargetY) {
-        IsoGridSquare sq = IsoWorld.instance.currentCell.getGridSquare(PZMath.fastfloor(x), PZMath.fastfloor(y), PZMath.fastfloor(z));
-        if (sq != null && (sq.solidFloorCached ? sq.solidFloor : sq.TreatAsSolidFloor())) {
-            if (!Core.lastStand && !this.playerSpawns.allowZombie(sq)) {
-                noise("removed zombie near player spawn " + PZMath.fastfloor(x) + "," + PZMath.fastfloor(y) + "," + PZMath.fastfloor(z));
-            } else {
-                VirtualZombieManager.instance.choices.clear();
-                VirtualZombieManager.instance.choices.add(sq);
-                this.clearChunkForReplace(sq.getChunk());
-                IsoZombie realZombie = VirtualZombieManager.instance.createRealZombieAlways(descriptorID, dir, false);
-                if (realZombie == null) {
-                    DebugType.Zombie.debugln("Failed to create moving Zombie.");
+    private void addZombieMoving(
+        float x, float y, float z, IsoDirections dir, int descriptorID, ZombieStateFlags state, int pathTargetX, int pathTargetY, int persistentId
+    ) {
+        if (!isStaleRecord(persistentId)) {
+            IsoGridSquare sq = IsoWorld.instance.currentCell.getGridSquare(PZMath.fastfloor(x), PZMath.fastfloor(y), PZMath.fastfloor(z));
+            if (sq != null && (sq.solidFloorCached ? sq.solidFloor : sq.TreatAsSolidFloor())) {
+                if (!Core.lastStand && !this.playerSpawns.allowZombie(sq)) {
+                    noise("removed zombie near player spawn " + PZMath.fastfloor(x) + "," + PZMath.fastfloor(y) + "," + PZMath.fastfloor(z));
                 } else {
-                    realZombie.setX(x);
-                    realZombie.setY(y);
-                    if (state.isCrawling()) {
-                        realZombie.setCrawler(true);
-                        realZombie.setCanWalk(state.isCanWalk());
-                        realZombie.setOnFloor(true);
-                        realZombie.setFallOnFront(true);
-                        realZombie.walkVariant = "ZombieWalk";
-                        realZombie.DoZombieStats();
-                    }
-
-                    if (state.isInitialized()) {
-                        realZombie.setCanCrawlUnderVehicle(state.isCanCrawlUnderVehicle());
+                    VirtualZombieManager.instance.choices.clear();
+                    VirtualZombieManager.instance.choices.add(sq);
+                    IsoZombie realZombie = VirtualZombieManager.instance.createRealZombieAlways(descriptorID, dir, false, persistentId);
+                    if (realZombie == null) {
+                        DebugType.Zombie.debugln("Failed to create moving Zombie.");
                     } else {
-                        this.firstTimeLoaded(realZombie, state);
-                    }
+                        realZombie.setX(x);
+                        realZombie.setY(y);
+                        if (state.isCrawling()) {
+                            realZombie.setCrawler(true);
+                            realZombie.setCanWalk(state.isCanWalk());
+                            realZombie.setOnFloor(true);
+                            realZombie.setFallOnFront(true);
+                            realZombie.walkVariant = "ZombieWalk";
+                            realZombie.DoZombieStats();
+                        }
 
-                    if (Math.abs(pathTargetX - x) > 1.0F || Math.abs(pathTargetY - y) > 1.0F) {
-                        realZombie.allowRepathDelay = -1.0F;
-                        realZombie.pathToLocation(pathTargetX, pathTargetY, 0);
-                    }
+                        if (state.isInitialized()) {
+                            realZombie.setCanCrawlUnderVehicle(state.isCanCrawlUnderVehicle());
+                        } else {
+                            this.firstTimeLoaded(realZombie, state);
+                        }
 
-                    realZombie.setReanimatedForGrappleOnly(state.isReanimatedForGrappleOnly());
-                    DebugType.Zombie.debugln("Created moving Zombie: %s", realZombie);
+                        if (Math.abs(pathTargetX - x) > 1.0F || Math.abs(pathTargetY - y) > 1.0F) {
+                            realZombie.allowRepathDelay = -1.0F;
+                            realZombie.pathToLocation(pathTargetX, pathTargetY, 0);
+                        }
+
+                        realZombie.setReanimatedForGrappleOnly(state.isReanimatedForGrappleOnly());
+                        DebugType.Zombie.debugln("Created moving Zombie: %s", realZombie);
+                    }
                 }
+            } else {
+                noise("real -> virtual " + x + "," + y);
+                n_addZombie(x, y, z, (byte)dir.ordinal(), descriptorID, state.asInt(), pathTargetX, pathTargetY, persistentId);
             }
-        } else {
-            noise("real -> virtual " + x + "," + y);
-            n_addZombie(x, y, z, (byte)dir.ordinal(), descriptorID, state.asInt(), pathTargetX, pathTargetY);
         }
     }
 
@@ -899,65 +876,6 @@ public final class ZombiePopulationManager {
         }
     }
 
-    public void beginSaveRealZombies() {
-        if (GameClient.client) {
-            DebugType.Zombie.debugln("Client doesn't save Zeds.");
-        } else {
-            saveLock.lock();
-
-            try {
-                this.saveRealZombieHack.clear();
-
-                for (IsoZombie realZombie : IsoWorld.instance.currentCell.getZombieList()) {
-                    if (!realZombie.isReanimatedPlayer() && (!GameServer.server || !realZombie.indoorZombie) && !realZombie.isDead()) {
-                        this.saveRealZombieHack.add(realZombie);
-                    }
-                }
-
-                int total = this.saveRealZombieHack.size();
-                n_beginSaveRealZombies(total);
-                int i = 0;
-
-                while (i < total) {
-                    this.writeByteBuffer.clear();
-                    int count = 0;
-
-                    while (true) {
-                        if (i < total) {
-                            int position = this.writeByteBuffer.position();
-                            IsoZombie zombie = this.saveRealZombieHack.get(i++);
-                            this.writeByteBuffer.putFloat(zombie.getX());
-                            this.writeByteBuffer.putFloat(zombie.getY());
-                            this.writeByteBuffer.putFloat(zombie.getZ());
-                            this.writeByteBuffer.put((byte)zombie.getForwardIsoDirection().ordinal());
-                            this.writeByteBuffer.putInt(zombie.getPersistentOutfitID());
-                            int state = ZombieStateFlags.intFromZombie(zombie);
-                            this.writeByteBuffer.putInt(state);
-                            count++;
-                            int numBytes = this.writeByteBuffer.position() - position;
-                            if (this.writeByteBuffer.position() + numBytes <= this.writeByteBuffer.capacity()) {
-                                continue;
-                            }
-                        }
-
-                        n_saveRealZombies(count, this.writeByteBuffer);
-                        break;
-                    }
-                }
-
-                this.saveRealZombieHack.clear();
-            } finally {
-                saveLock.unlock();
-            }
-        }
-    }
-
-    public void endSaveRealZombies() {
-        if (!GameClient.client) {
-            ;
-        }
-    }
-
     public void save() {
         if (!GameClient.client) {
             n_save();
@@ -968,6 +886,10 @@ public final class ZombiePopulationManager {
         if (!GameClient.client) {
             this.stopped = true;
             n_stop();
+            realZombies.clear();
+            pendingSaveCellKeys.clear();
+            lastSaveCellTimeMs.clear();
+            this.lastReportedUnregisteredCount = 0;
             this.loadedAreas.clear();
             this.newChunks.clear();
             this.spawnOrigins.clear();
@@ -977,36 +899,6 @@ public final class ZombiePopulationManager {
             this.radarRequestFlag = false;
             this.zombiesMinPerChunk = 0.0F;
             this.zombiesMaxPerChunk = 255.0F;
-        }
-    }
-
-    private static final class PendingCellSave {
-        final int popmanCellX;
-        final int popmanCellY;
-        final List<ZombiePopulationManager.ZombieSaveData> aliveZombies;
-
-        PendingCellSave(int x, int y, List<ZombiePopulationManager.ZombieSaveData> zombies) {
-            this.popmanCellX = x;
-            this.popmanCellY = y;
-            this.aliveZombies = zombies;
-        }
-    }
-
-    private static final class ZombieSaveData {
-        final float x;
-        final float y;
-        final float z;
-        final byte dir;
-        final int descriptorID;
-        final int state;
-
-        ZombieSaveData(IsoZombie zombie) {
-            this.x = zombie.getX();
-            this.y = zombie.getY();
-            this.z = zombie.getZ();
-            this.dir = (byte)zombie.getForwardIsoDirection().ordinal();
-            this.descriptorID = zombie.getPersistentOutfitID();
-            this.state = ZombieStateFlags.intFromZombie(zombie);
         }
     }
 }

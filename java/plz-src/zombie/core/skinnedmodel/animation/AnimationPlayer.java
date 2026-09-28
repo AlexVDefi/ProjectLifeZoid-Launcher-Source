@@ -156,6 +156,10 @@ public final class AnimationPlayer extends PooledObject {
         return !this.isReady() ? 0 : this.boneTransforms.length;
     }
 
+    public boolean isBoneCountMismatched(BoneTransform[] transforms) {
+        return this.isReady() && transforms != null && transforms.length != this.getNumBones();
+    }
+
     public AnimatorsBoneTransform getBoneTransformAt(int i) {
         if (i >= 0 && this.getNumBones() > i) {
             return this.boneTransforms[i];

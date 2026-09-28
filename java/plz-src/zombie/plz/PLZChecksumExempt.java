@@ -1,6 +1,7 @@
 package zombie.plz;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import zombie.ZomboidFileSystem;
@@ -130,7 +131,7 @@ public final class PLZChecksumExempt {
     }
 
     private static synchronized String[] resolve() {
-        ArrayList<String> modIds = ZomboidFileSystem.instance.getModIDs();
+        List<String> modIds = ZomboidFileSystem.instance.getModIDs();
         String sig = String.join(",", modIds);
         if (!dirty && sig.equals(signature)) {
             return prefixes;

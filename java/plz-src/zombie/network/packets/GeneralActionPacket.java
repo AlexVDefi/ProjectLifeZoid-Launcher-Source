@@ -2,6 +2,7 @@
 package zombie.network.packets;
 
 import zombie.characters.Capability;
+import zombie.characters.IsoPlayer;
 import zombie.core.ActionManager;
 import zombie.core.GeneralAction;
 import zombie.core.Transaction;
@@ -15,8 +16,9 @@ import zombie.network.PacketTypes;
 
 @PacketSetting(ordering = 1, priority = 1, reliability = 3, requiredCapability = Capability.LoginOnServer, handlingType = 1)
 public class GeneralActionPacket extends GeneralAction implements INetworkPacket {
-    public void setReject(byte id) {
+    public void setReject(byte id, IsoPlayer player) {
         this.id = id;
+        this.playerId.set(player);
         this.state = Transaction.TransactionState.Reject;
     }
 

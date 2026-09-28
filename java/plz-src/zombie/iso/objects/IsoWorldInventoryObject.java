@@ -7,6 +7,7 @@ import se.krka.kahlua.vm.KahluaTable;
 import zombie.GameTime;
 import zombie.UsedFromLua;
 import zombie.Lua.LuaEventManager;
+import zombie.characters.IsoGameCharacter;
 import zombie.core.Core;
 import zombie.core.PerformanceSettings;
 import zombie.core.Translator;
@@ -34,6 +35,7 @@ import zombie.input.Mouse;
 import zombie.inventory.InventoryItem;
 import zombie.inventory.ItemContainer;
 import zombie.inventory.ItemSoundManager;
+import zombie.inventory.types.HandWeapon;
 import zombie.inventory.types.InventoryContainer;
 import zombie.iso.IItemProvider;
 import zombie.iso.IsoCamera;
@@ -684,6 +686,18 @@ public class IsoWorldInventoryObject extends IsoObject implements IItemProvider 
         }
 
         super.removeFromSquare();
+    }
+
+    @Override
+    public void WeaponHit(IsoGameCharacter owner, HandWeapon weapon) {
+        if (!GameClient.client
+            && weapon != null
+            && weapon.isAimedFirearm()
+            && this.item != null
+            && this.item.getDurabilityComponent() != null
+            && this.square != null) {
+            this.square.transmitRemoveItemFromSquare(this);
+        }
     }
 
     public float getScreenPosX(int playerIndex) {

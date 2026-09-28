@@ -59,6 +59,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
     public float walkSpeed;
     public float runSpeed;
     public Prediction prediction = new Prediction();
+    private IsoGridSquare lastBrokenGlassSquare;
     private static final float ANIMAL_DETAILED_INFO_DIST = 20.0F;
 
     public NetworkPlayerAI(IsoPlayer character) {
@@ -292,7 +293,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
                 this.setStatic(packet.prediction, this.player);
             }
 
-            packet.booleanVariables = NetworkPlayerVariables.getBooleanVariables(this.player);
+            packet.booleanVariables = NetworkPlayerVariables.getBooleanVariables(this.player).asShort();
             boolean flagsChanged = this.lastBooleanVariables != packet.booleanVariables;
             this.lastBooleanVariables = packet.booleanVariables;
             boolean turningChanged = this.lastTurning != this.player.isTurning();
@@ -350,6 +351,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
                 this.setNoCollision(5000L);
             }
 
+            animal.setAnimalAttackingOnClient(packet.isAttacking() && distToReal <= 0.2F);
             if (this.predictionType == 2) {
                 this.needToMovingUsingPathFinder = true;
             } else {
@@ -472,6 +474,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
             if (packet.location == 3 && animal.isExistInTheWorld()) {
                 animal.removeFromWorld();
                 animal.removeFromSquare();
+                animal.setSquare(null);
             }
 
             if (packet.location == 0) {
@@ -606,7 +609,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
 
     @Deprecated
     public void update() {
-        if (!GameServer.server && GameClient.client) {
+        if (GameClient.client) {
             if (!ServerOptions.getInstance().knockedDownAllowed.getValue()
                 && this.player.isLocalPlayer()
                 && this.player.getVehicle() == null
@@ -616,49 +619,52 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
                 this.player.setDir(IsoDirections.getRandom());
             }
 
-            if (Core.debug && this.player == IsoPlayer.getInstance() && GameKeyboard.isKeyDown(29)) {
-                if (GameKeyboard.isKeyPressed(44)) {
-                    GameClient.SendCommandToServer(
-                        String.format(
-                            "/createhorde2 -x %d -y %d -z %d -count %d -radius %d -crawler %s -isFallOnFront %s -isFakeDead %s -knockedDown %s -health %s -outfit %s ",
-                            PZMath.fastfloor(this.player.getX() + this.player.getForwardDirection().getX()),
-                            PZMath.fastfloor(this.player.getY() + this.player.getForwardDirection().getY()),
-                            PZMath.fastfloor(this.player.getZ()),
-                            1,
-                            0,
-                            "false",
-                            "false",
-                            "false",
-                            "false",
-                            "1",
-                            ""
-                        )
-                    );
-                }
-
-                if (GameKeyboard.isKeyPressed(45)) {
-                    GameClient.instance
-                        .sendClientCommandV(
-                            this.player,
-                            "animal",
-                            "add",
-                            "type",
-                            "bull",
-                            "breed",
-                            "angus",
-                            "x",
-                            PZMath.fastfloor(this.player.getX() + this.player.getForwardDirection().getX()),
-                            "y",
-                            PZMath.fastfloor(this.player.getY() + this.player.getForwardDirection().getY()),
-                            "z",
-                            PZMath.fastfloor(this.player.getZ()),
-                            "skeleton",
-                            false
+            if (this.player.isLocalPlayer()) {
+                this.checkBrokenGlass();
+                if (Core.debug && GameKeyboard.isKeyDown(29)) {
+                    if (GameKeyboard.isKeyPressed(44)) {
+                        GameClient.SendCommandToServer(
+                            String.format(
+                                "/createhorde2 -x %d -y %d -z %d -count %d -radius %d -crawler %s -isFallOnFront %s -isFakeDead %s -knockedDown %s -health %s -outfit %s ",
+                                PZMath.fastfloor(this.player.getX() + this.player.getForwardDirection().getX()),
+                                PZMath.fastfloor(this.player.getY() + this.player.getForwardDirection().getY()),
+                                PZMath.fastfloor(this.player.getZ()),
+                                1,
+                                0,
+                                "false",
+                                "false",
+                                "false",
+                                "false",
+                                "1",
+                                ""
+                            )
                         );
-                }
+                    }
 
-                if (GameKeyboard.isKeyPressed(47)) {
-                    GameClient.SendCommandToServer("/addvehicle Base.SportsCar");
+                    if (GameKeyboard.isKeyPressed(45)) {
+                        GameClient.instance
+                            .sendClientCommandV(
+                                this.player,
+                                "animal",
+                                "add",
+                                "type",
+                                "bull",
+                                "breed",
+                                "angus",
+                                "x",
+                                PZMath.fastfloor(this.player.getX() + this.player.getForwardDirection().getX()),
+                                "y",
+                                PZMath.fastfloor(this.player.getY() + this.player.getForwardDirection().getY()),
+                                "z",
+                                PZMath.fastfloor(this.player.getZ()),
+                                "skeleton",
+                                false
+                            );
+                    }
+
+                    if (GameKeyboard.isKeyPressed(47)) {
+                        GameClient.SendCommandToServer("/addvehicle Base.SportsCar");
+                    }
                 }
             }
         }
@@ -770,16 +776,27 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
             return false;
         }
 
-        animal.addToWorld();
-        animal.setSquare(sq);
         animal.setX(sq.getX());
         animal.setY(sq.getY());
         animal.setZ(sq.getZ());
+        animal.setSquare(sq);
+        animal.setCurrent(sq);
+        animal.setMovingSquareNow();
+        animal.addToWorld();
         if (!animal.getCell().getObjectList().contains(animal) && !animal.getCell().getAddList().contains(animal)) {
-            animal.getCell().getAddList().add(animal);
+            animal.getCell().addMovingObject(animal);
         }
 
         return true;
+    }
+
+    public void checkBrokenGlass() {
+        IsoGridSquare square = this.player.getCurrentSquare();
+        if (this.lastBrokenGlassSquare != null && square != null && this.lastBrokenGlassSquare != square && square.getBrokenGlass() != null) {
+            INetworkPacket.send(PacketTypes.PacketType.PlayerSteppedOnGlass, this.player);
+        }
+
+        this.lastBrokenGlassSquare = square;
     }
 
     public static class AnimalLocationFlags {

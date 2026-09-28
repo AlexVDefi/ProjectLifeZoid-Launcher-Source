@@ -43,14 +43,14 @@ public class LoginQueue {
             if (!ServerOptions.getInstance().loginQueueEnabled.getValue()) {
                 // Queue off is vanilla's default and means unlimited width: admit immediately and
                 // do not track, because nothing will ever be waiting on this connection.
-                DebugType.DetailedInfo.trace("ConnectionImmediate ip=%s", connection.getIP());
+                DebugType.DetailedInfo.println("ConnectionImmediate ip=%s", connection.getIP());
                 connection.setWasInLoadingQueue(true);
                 sendConnectRequest(connection);
                 ConnectionManager.log("receive-packet", "login-queue-request", connection);
                 return;
             }
 
-            DebugType.DetailedInfo.trace("PlaceInQueue ip=%s tier=%d", connection.getIP(), tier);
+            DebugType.DetailedInfo.println("PlaceInQueue ip=%s tier=%d", connection.getIP(), tier);
             if (indexOfConnection(connection) < 0 && indexOfInFlight(connection) < 0) {
                 insertSorted(new LoginQueue.Entry(connection, tier, arrivalSeq++));
             }
@@ -153,7 +153,7 @@ public class LoginQueue {
     }
 
     private static void sendConnectRequest(UdpConnection connection) {
-        DebugType.DetailedInfo.trace("SendApplyRequest ip=%s", connection.getIP());
+        DebugType.DetailedInfo.println("SendApplyRequest ip=%s", connection.getIP());
         QueuePacket packet = new QueuePacket();
         packet.setConnectionImmediate();
         packet.setInformationFields();
@@ -165,7 +165,7 @@ public class LoginQueue {
     }
 
     public static void disconnect(UdpConnection connection) {
-        DebugType.DetailedInfo.trace("ip=%s", connection.getIP());
+        DebugType.DetailedInfo.println("disconnect ip=%s", connection.getIP());
         synchronized (Queue) {
             if (!removeInFlight(connection)) {
                 int i = indexOfConnection(connection);
@@ -203,7 +203,7 @@ public class LoginQueue {
                 for (int i = InFlight.size() - 1; i >= 0; i--) {
                     LoginQueue.Loading loading = InFlight.get(i);
                     if (loading.connection.isFullyConnected()) {
-                        DebugType.DetailedInfo.trace("Connection isFullyConnected ip=%s", loading.connection.getIP());
+                        DebugType.DetailedInfo.println("Connection isFullyConnected ip=%s", loading.connection.getIP());
                         InFlight.remove(i);
                     } else if (now >= loading.deadline) {
                         // Vanilla behaviour: the slot is released but the client is NOT
@@ -242,7 +242,7 @@ public class LoginQueue {
         for (int i = InFlight.size() - 1; i >= 0; i--) {
             UdpConnection c = InFlight.get(i).connection;
             if (!GameServer.udpEngine.connections.contains(c)) {
-                DebugType.DetailedInfo.trace("Reaped a dead in-flight connection ip=%s", c.getIP());
+                DebugType.DetailedInfo.println("Reaped a dead in-flight connection ip=%s", c.getIP());
                 InFlight.remove(i);
             }
         }
@@ -276,7 +276,7 @@ public class LoginQueue {
                 connection,
                 System.currentTimeMillis() + ServerOptions.getInstance().loginQueueConnectTimeout.getValue() * 1000L));
             DebugType.DetailedInfo
-                .trace("Next player from the queue to connect ip=%s tier=%d", connection.getIP(), next.tier);
+                .println("Next player from the queue to connect ip=%s tier=%d", connection.getIP(), next.tier);
             sendConnectRequest(connection);
             released = true;
         }

@@ -2,7 +2,7 @@ package zombie.network.packets.connection;
 
 import java.util.Objects;
 import zombie.characters.Capability;
-import zombie.characters.Roles;
+import zombie.characters.Role;
 import zombie.core.Core;
 import zombie.core.logger.LoggerManager;
 import zombie.core.network.ByteBufferReader;
@@ -43,7 +43,7 @@ public class LoginPacket implements INetworkPacket {
     int authType;
 
     private String applyPlzBinding(UdpConnection connection) {
-        if (!SteamUtils.isSteamModeEnabled() || CoopSlave.instance != null || connection.getSteamId() == 0L) {
+        if (!SteamUtils.isSteamModeEnabled() || CoopSlave.instance != null || connection.getSteamId() <= 0L) {
             return null;
         }
 
@@ -91,7 +91,7 @@ public class LoginPacket implements INetworkPacket {
     @Override
     public void processServer(PacketType packetType, UdpConnection connection) {
         ConnectionManager.log("receive-packet", "login", connection);
-        String serverVersion = Core.getInstance().getVersionNumber();
+        String serverVersion = Core.getInstance().getGameAndBuildVersion();
         if (!this.clientVersion.equals(serverVersion)) {
             LoggerManager.getLogger("user")
                 .write(
@@ -144,7 +144,8 @@ public class LoginPacket implements INetworkPacket {
                 connection.usernames[0] = this.username;
                 connection.isCoopHost = GameServer.udpEngine.connections.size() == 1;
                 DebugLog.log(connection.getIDStr() + " isCoopHost=" + connection.isCoopHost);
-                connection.setRole(Roles.getDefaultForUser());
+                Role role = ServerWorldDatabase.instance.getUserRoleNameByUsername(this.username);
+                connection.setRole(role);
                 if (!ServerOptions.instance.doLuaChecksum.getValue()) {
                     connection.checksumState = ChecksumState.Done;
                 }
@@ -163,7 +164,7 @@ public class LoginPacket implements INetworkPacket {
 
                     LoggerManager.getLogger("user").write(connection.getIDStr() + " \"" + this.username + "\" allowed to join");
                     LogonResult r = ServerWorldDatabase.instance.new LogonResult();
-                    connection.setRole(r.role);
+                    r.role = connection.getRole();
                     connection.setLastConnection(UdpConnection.lastConnections.getOrDefault(this.username, 0L));
                     UdpConnection.lastConnections.put(this.username, System.currentTimeMillis() / 1000L);
 
@@ -178,6 +179,11 @@ public class LoginPacket implements INetworkPacket {
 
                     GameServer.receiveClientConnect(connection, r);
                 }
+            } else if (SteamUtils.isSteamModeEnabled() && connection.getSteamId() <= 0L) {
+                LoggerManager.getLogger("user")
+                    .write("access denied: user \"" + this.username + "\" has no validated Steam session (steam-id=" + connection.getSteamId() + ")");
+                INetworkPacket.send(connection, PacketType.AccessDenied, "AccessDenied");
+                connection.forceDisconnect("access-denied-no-steam-session");
             } else {
                 LogonResult r = ServerWorldDatabase.instance.authClient(this.username, this.password, connection.getIP(), connection.getSteamId(), this.authType);
                 connection.setRole(r.role);
@@ -231,6 +237,7 @@ public class LoginPacket implements INetworkPacket {
 
                     connection.updatePing();
                     int ping = connection.getAveragePing();
+                    DebugType.DetailedInfo.println("User %s ip=%s ping %d ms", connection.getUserName(), connection.getIP(), ping);
                     if (PingManager.doKickWhileLoading(connection, ping)) {
                         LoggerManager.getLogger("user").write("access denied: user \"" + this.username + "\" ping is too high");
                         AntiCheat.log(connection, "ping: user \"" + this.username + "\" is not connected because ping is too high");
@@ -293,7 +300,7 @@ public class LoginPacket implements INetworkPacket {
     public void write(ByteBufferWriter b) {
         b.putUTF(GameClient.username);
         b.putUTF(GameClient.password);
-        b.putUTF(Core.getInstance().getVersionNumber());
+        b.putUTF(Core.getInstance().getGameAndBuildVersion());
         b.putInt(GameClient.authType);
     }
 }

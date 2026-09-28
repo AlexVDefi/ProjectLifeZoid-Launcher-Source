@@ -122,6 +122,7 @@ public final class IsoMetaGrid {
     private long createStartTime;
     private boolean loaded;
     private final ArrayList<RemovedBuilding> removedBuildings = new ArrayList<>();
+    public static final int IDEAL_MAX_ZONE_SIZE = 512;
 
     public IsoMetaGrid() {
     }
@@ -601,9 +602,17 @@ public final class IsoMetaGrid {
             default -> throw new IllegalArgumentException("unknown zone geometry type");
         };
         Double widthObj = geometryType == ZoneGeometryType.Polyline && properties != null ? Type.tryCastTo(properties.rawget("LineWidth"), Double.class) : null;
-        if (widthObj != null) {
+        return this.registerGeometryZone(name, type, z, geometryType, points, properties, widthObj == null ? 0 : widthObj.intValue());
+    }
+
+    public Zone registerGeometryZone(String name, String type, int z, ZoneGeometryType geometryType, TIntArrayList points, KahluaTable properties, int width) {
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        if (width > 0) {
             int[] bounds = new int[4];
-            this.calculatePolylineOutlineBounds(points, widthObj.intValue(), bounds);
+            this.calculatePolylineOutlineBounds(points, width, bounds);
             minX = bounds[0];
             minY = bounds[1];
             maxX = bounds[2];
@@ -615,7 +624,7 @@ public final class IsoMetaGrid {
             if (zone != null) {
                 zone.geometryType = geometryType;
                 zone.points.addAll(points);
-                zone.polylineWidth = widthObj == null ? 0 : widthObj.intValue();
+                zone.polylineWidth = width;
             }
 
             return zone;
@@ -624,7 +633,7 @@ public final class IsoMetaGrid {
             if (zone != null) {
                 zone.geometryType = geometryType;
                 zone.points.addAll(points);
-                zone.polylineWidth = widthObj == null ? 0 : widthObj.intValue();
+                zone.polylineWidth = width;
             }
 
             return zone;
@@ -633,14 +642,12 @@ public final class IsoMetaGrid {
             if (zone != null) {
                 zone.geometryType = geometryType;
                 zone.points.addAll(points);
-                zone.polylineWidth = widthObj == null ? 0 : widthObj.intValue();
+                zone.polylineWidth = width;
             }
 
             return zone;
         } else {
-            Zone zone = this.registerZone(
-                name, type, minX, minY, z, maxX - minX + 1, maxY - minY + 1, geometryType, points, widthObj == null ? 0 : widthObj.intValue()
-            );
+            Zone zone = this.registerZone(name, type, minX, minY, z, maxX - minX + 1, maxY - minY + 1, geometryType, points, width);
             points.clear();
             return zone;
         }

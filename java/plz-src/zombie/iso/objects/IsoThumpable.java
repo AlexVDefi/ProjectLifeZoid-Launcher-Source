@@ -292,7 +292,7 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
     public void setHealth(int health) {
         if (health != this.health) {
             this.health = health;
-            if (GameServer.server) {
+            if (GameServer.server && this.getObjectIndex() != -1) {
                 this.sync();
             }
         }
@@ -338,6 +338,14 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
 
     public boolean isDoor() {
         return this.isDoor;
+    }
+
+    public boolean isBlockedDoor() {
+        return this.isDoor() && (!this.open || this.isBarricaded());
+    }
+
+    public boolean isBlockedDoor(GridSquareEdgeFacingDirection facingDirection) {
+        return this.getGridSquareEdgeFacingDirection() == facingDirection && this.isBlockedDoor();
     }
 
     @Override
@@ -2025,21 +2033,6 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
     @Override
     public boolean canAddCurtain() {
         return false;
-    }
-
-    public IsoGridSquare getInsideSquare() {
-        if (this.square == null) {
-            return null;
-        } else {
-            return this.north
-                ? this.square.getCell().getGridSquare(this.square.getX(), this.square.getY() - 1, this.square.getZ())
-                : this.square.getCell().getGridSquare(this.square.getX() - 1, this.square.getY(), this.square.getZ());
-        }
-    }
-
-    @Override
-    public IsoGridSquare getOppositeSquare() {
-        return this.getInsideSquare();
     }
 
     public boolean isAdjacentToSquare(IsoGridSquare square2) {

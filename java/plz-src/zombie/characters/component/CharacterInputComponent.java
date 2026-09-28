@@ -5,6 +5,7 @@ import zombie.characters.CharacterInputKeyBinding;
 import zombie.characters.CharacterInputMode;
 import zombie.characters.CharacterJoypadAxis2dBinding;
 import zombie.characters.CharacterJoypadButtonBinding;
+import zombie.characters.IsoPlayer;
 import zombie.characters.TimedInputHandler;
 import zombie.characters.ecs.ECSComponent;
 import zombie.characters.ecs.componentmods.ECSFrameStep;
@@ -74,7 +75,16 @@ public class CharacterInputComponent extends ECSComponent implements ECSFrameSte
     }
 
     public CharacterInputMode getInputMode() {
-        return this.isJoypadControllerActive() ? CharacterInputMode.GAMEPAD : CharacterInputMode.KEYBOARD;
+        if (this.isJoypadControllerActive()) {
+            return CharacterInputMode.GAMEPAD;
+        } else {
+            return this.isParentAllowedKeyboardInput() ? CharacterInputMode.KEYBOARD : CharacterInputMode.NONE;
+        }
+    }
+
+    public boolean isParentAllowedKeyboardInput() {
+        IsoPlayer parentPlayer = this.tryGetECSOwnerEntityAs(IsoPlayer.class);
+        return parentPlayer != null && parentPlayer.getIndex() == 0;
     }
 
     public boolean isForceAim() {

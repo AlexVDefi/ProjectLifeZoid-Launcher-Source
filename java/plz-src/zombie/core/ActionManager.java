@@ -51,41 +51,7 @@ public class ActionManager {
 
     public static void stop(Action action) {
         DebugType.Action.debugln("ActionManager stop action %s", action.getDescription());
-        if (GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.ACTION_CANCEL)) {
-            plzRemoveOwned(action.id, action.playerId.getID());
-            return;
-        }
-
-        remove(action.id, true);
-    }
-
-    /**
-     * PLZ: remove only the cancelling player's queued action.
-     *
-     * remove(byte, boolean) filters the queue by byte id alone. Action ids are per-player bytes
-     * that different players hand out independently, so on a populated server one player
-     * cancelling their own action also yanks every other player's queued action carrying the
-     * same id - their action stops silently, mid-swing or mid-craft, with nothing logged.
-     * Filtering on (id, owning online id) removes exactly the one that was cancelled.
-     *
-     * Mirrors the server half of remove(byte, boolean) otherwise, including the NetTimedAction
-     * emulator cleanup, so behaviour for the correct entry is unchanged.
-     */
-    private static void plzRemoveOwned(byte id, short onlineId) {
-        List<Action> transactionForDelete = actions.stream()
-            .filter(t -> t.id == id && t.playerId.getID() == onlineId)
-            .collect(Collectors.toList());
-        actions.removeAll(transactionForDelete);
-
-        for (Action action : transactionForDelete) {
-            DebugType.Action.debugln("ActionManager remove action %s", action.getDescription());
-            action.stop();
-            if (action instanceof NetTimedAction netTimedAction) {
-                AnimEventEmulator.getInstance().remove(netTimedAction);
-            }
-        }
-
-        zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.ACTION_CANCEL);
+        remove(action.playerId, action.id, true);
     }
 
     /**
@@ -189,20 +155,23 @@ public class ActionManager {
         }
     }
 
-    public static boolean isRejected(byte id) {
+    public static boolean isRejected(PlayerID playerId, byte id) {
         return !actions.isEmpty()
             && (
-                actions.stream().filter(r -> id == r.id).allMatch(r -> r.state == Transaction.TransactionState.Reject)
-                    || actions.stream().noneMatch(r -> id == r.id)
+                actions.stream()
+                        .filter(r -> id == r.id && playerId.getID() == r.playerId.getID())
+                        .allMatch(r -> r.state == Transaction.TransactionState.Reject)
+                    || actions.stream().filter(r -> playerId.getID() == r.playerId.getID()).noneMatch(r -> id == r.id)
             );
     }
 
-    public static boolean isDone(byte id) {
-        return !actions.isEmpty() && actions.stream().filter(r -> id == r.id).allMatch(r -> r.state == Transaction.TransactionState.Done);
+    public static boolean isDone(PlayerID playerId, byte id) {
+        return !actions.isEmpty()
+            && actions.stream().filter(r -> id == r.id && playerId.getID() == r.playerId.getID()).allMatch(r -> r.state == Transaction.TransactionState.Done);
     }
 
-    public static boolean isLooped(byte id) {
-        Optional<Action> res = actions.stream().filter(r -> id == r.id).findFirst();
+    public static boolean isLooped(PlayerID playerId, byte id) {
+        Optional<Action> res = actions.stream().filter(r -> id == r.id && playerId.getID() == r.playerId.getID()).findFirst();
         if (res.isEmpty()) {
             return false;
         }
@@ -211,8 +180,8 @@ public class ActionManager {
         return t.duration == -1L;
     }
 
-    public static int getDuration(byte id) {
-        Optional<Action> res = actions.stream().filter(r -> id == r.id).findFirst();
+    public static int getDuration(PlayerID playerId, byte id) {
+        Optional<Action> res = actions.stream().filter(r -> id == r.id && playerId.getID() == r.playerId.getID()).findFirst();
         if (res.isEmpty()) {
             return -1;
         }
@@ -221,29 +190,21 @@ public class ActionManager {
         return (int)(t.endTime - t.startTime);
     }
 
-    public static IsoPlayer getPlayer(byte id) {
-        Optional<Action> res = actions.stream().filter(r -> id == r.id).findFirst();
-        if (res.isEmpty()) {
-            return null;
-        }
-
-        Action t = res.get();
-        return t.playerId.getPlayer();
-    }
-
-    public static void remove(byte id, boolean isCanceled) {
+    public static void remove(PlayerID playerId, byte id, boolean isCanceled) {
         if (GameClient.client) {
             if (id != 0) {
                 if (isCanceled) {
                     GeneralActionPacket generalAction = new GeneralActionPacket();
-                    generalAction.setReject(id);
+                    generalAction.setReject(id, playerId.getPlayer());
                     ByteBufferWriter bbw2 = GameClient.connection.startPacket();
                     PacketTypes.PacketType.GeneralAction.doPacket(bbw2);
                     generalAction.write(bbw2);
                     PacketTypes.PacketType.GeneralAction.send(GameClient.connection);
                 }
 
-                List<Action> transactionForDelete = actions.stream().filter(t -> t.id == id).collect(Collectors.toList());
+                List<Action> transactionForDelete = actions.stream()
+                    .filter(t -> t.id == id && t.playerId.getID() == playerId.getID())
+                    .collect(Collectors.toList());
                 actions.removeAll(transactionForDelete);
 
                 for (Action action : transactionForDelete) {
@@ -251,7 +212,7 @@ public class ActionManager {
                 }
             }
         } else if (GameServer.server) {
-            List<Action> transactionForDelete = actions.stream().filter(t -> t.id == id).collect(Collectors.toList());
+            List<Action> transactionForDelete = actions.stream().filter(t -> t.id == id && t.playerId.getID() == playerId.getID()).collect(Collectors.toList());
             actions.removeAll(transactionForDelete);
 
             for (Action action : transactionForDelete) {

@@ -26,8 +26,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
@@ -59,18 +61,18 @@ import zombie.util.StringUtils;
 
 public final class ZomboidFileSystem {
     public static final ZomboidFileSystem instance = new ZomboidFileSystem();
-    private final ArrayList<String> loadList = new ArrayList<>();
+    private final List<String> loadList = new ArrayList<>();
     private final Map<String, String> modIdToDir = new HashMap<>();
     private final Map<String, ChooseGameInfo.Mod> modDirToMod = new HashMap<>();
-    private ArrayList<String> modFolders;
-    private ArrayList<String> modFoldersOrder;
+    private volatile List<String> modFolders;
+    private List<String> modFoldersOrder;
     // One pause per retry, growing. A flat 100ms x 3 was tuned for "Steam answered a moment late"
     // and is nowhere near long enough for the case that actually breaks sessions: Steam
     // re-indexing after a Workshop item updated, which is exactly when a walk comes back short.
     // The whole ladder is only ever paid when the walk IS short, and it buys back a session.
     private static final long[] PLZ_SHORT_WALK_BACKOFF_MS = {250L, 1000L, 3000L};
     private int plzBestModFolderCount;
-    public final HashMap<String, String> activeFileMap = new HashMap<>();
+    public final Map<String, String> activeFileMap = new HashMap<>();
 
     /**
      * What the mods in PLZBodyOverride put into activeFileMap, so it can be taken back out.
@@ -85,7 +87,7 @@ public final class ZomboidFileSystem {
 
     /** The answer the last loadMods acted on, or null before the first one in this process. */
     private Boolean plzBodyOverrideApplied;
-    private final HashSet<String> allAbsolutePaths = new HashSet<>();
+    private final Set<String> allAbsolutePaths = new HashSet<>();
     private final ResettableLazyValue<List<Path>> allowedPrefixes = new ResettableLazyValue<>(() -> {
         List<String> knownBases = new ArrayList<>();
         instance.getAllModFolders(knownBases);
@@ -104,12 +106,12 @@ public final class ZomboidFileSystem {
     private final ConcurrentHashMap<String, String> relativeMap = new ConcurrentHashMap<>();
     public final ThreadLocal<Boolean> ignoreActiveFileMap = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ConcurrentHashMap<String, URI> canonicalUriMap = new ConcurrentHashMap<>();
-    private final ArrayList<String> mods = new ArrayList<>();
-    private final HashSet<String> loadedPacks = new HashSet<>();
+    private final List<String> mods = new ArrayList<>();
+    private final Set<String> loadedPacks = new HashSet<>();
     private FileGuidTable fileGuidTable;
     private boolean fileGuidTableWatcherActive;
     private final PredicatedFileWatcher modFileWatcher = new PredicatedFileWatcher(this::isModFile, this::onModFileChanged);
-    private final HashSet<String> watchedModFolders = new HashSet<>();
+    private final Set<String> watchedModFolders = new HashSet<>();
     private final Object modFoldersLock = new Object();
     private long modsChangedTime;
     private static String startupTimeStamp;
@@ -117,6 +119,10 @@ public final class ZomboidFileSystem {
     private static final SimpleDateFormat s_dateOnlySdf = new SimpleDateFormat("yyyy-MM-dd");
 
     private ZomboidFileSystem() {
+    }
+
+    public boolean isInitialized() {
+        return this.base.absoluteFile != null;
     }
 
     public void init() throws IOException {
@@ -295,7 +301,7 @@ public final class ZomboidFileSystem {
     }
 
     public static boolean ensureFolderExists(File directory) {
-        return directory.exists() || directory.mkdirs();
+        return directory.isDirectory() || directory.mkdirs();
     }
 
     public void searchFolders(File fo) {
@@ -407,19 +413,13 @@ public final class ZomboidFileSystem {
         this.modDirToMod.clear();
         this.mods.clear();
         this.plzTrackedFiles.clear();
-        // Under the lock for the same reason resetModFolders is: a walk already running holds it
-        // and would otherwise publish its result on top of this null, losing the reset.
-        synchronized (this.modFoldersLock) {
-            this.modFolders = null;
-        }
-
         ActiveMods.Reset();
         if (this.fileGuidTable != null) {
             this.fileGuidTable.clear();
             this.fileGuidTable = null;
         }
 
-        this.allowedPrefixes.reset();
+        this.resetModFolders();
     }
 
     public File getCanonicalFile(File file) {
@@ -473,7 +473,7 @@ public final class ZomboidFileSystem {
         PLZPrefixRetry.newSession();
     }
 
-    public void getInstalledItemModsFolders(ArrayList<String> out) {
+    public void getInstalledItemModsFolders(List<String> out) {
         if (SteamUtils.isSteamModeEnabled()) {
             String[] folders = SteamWorkshop.instance.GetInstalledItemFolders();
             if (folders != null) {
@@ -487,9 +487,9 @@ public final class ZomboidFileSystem {
         }
     }
 
-    public void getStagedItemModsFolders(ArrayList<String> out) {
+    public void getStagedItemModsFolders(List<String> out) {
         if (SteamUtils.isSteamModeEnabled()) {
-            ArrayList<String> folders = SteamWorkshop.instance.getStageFolders();
+            List<String> folders = SteamWorkshop.instance.getStageFolders();
 
             for (int i = 0; i < folders.size(); i++) {
                 File file = new File(folders.get(i) + File.separator + "Contents" + File.separator + "mods");
@@ -558,8 +558,9 @@ public final class ZomboidFileSystem {
         this.modFoldersOrder = new ArrayList<>(Arrays.asList(s.split(",")));
     }
 
+    // PLZ: a private lock, not 42.21's synchronized method: the walk below can sleep for seconds and getString/isKnownFile share this monitor.
     public void getAllModFolders(List<String> out) {
-        ArrayList<String> folders;
+        List<String> folders;
         synchronized (this.modFoldersLock) {
             if (this.modFolders == null) {
                 this.modFolders = this.plzWalkModFoldersChecked();
@@ -642,7 +643,7 @@ public final class ZomboidFileSystem {
             this.setModFoldersOrder("workshop,steam,mods");
         }
 
-        ArrayList<String> modsFolders = new ArrayList<>();
+        List<String> modsFolders = new ArrayList<>();
 
         for (int i = 0; i < this.modFoldersOrder.size(); i++) {
             String s = this.modFoldersOrder.get(i);
@@ -655,7 +656,12 @@ public final class ZomboidFileSystem {
             }
 
             if ("mods".equals(s)) {
-                modsFolders.add(Core.getMyDocumentFolder() + File.separator + "mods");
+                File file = new File(instance.getCacheDirSub("mods"));
+                if (!file.exists()) {
+                    file.mkdirs();
+                }
+
+                modsFolders.add(file.getAbsolutePath());
             }
         }
 
@@ -915,10 +921,10 @@ public final class ZomboidFileSystem {
         return info == null ? false : this.isValidTranslationModSubDir(info.baseFile.common) && this.isValidTranslationModSubDir(info.baseFile.version);
     }
 
-    private void loadTranslationMods(ArrayList<String> toLoad) {
+    private void loadTranslationMods(List<String> toLoad) {
         if (GameClient.client) {
             ActiveMods activeMods = this.readDefaultModsTxt();
-            ArrayList<String> mods = new ArrayList<>();
+            List<String> mods = new ArrayList<>();
             if (this.loadModsAux(activeMods.getMods(), mods) == null) {
                 for (String modId : mods) {
                     if (this.isTranslationMod(modId)) {
@@ -932,7 +938,7 @@ public final class ZomboidFileSystem {
         }
     }
 
-    private String loadModAndRequired(String modId, ArrayList<String> ordered) {
+    private String loadModAndRequired(String modId, List<String> ordered) {
         if (modId.isEmpty()) {
             return null;
         }
@@ -967,7 +973,7 @@ public final class ZomboidFileSystem {
         }
     }
 
-    public String loadModsAux(ArrayList<String> toLoad, ArrayList<String> ordered) {
+    public String loadModsAux(List<String> toLoad, List<String> ordered) {
         for (String modId : toLoad) {
             String failId = this.loadModAndRequired(modId, ordered);
             if (failId != null) {
@@ -978,7 +984,7 @@ public final class ZomboidFileSystem {
         return null;
     }
 
-    public void loadMods(ArrayList<String> toLoad) {
+    public void loadMods(List<String> toLoad) {
         this.mods.clear();
         this.plzTrackedFiles.clear();
 
@@ -1088,7 +1094,7 @@ public final class ZomboidFileSystem {
         return undone;
     }
 
-    public ArrayList<String> getModIDs() {
+    public List<String> getModIDs() {
         return this.mods;
     }
 
@@ -1208,7 +1214,7 @@ public final class ZomboidFileSystem {
     }
 
     public void loadModTileDefs() {
-        HashSet<Integer> usedFileNumbers = new HashSet<>();
+        Set<Integer> usedFileNumbers = new HashSet<>();
 
         for (String modId : this.mods) {
             try {
@@ -1238,7 +1244,7 @@ public final class ZomboidFileSystem {
     }
 
     public void loadModTileDefPropertyStrings() {
-        HashSet<Integer> usedFileNumbers = new HashSet<>();
+        Set<Integer> usedFileNumbers = new HashSet<>();
 
         for (String modId : this.mods) {
             try {
@@ -1419,7 +1425,7 @@ public final class ZomboidFileSystem {
 
     public void walkGameAndModFiles(String relPath, boolean recursive, ZomboidFileSystem.IWalkFilesVisitor consumer) {
         this.walkGameAndModFilesInternal(this.base.canonicalFile, relPath, recursive, consumer);
-        ArrayList<String> modIDs = this.getModIDs();
+        List<String> modIDs = this.getModIDs();
 
         for (int n = 0; n < modIDs.size(); n++) {
             String modID = modIDs.get(n);
@@ -1533,13 +1539,9 @@ public final class ZomboidFileSystem {
             long now = System.currentTimeMillis();
             if (this.modsChangedTime <= now) {
                 this.modsChangedTime = 0L;
-                synchronized (this.modFoldersLock) {
-                    this.modFolders = null;
-                }
-
                 this.modIdToDir.clear();
                 this.modDirToMod.clear();
-                this.allowedPrefixes.reset();
+                this.resetModFolders();
                 ChooseGameInfo.Reset();
 
                 for (String modID : this.getModIDs()) {
@@ -1560,7 +1562,7 @@ public final class ZomboidFileSystem {
         // reset between the null check and the loop below used to be an NPE on that thread. A
         // slightly stale list is the right answer here - it only decides whether a changed file is
         // worth reacting to.
-        ArrayList<String> folders;
+        List<String> folders;
         synchronized (this.modFoldersLock) {
             folders = this.modFolders;
         }
@@ -1770,6 +1772,95 @@ public final class ZomboidFileSystem {
         return lastDotIdx == -1 ? fileName : fileName.substring(0, lastDotIdx).trim();
     }
 
+    public static String processStringToValidFileName(String fileNameRaw) {
+        if (StringUtils.isNullOrEmpty(fileNameRaw)) {
+            return null;
+        }
+
+        String fileNameTrimmedWhitespace = fileNameRaw.trim();
+        if (StringUtils.isNullOrEmpty(fileNameTrimmedWhitespace)) {
+            return null;
+        }
+
+        String fileNameTrimmedTrailingDots = trimTrailingDots(fileNameTrimmedWhitespace);
+        if (StringUtils.isNullOrEmpty(fileNameTrimmedTrailingDots)) {
+            return null;
+        }
+
+        String fileNameValidCharsOnly = ensureOnlyValidCharacters(fileNameTrimmedTrailingDots);
+        if (StringUtils.isNullOrEmpty(fileNameValidCharsOnly)) {
+            return null;
+        }
+
+        String fileNameSingleDots = ensureOnlySingleDots(fileNameValidCharsOnly);
+        if (StringUtils.isNullOrEmpty(fileNameSingleDots)) {
+            return null;
+        }
+
+        String fileNameMaxLength = ensureMaxLength(fileNameSingleDots);
+        if (StringUtils.isNullOrEmpty(fileNameMaxLength)) {
+            return null;
+        }
+
+        String fileNameTrimmedTrailingDots2 = trimTrailingDots(fileNameMaxLength);
+        return StringUtils.isNullOrEmpty(fileNameTrimmedTrailingDots2) ? null : fileNameTrimmedTrailingDots2;
+    }
+
+    private static String trimTrailingDots(String fileNameRaw) {
+        int fileNameRawLength = fileNameRaw.length();
+        int fileNameLength = fileNameRawLength;
+
+        for (int i = fileNameLength - 1; i >= 0; fileNameLength = i--) {
+            char c = fileNameRaw.charAt(i);
+            if (c != '.') {
+                break;
+            }
+        }
+
+        return fileNameLength == fileNameRawLength ? fileNameRaw : fileNameRaw.substring(0, fileNameLength);
+    }
+
+    private static String ensureOnlyValidCharacters(String fileNameRaw) {
+        int length = fileNameRaw.length();
+        StringBuilder stringBuilder = new StringBuilder(length);
+
+        for (int i = 0; i < length; i++) {
+            char c = fileNameRaw.charAt(i);
+            if (isValidFileNameCharacter(c)) {
+                stringBuilder.append(c);
+            } else {
+                stringBuilder.append('_');
+            }
+        }
+
+        return stringBuilder.toString();
+    }
+
+    private static String ensureOnlySingleDots(String fileNameRaw) {
+        int length = fileNameRaw.length();
+        StringBuilder stringBuilder = new StringBuilder(length);
+
+        for (int i = 0; i < length; i++) {
+            char c = fileNameRaw.charAt(i);
+            if (i > 0 && fileNameRaw.charAt(i - 1) == '.' && c == '.') {
+                stringBuilder.append('_');
+            } else {
+                stringBuilder.append(c);
+            }
+        }
+
+        return stringBuilder.toString();
+    }
+
+    private static String ensureMaxLength(String fileNameRaw) {
+        int maxLength = 255;
+        return fileNameRaw.length() <= 255 ? fileNameRaw : fileNameRaw.substring(0, 255);
+    }
+
+    private static boolean isValidFileNameCharacter(char c) {
+        return c == '.' || c == '_' || c == '-' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9';
+    }
+
     public interface IWalkFilesVisitor {
         void visit(File var1, String var2);
     }
@@ -1806,6 +1897,119 @@ public final class ZomboidFileSystem {
         public void setWithCatch(File commonFile, File versionFile) {
             this.common.setWithCatch(commonFile);
             this.version.setWithCatch(versionFile);
+        }
+    }
+
+    public static class UnitTests {
+        public static void run() {
+            processStringToValidFileName();
+        }
+
+        public static <T, R> void runTest(Function<T, R> test, T input, R expected, ZomboidFileSystem.UnitTests.TestPredicate<T, R> testPass) {
+            R output = test.apply(input);
+            if (testPass.pass(expected, output)) {
+                DebugType.UnitTest.getLogStream().debuglnWithTraceOffset(1, "Input: \"%s\", Output: \"%s\", Unit test: PASS.", input, output);
+                zombie.UnitTests.unitTestPassed();
+            } else {
+                DebugType.UnitTest
+                    .getLogStream()
+                    .errorWithTraceOffset(1, "Input: \"%s\", Output: \"%s\", Expected: \"%s\", Unit test: FAIL.", input, output, expected);
+                zombie.UnitTests.unitTestFailed();
+            }
+        }
+
+        public static void processStringToValidFileName() {
+            runTest(ZomboidFileSystem::processStringToValidFileName, null, null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "    ", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "..", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "...", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "....", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " ....", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " .... ", null, (var0, out) -> out == null);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " .. .. ", ".__", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "a", "a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".a", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "..a", "._a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".a.", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".a..", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".a.. ", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " .a. ", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " .a.... ", ".a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " ...a.... ", ".__a", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " abc", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc ", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "  abc ", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc.", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc.", "abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, ".abc", ".abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, " .abc", ".abc", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc()def", "abc__def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc..def", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc..def.", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc..def..", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc..def....", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc..def....   ", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc. def....   ", "abc._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc.   def....   ", "abc.___def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc.   .def....   ", "abc.___.def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "abc.   ..def....   ", "abc.___._def", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/fileName.ext", "path_to_fileName.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/fileName.ext...", "path_to_fileName.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/fileName.ext   ", "path_to_fileName.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "   path/to/fileName.ext   ", "path_to_fileName.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/fileName.ext.   ", "path_to_fileName.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/file_()_Name.ext.   ", "path_to_file____Name.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/file_()_Name123.ext.   ", "path_to_file____Name123.ext", StringUtils::equals);
+            runTest(ZomboidFileSystem::processStringToValidFileName, "path/to/file Name 123 abc.ext.   ", "path_to_file_Name_123_abc.ext", StringUtils::equals);
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "path/to/../file Name 123 abc.ext.   ",
+                "path_to_.__file_Name_123_abc.ext",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "../path/to/..\\file Name 123 abc.ext.   ",
+                ".__path_to_.__file_Name_123_abc.ext",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "  ../path/to/../file Name 123 abc.ext.   ",
+                ".__path_to_.__file_Name_123_abc.ext",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "  ..\\path\\to\\../file Name 123 abc.ext.   ",
+                ".__path_to_.__file_Name_123_abc.ext",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Cras auctor suscipit urna nec eleifend. Phasellus ut venenatis mauris. Donec eget tempor leo. Praesent erat leo, iaculis quis euismod nec, molestie quis nisi. Class aptent taciti sociosqu ad litora torquent per ligula.",
+                "Lorem_ipsum_dolor_sit_amet__consectetur_adipiscing_elit._Cras_auctor_suscipit_urna_nec_eleifend._Phasellus_ut_venenatis_mauris._Donec_eget_tempor_leo._Praesent_erat_leo__iaculis_quis_euismod_nec__molestie_quis_nisi._Class_aptent_taciti_sociosqu_ad_litora_",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Cras auctor suscipit urna nec eleifend. Phasellus ut venenatis mauris. Donec eget tempor leo. Praesent erat leo, iaculis quis euismod nec, molestie quis nisi. Class aptent taciti sociosqu ad litor.......a torquent per ligula.",
+                "Lorem_ipsum_dolor_sit_amet__consectetur_adipiscing_elit._Cras_auctor_suscipit_urna_nec_eleifend._Phasellus_ut_venenatis_mauris._Donec_eget_tempor_leo._Praesent_erat_leo__iaculis_quis_euismod_nec__molestie_quis_nisi._Class_aptent_taciti_sociosqu_ad_litor._",
+                StringUtils::equals
+            );
+            runTest(
+                ZomboidFileSystem::processStringToValidFileName,
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Cras auctor suscipit urna nec eleifend. Phasellus ut venenatis mauris. Donec eget tempor leo. Praesent erat leo, iaculis quis euismod nec, molestie quis nisi. Class aptent taciti sociosqu ad litora.......a torquent per ligula.",
+                "Lorem_ipsum_dolor_sit_amet__consectetur_adipiscing_elit._Cras_auctor_suscipit_urna_nec_eleifend._Phasellus_ut_venenatis_mauris._Donec_eget_tempor_leo._Praesent_erat_leo__iaculis_quis_euismod_nec__molestie_quis_nisi._Class_aptent_taciti_sociosqu_ad_litora",
+                StringUtils::equals
+            );
+        }
+
+        public interface TestPredicate<T, R> {
+            boolean pass(R var1, R var2);
         }
     }
 }

@@ -33,6 +33,7 @@ import zombie.core.Color;
 import zombie.core.Core;
 import zombie.core.WordsFilter;
 import zombie.core.logger.ExceptionLogger;
+import zombie.core.raknet.UdpConnection;
 import zombie.core.secure.PZcrypt;
 import zombie.core.znet.SteamUtils;
 import zombie.debug.DebugLog;
@@ -45,6 +46,8 @@ public class ServerWorldDatabase {
     public static final int AUTH_TYPE_USERNAME_PASSWORD = 1;
     public static final int AUTH_TYPE_GOOGLE_AUTH = 2;
     public static final int AUTH_TYPE_TWO_FACTOR = 3;
+    public static final int MIN_USERNAME_LENGTH = 2;
+    public static final int MAX_USERNAME_LENGTH = 32;
     private static final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
     public static ServerWorldDatabase instance = new ServerWorldDatabase();
     public String commandLineAdminUsername = "admin";
@@ -408,7 +411,7 @@ public class ServerWorldDatabase {
         dbFile.setReadable(true, false);
         dbFile.setExecutable(true, false);
         dbFile.setWritable(true, false);
-        DebugType.DetailedInfo.trace("user database \"" + dbFile.getPath() + "\"");
+        DebugType.DetailedInfo.println("user database \"" + dbFile.getPath() + "\"");
         if (!dbFile.exists()) {
             DebugLog.log("user database doesn't exist");
         } else {
@@ -442,7 +445,7 @@ public class ServerWorldDatabase {
         dbFile.setReadable(true, false);
         dbFile.setExecutable(true, false);
         dbFile.setWritable(true, false);
-        DebugType.DetailedInfo.trace("user database \"" + dbFile.getPath() + "\"");
+        DebugType.DetailedInfo.println("user database \"" + dbFile.getPath() + "\"");
         if (!dbFile.exists()) {
             try {
                 dbFile.createNewFile();
@@ -778,7 +781,7 @@ public class ServerWorldDatabase {
             || user.contains("?")
             || user.contains("\"")
             || user.trim().length() < 2
-            // PLZ: vanilla caps a username at 20. Everything else in this file is the jar verbatim.
+            // PLZ: vanilla caps a username at 32. Everything else in this file is the jar verbatim.
             || user.length() > 50) {
             return false;
         } else if (user.contains(nullChar)) {
@@ -1026,7 +1029,7 @@ public class ServerWorldDatabase {
     }
 
     public ServerWorldDatabase.LogonResult authClient(String user, String pass, String ip, long steamID, int authType) {
-        DebugType.DetailedInfo.trace("User " + user + " is trying to connect.");
+        DebugType.DetailedInfo.println("User " + user + " is trying to connect.");
         ServerWorldDatabase.LogonResult result = new ServerWorldDatabase.LogonResult();
         if (!ServerOptions.instance.allowNonAsciiUsername.getValue() && !asciiEncoder.canEncode(user)) {
             result.authorized = false;
@@ -1329,7 +1332,9 @@ public class ServerWorldDatabase {
 
     public String setRole(String username, Role role) throws SQLException {
         if (!this.containsUser(username)) {
-            this.addUser(username, "");
+            IsoPlayer pl = GameServer.getPlayerByUserName(username);
+            UdpConnection c = pl != null ? GameServer.getConnectionFromPlayer(pl) : null;
+            this.addUser(username, c != null ? c.password : "");
         }
 
         PreparedStatement stat = this.conn.prepareStatement("SELECT id FROM whitelist WHERE username = ? AND world = ?");

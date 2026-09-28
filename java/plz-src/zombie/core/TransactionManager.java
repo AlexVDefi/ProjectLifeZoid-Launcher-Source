@@ -20,6 +20,7 @@ import zombie.iso.IsoDirections;
 import zombie.iso.IsoGridSquare;
 import zombie.iso.IsoUtils;
 import zombie.iso.IsoWorld;
+import zombie.iso.areas.SafeHouse;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.network.PacketTypes;
@@ -136,6 +137,16 @@ public class TransactionManager {
             destination == null ? "null" : destination,
             dropTransaction == null ? "" : dropTransaction.getDescription()
         );
+        if (source != null && source.getCharacter() == null && !SafeHouse.isSafehouseAllowLoot(source.getSquare(), player)) {
+            DebugType.Objects.noise("Player is not allowed to interact with source container in this safehouse");
+            return 1;
+        }
+
+        if (destination != null && destination.getCharacter() == null && !SafeHouse.isSafehouseAllowLoot(destination.getSquare(), player)) {
+            DebugType.Objects.noise("Player is not allowed to interact with destination container in this safehouse");
+            return 1;
+        }
+
         if (destination != null
             || dropTransaction != null
                 && dropTransaction.entries.stream().anyMatch(x -> x.sourceId.containerType == ContainerID.ContainerType.IsoObject)

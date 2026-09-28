@@ -511,6 +511,7 @@ public final class PlayerDownloadServer {
                         ccr.releaseBuffer(reqChunk);
                     } else {
                         File inFile = ChunkMapFilenames.instance.getFilename(wx, wy);
+                        boolean retry = true;
                         if (inFile.exists()) {
                             long crcCached = ChunkChecksum.getChecksum(wx, wy);
                             if (crcCached != 0L && crcCached == reqChunk.crc) {
@@ -519,9 +520,12 @@ public final class PlayerDownloadServer {
                                 }
 
                                 this.sendNotRequired(reqChunk.requestNumber, true);
-                            } else {
-                                ccr.getByteBuffer(reqChunk);
-                                reqChunk.bb = IsoChunk.SafeRead(wx, wy, reqChunk.bb);
+                                continue;
+                            }
+
+                            ccr.getByteBuffer(reqChunk);
+                            reqChunk.bb = IsoChunk.SafeRead(wx, wy, reqChunk.bb);
+                            if (IsoChunk.validateByteBufferHeader(reqChunk.bb)) {
                                 boolean add = true;
                                 if (reqChunk.crc != 0L) {
                                     this.crcMaker.reset();
@@ -543,9 +547,13 @@ public final class PlayerDownloadServer {
                                     this.sendNotRequired(reqChunk.requestNumber, true);
                                 }
 
-                                ccr.releaseBuffer(reqChunk);
+                                retry = false;
                             }
-                        } else {
+
+                            ccr.releaseBuffer(reqChunk);
+                        }
+
+                        if (retry) {
                             if (PlayerDownloadServer.this.networkFileDebug) {
                                 DebugType.NetworkFileDebug.debugln(wx + "," + wy + ": send=false loaded=false file=false");
                             }

@@ -57,22 +57,6 @@ public class NetTimedActionPacket extends NetTimedAction implements INetworkPack
         return act;
     }
 
-    /**
-     * PLZ: serialise the server-side action rather than the inbound request packet.
-     *
-     * Kept as one helper so the flag governs both response paths identically and the fallback is
-     * unambiguously the vanilla wire shape.
-     */
-    private void plzWriteResponse(NetTimedAction act, ByteBufferWriter bbw) {
-        if (act != null && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.NET_TIMED_ACTION)) {
-            zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.NET_TIMED_ACTION);
-            act.write(bbw);
-            return;
-        }
-
-        this.write(bbw);
-    }
-
     @Override
     public void processServer(PacketTypes.PacketType packetType, UdpConnection connection) {
         if (this.state == Transaction.TransactionState.Request) {
@@ -84,12 +68,7 @@ public class NetTimedActionPacket extends NetTimedAction implements INetworkPack
                 act.setState(Transaction.TransactionState.Accept);
                 ByteBufferWriter bbw = connection.startPacket();
                 PacketTypes.PacketType.NetTimedAction.doPacket(bbw);
-                // PLZ: write the server-side action, not the request packet. The packet's state is
-                // always Request on entry here, so serializing `this` sends Request straight back
-                // no matter what the server decided: the client never leaves the Request state,
-                // never receives the server-calculated duration, and cannot tell an accept from a
-                // reject. `act` carries both the real state and the duration.
-                plzWriteResponse(act, bbw);
+                act.write(bbw);
                 PacketTypes.PacketType.NetTimedAction.send(connection);
             } else {
                 DebugType.Action.trace("NetTimedAction rejected %s", this.getDescription());
@@ -97,8 +76,7 @@ public class NetTimedActionPacket extends NetTimedAction implements INetworkPack
                 act.setState(Transaction.TransactionState.Reject);
                 ByteBufferWriter bbw = connection.startPacket();
                 PacketTypes.PacketType.NetTimedAction.doPacket(bbw);
-                // PLZ: same as the accept path above - send `act`, which carries Reject.
-                plzWriteResponse(act, bbw);
+                act.write(bbw);
                 PacketTypes.PacketType.NetTimedAction.send(connection);
             }
         } else if (Transaction.TransactionState.Reject == this.state) {

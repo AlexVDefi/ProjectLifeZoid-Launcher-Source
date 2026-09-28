@@ -54,6 +54,7 @@ import zombie.iso.objects.IsoFireplace;
 import zombie.iso.objects.IsoLightSwitch;
 import zombie.iso.objects.IsoMannequin;
 import zombie.iso.objects.IsoStove;
+import zombie.iso.objects.IsoThumpable;
 import zombie.iso.objects.IsoWorldInventoryObject;
 import zombie.network.GameClient;
 import zombie.network.GameServer;
@@ -79,6 +80,9 @@ import zombie.vehicles.VehiclePartOwner;
 
 @UsedFromLua
 public final class ItemContainer {
+    public static final float FRIDGE_FREEZER_TEMPERATURE = 0.2F;
+    public static final float POWER_SHUTOFF_HOUR_OF_DAY = 7.0F;
+    public static final float COLD_LOSS_HOURS = 6.0F;
     // PLZ: how far getCharacter will walk up the containingItem chain before giving up. See the
     // comment on getCharacter. Only a malformed chain ever reaches this.
     private static final int MAX_PARENT_DEPTH = 64;
@@ -213,7 +217,7 @@ public final class ItemContainer {
     }
 
     public boolean hasRoomFor(IsoGameCharacter chr, InventoryItem item) {
-        if (chr != null && chr.getVehicle() != null && item.hasTag(ItemTag.HEAVY_ITEM) && this.parent instanceof IsoGameCharacter) {
+        if (chr != null && chr.getVehicle() != null && (item.hasTag(ItemTag.HEAVY_ITEM) || item.isHumanCorpse()) && this.parent instanceof IsoGameCharacter) {
             return false;
         } else if (!this.isItemAllowed(item)) {
             return false;
@@ -500,6 +504,11 @@ public final class ItemContainer {
             return null;
         }
 
+        if (this.containsID(item.id)) {
+            DebugType.General.error("Error, container already has id");
+            return this.getItemWithID(item.id);
+        }
+
         // PLZ: refuse a move that would put a container inside itself. THIS IS THE CURE; the bounds
         // on the chain walks are the tourniquet.
         //
@@ -619,11 +628,11 @@ public final class ItemContainer {
         item.container = this;
         this.items.add(item);
         if (item instanceof Food food) {
-            food.setHeat(this.getTemprature());
+            food.setHeat(this.getTemperature());
         }
 
         if (item.hasComponent(ComponentType.FluidContainer) && item.isCookable()) {
-            item.setItemHeat(this.getTemprature());
+            item.setItemHeat(this.getTemperature());
         }
 
         if (IsoWorld.instance.currentCell != null) {
@@ -2075,8 +2084,8 @@ public final class ItemContainer {
         for (int m = 0; m < this.items.size(); m++) {
             InventoryItem item2 = this.items.get(m);
             if (item2 == item) {
-                item.OnBeforeRemoveFromContainer(this);
-                this.items.remove(item);
+                this.plzBeforeRemove(item);
+                this.items.remove(m);
                 item.container = null;
                 this.drawDirty = true;
                 this.dirty = true;
@@ -2105,12 +2114,23 @@ public final class ItemContainer {
         }
     }
 
+    // PLZ: 42.21's InventoryContainer.OnBeforeRemoveFromContainer recurses into the bag's contents, so a bag inside itself overflows the stack.
+    private void plzBeforeRemove(InventoryItem item) {
+        if (item instanceof InventoryContainer && this.isInside(item)) {
+            this.plzReportParentChainCycle();
+            return;
+        }
+
+        item.OnBeforeRemoveFromContainer(this);
+    }
+
     public void DoRemoveItem(InventoryItem item) {
         this.drawDirty = true;
         if (this.parent != null) {
             this.dirty = true;
         }
 
+        this.plzBeforeRemove(item);
         this.items.remove(item);
         item.container = null;
         if (this.parent instanceof IsoDeadBody isoDeadBody) {
@@ -2421,22 +2441,24 @@ public final class ItemContainer {
         }
     }
 
+    @Deprecated
     public float getTemprature() {
+        return this.getTemperature();
+    }
+
+    public float getTemperature() {
         if (this.customTemperature != 0.0F) {
             return this.customTemperature;
         }
 
         if (!this.isPowered() || !this.isFridge() && !this.isFreezer()) {
-            if (this.isPowered() && (this.isStove() || "microwave".equals(this.type)) && this.parent instanceof IsoStove isoStove) {
+            if (this.isPowered() && (this.isStove() || this.isMicrowave()) && this.parent instanceof IsoStove isoStove) {
                 return isoStove.getCurrentTemperature();
             } else if (this.parent instanceof IsoBarbecue isoBarbecue) {
                 return isoBarbecue.getTemperature();
             } else if (this.parent instanceof IsoFireplace isoFireplace) {
                 return isoFireplace.getTemperature();
-            } else if ((this.isFridge() || this.isFreezer())
-                && (float)(GameTime.getInstance().getWorldAgeHours() / 24.0 + (SandboxOptions.instance.timeSinceApo.getValue() - 1) * 30)
-                    == SandboxOptions.instance.getElecShutModifier()
-                && GameTime.instance.getTimeOfDay() < 13.0F) {
+            } else if (this.isFridgeOrFreezerWarming()) {
                 float delta = (GameTime.instance.getTimeOfDay() - 7.0F) / 6.0F;
                 return GameTime.instance.Lerp(0.2F, 1.0F, delta);
             } else {
@@ -2453,8 +2475,17 @@ public final class ItemContainer {
         } else if (this.parent instanceof IsoFireplace fireplace) {
             return fireplace.isTemperatureChanging();
         } else {
-            return this.parent instanceof IsoStove stove ? stove.isTemperatureChanging() : false;
+            return this.parent instanceof IsoStove stove ? stove.isTemperatureChanging() : this.isFridgeOrFreezerWarming();
         }
+    }
+
+    public boolean isFridgeOrFreezerWarming() {
+        if (!this.isFridge() && !this.isFreezer()) {
+            return false;
+        }
+
+        int worldAgeDays = (int)GameTime.getInstance().getWorldAgeDaysSinceBegin();
+        return worldAgeDays == SandboxOptions.instance.getElecShutModifier() && GameTime.instance.getTimeOfDay() < 13.0F;
     }
 
     public ArrayList<InventoryItem> save(ByteBuffer output, IsoGameCharacter noCompress) throws IOException {
@@ -2754,6 +2785,19 @@ public final class ItemContainer {
      */
     public String getType() {
         return this.type;
+    }
+
+    @UsedFromLua
+    public String getDisplayType() {
+        if (this.containingItem != null) {
+            return this.containingItem.getName();
+        } else if (this.getParent() instanceof IsoWorldInventoryObject item) {
+            return item.getItem().getName();
+        } else {
+            return this.getParent().getSprite() != null && this.getParent().getSprite().getProperties().get(IsoPropertyType.CONTAINER) != null
+                ? this.getParent().getProperties().get(IsoPropertyType.CONTAINER)
+                : this.getType();
+        }
     }
 
     /**
@@ -4026,6 +4070,10 @@ public final class ItemContainer {
         } else {
             return this.parent == null ? false : this.parent.getProperties() != null && this.parent.getProperties().has(IsoPropertyType.IS_FRIDGE);
         }
+    }
+
+    public boolean isLockedToCharacter(IsoGameCharacter chr) {
+        return this.getParent() instanceof IsoThumpable thumpable ? thumpable.isLockedToCharacter(chr) : false;
     }
 
     private static final class CategoryPredicate implements Predicate<InventoryItem> {

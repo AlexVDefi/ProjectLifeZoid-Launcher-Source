@@ -39,6 +39,7 @@ import zombie.MapCollisionData;
 import zombie.SandboxOptions;
 import zombie.SoundManager;
 import zombie.SystemDisabler;
+import zombie.UnitTests;
 import zombie.VirtualZombieManager;
 import zombie.ZomboidFileSystem;
 import zombie.ZomboidGlobals;
@@ -238,6 +239,8 @@ public class GameServer {
     public static final int TimeLimitForProcessPackets = 70;
     public static final int PacketsUpdateRate = 200;
     public static final int FPS = 10;
+    private static final long MILLIS_PER_SECOND = 1000L;
+    public static final String LAST_WIPE = "lastWipe";
     private static final HashMap<String, zombie.network.GameServer.CCFilter> ccFilters = new HashMap<>();
     public static int test = 432432;
     public static int defaultPort = 16261;
@@ -249,6 +252,7 @@ public class GameServer {
     public static boolean guiCommandline;
     public static boolean server;
     public static boolean coop;
+    private static boolean worldExistedAtStartup;
     public static boolean debug;
     public static boolean closed;
     public static boolean softReset;
@@ -267,9 +271,7 @@ public class GameServer {
     public static long[] workshopTimeStamps;
     private static long plzWorkshopSyncedAt;
     public static String serverName = "servertest";
-    public static final DiscordBot discordBot = new DiscordBot(
-        serverName, (user, msg) -> ChatServer.getInstance().sendMessageFromDiscordToGeneralChat(user, msg)
-    );
+    public static final DiscordBot discordBot = new DiscordBot((user, msg) -> ChatServer.getInstance().sendMessageFromDiscordToGeneralChat(user, msg));
     public static String checksum = "";
     public static String gameMap = "Muldraugh, KY";
     public static boolean fastForward;
@@ -435,6 +437,12 @@ public class GameServer {
                     coop = true;
                 } else if (args[n].equals("-anti-cheats")) {
                     Core.antiCheats = true;
+                } else if (args[n].startsWith("-useTimeStampedLogFileNames=")) {
+                    boolean useTimeStampedLogFileNames = StringUtils.tryParseBoolean(args[n].replace("-useTimeStampedLogFileNames=", "").trim());
+                    LoggerManager.setUseTimeStampedLogFileNames(useTimeStampedLogFileNames);
+                } else if (args[n].startsWith("-debugLogFile=")) {
+                    String debugLogFileName = args[n].replace("-debugLogFile=", "").trim();
+                    LoggerManager.setLogFilePrefixRaw(debugLogFileName);
                 }
             }
         }
@@ -487,23 +495,22 @@ public class GameServer {
             DebugLog.getInstance().loadDebugConfig(null);
         }
 
-        DebugLog.printLogLevels();
         DebugType.General.println("version=%s demo=%s", Core.getInstance().getVersion(), false);
-        if (!"b0bbce05d5".isEmpty()) {
-            DebugType.General.println("revision=%s", "b0bbce05d5");
+        if (!"4a0e9546ec".isEmpty()) {
+            DebugType.General.println("revision=%s", "4a0e9546ec");
         }
 
         seed = WorldGenUtils.INSTANCE.generateSeed();
 
         for (int n = 0; n < args.length; n++) {
-            if (args[n] != null) {
+            if (args[n] != null
+                && !args[n].startsWith("-cachedir=")
+                && !args[n].startsWith("-useTimeStampedLogFileNames=")
+                && !args[n].startsWith("-debugLogFile=")) {
                 if (!args[n].startsWith("-disablelog=")) {
                     if (args[n].startsWith("-debuglog=")) {
                         for (String t : args[n].replace("-debuglog=", "").split(",")) {
-                            try {
-                                DebugLog.setLogEnabled(DebugType.valueOf(t), true);
-                            } catch (IllegalArgumentException var48) {
-                            }
+                            DebugLog.setLogEnabledFromCommandLine(t);
                         }
                     } else if (args[n].equals("-adminusername")) {
                         if (n == args.length - 1) {
@@ -527,53 +534,51 @@ public class GameServer {
                             ServerWorldDatabase.instance.commandLineAdminPassword = args[n + 1].trim();
                             n++;
                         }
-                    } else if (!args[n].startsWith("-cachedir=")) {
-                        if (args[n].equals("-ip")) {
-                            ipCommandline = parseIPFromCommandline(args, n, "-ip");
-                            n++;
-                        } else if (args[n].equals("-gui")) {
-                            guiCommandline = true;
-                        } else if (args[n].equals("-nosteam")) {
-                            System.setProperty("zomboid.steam", "0");
-                        } else if (args[n].equals("-port")) {
-                            portCommandline = parsePortFromCommandline(args, n, "-port");
-                            n++;
-                        } else if (args[n].equals("-udpport")) {
-                            udpPortCommandline = parsePortFromCommandline(args, n, "-udpport");
-                            n++;
-                        } else if (args[n].equals("-steamvac")) {
-                            steamVacCommandline = parseBooleanFromCommandline(args, n, "-steamvac");
-                            n++;
-                        } else if (args[n].equals("-servername")) {
-                            if (n == args.length - 1) {
-                                DebugLog.log("expected argument after \"-servername\"");
-                                System.exit(0);
-                            } else if (args[n + 1].trim().isEmpty()) {
-                                DebugLog.log("empty argument given to \"-servername\"");
-                                System.exit(0);
-                            } else {
-                                serverName = args[n + 1].trim();
-                                n++;
-                            }
-                        } else if (args[n].equals("-coop")) {
-                            ServerWorldDatabase.instance.doAdmin = false;
-                        } else if (args[n].startsWith("-seed=")) {
-                            try {
-                                seed = args[n].replace("-seed=", "");
-                                if (!seed.isEmpty()) {
-                                    ServerOptions.instance.seed.setValue(seed);
-                                }
-                            } catch (IllegalArgumentException var47) {
-                            }
-                        } else if (args[n].equals("-no-worldgen")) {
-                            IsoChunk.doWorldgen = false;
-                        } else if (args[n].equals("-no-foraging")) {
-                            IsoChunk.doForaging = false;
-                        } else if (args[n].equals("-no-attachment")) {
-                            IsoChunk.doAttachments = false;
+                    } else if (args[n].equals("-ip")) {
+                        ipCommandline = parseIPFromCommandline(args, n, "-ip");
+                        n++;
+                    } else if (args[n].equals("-gui")) {
+                        guiCommandline = true;
+                    } else if (args[n].equals("-nosteam")) {
+                        System.setProperty("zomboid.steam", "0");
+                    } else if (args[n].equals("-port")) {
+                        portCommandline = parsePortFromCommandline(args, n, "-port");
+                        n++;
+                    } else if (args[n].equals("-udpport")) {
+                        udpPortCommandline = parsePortFromCommandline(args, n, "-udpport");
+                        n++;
+                    } else if (args[n].equals("-steamvac")) {
+                        steamVacCommandline = parseBooleanFromCommandline(args, n, "-steamvac");
+                        n++;
+                    } else if (args[n].equals("-servername")) {
+                        if (n == args.length - 1) {
+                            DebugLog.log("expected argument after \"-servername\"");
+                            System.exit(0);
+                        } else if (args[n + 1].trim().isEmpty()) {
+                            DebugLog.log("empty argument given to \"-servername\"");
+                            System.exit(0);
                         } else {
-                            DebugLog.log("unknown option \"" + args[n] + "\"");
+                            serverName = args[n + 1].trim();
+                            n++;
                         }
+                    } else if (args[n].equals("-coop")) {
+                        ServerWorldDatabase.instance.doAdmin = false;
+                    } else if (args[n].startsWith("-seed=")) {
+                        try {
+                            seed = args[n].replace("-seed=", "");
+                            if (!seed.isEmpty()) {
+                                ServerOptions.instance.seed.setValue(seed);
+                            }
+                        } catch (IllegalArgumentException var47) {
+                        }
+                    } else if (args[n].equals("-no-worldgen")) {
+                        IsoChunk.doWorldgen = false;
+                    } else if (args[n].equals("-no-foraging")) {
+                        IsoChunk.doForaging = false;
+                    } else if (args[n].equals("-no-attachment")) {
+                        IsoChunk.doAttachments = false;
+                    } else {
+                        DebugLog.log("unknown option \"" + args[n] + "\"");
                     }
                 } else {
                     for (String t : args[n].replace("-disablelog=", "").split(",")) {
@@ -584,7 +589,7 @@ public class GameServer {
                         } else {
                             try {
                                 DebugLog.setLogEnabled(DebugType.valueOf(t), false);
-                            } catch (IllegalArgumentException var49) {
+                            } catch (IllegalArgumentException var48) {
                             }
                         }
                     }
@@ -592,7 +597,8 @@ public class GameServer {
             }
         }
 
-        DebugType.DetailedInfo.trace("server name is \"" + serverName + "\"");
+        DebugLog.printLogLevels();
+        DebugType.General.println("server name is \"" + serverName + "\"");
         String versionUnsupportedString = isWorldVersionUnsupported();
         if (versionUnsupportedString != null) {
             DebugLog.log(versionUnsupportedString);
@@ -750,9 +756,9 @@ public class GameServer {
                 DebugLog.log("If the server hangs here, set UPnP=false.");
                 PortMapper.startup();
                 if (PortMapper.discover()) {
-                    DebugType.DetailedInfo.trace("UPnP-enabled internet gateway found: " + PortMapper.getGatewayInfo());
+                    DebugType.DetailedInfo.println("UPnP-enabled internet gateway found: " + PortMapper.getGatewayInfo());
                     String extAddr = PortMapper.getExternalAddress();
-                    DebugType.DetailedInfo.trace("External IP address: " + extAddr);
+                    DebugType.DetailedInfo.println("External IP address: " + extAddr);
                     DebugLog.log("trying to setup port forwarding rules...");
                     int leaseTime = 86400;
                     boolean force = true;
@@ -819,6 +825,14 @@ public class GameServer {
 
             LuaEventManager.triggerEvent("OnGameTimeLoaded");
             PoolCaps.onLoadingFinished();
+            if (!worldExistedAtStartup && getWorldWipeTimestamp() <= 0L) {
+                setWorldWipeTimestamp(System.currentTimeMillis() / 1000L);
+            }
+
+            if (SteamUtils.isSteamModeEnabled()) {
+                SteamGameServer.SetKeyValue("lastWipe", String.valueOf(getWorldWipeTimestamp()));
+            }
+
             SGlobalObjects.initSystems();
             SoundManager.instance = new SoundManager();
             AmbientStreamManager.instance = new AmbientSoundManager();
@@ -839,7 +853,7 @@ public class GameServer {
             }
 
             if (SteamUtils.isSteamModeEnabled()) {
-                DebugType.DetailedInfo.trace("##########\nServer Steam ID " + SteamGameServer.GetSteamID() + "\n##########");
+                DebugType.DetailedInfo.println("##########\nServer Steam ID " + SteamGameServer.GetSteamID() + "\n##########");
             }
 
             // PLZ: the main-loop gate and what the rest of the engine believes the rate is, both
@@ -868,6 +882,7 @@ public class GameServer {
             }
 
             GlobalObject.refreshAnimSets(true);
+            UnitTests.runIfEnabled();
 
             while (!done) {
                 try {
@@ -1160,7 +1175,7 @@ public class GameServer {
                                 try {
                                     sendWorldMapPlayerPosition();
                                 } catch (Exception ex) {
-                                    boolean var133 = true;
+                                    boolean var134 = true;
                                 }
                             }
 
@@ -1243,6 +1258,7 @@ public class GameServer {
 
         SteamGameServer.SetKeyValue("mods", modsString);
         SteamGameServer.SetKeyValue("modCount", String.valueOf(totalMods));
+        SteamGameServer.SetKeyValue("lastWipe", String.valueOf(getWorldWipeTimestamp()));
         if (plzWorkshopSyncedAt > 0L) {
             SteamGameServer.SetKeyValue("plzws", String.valueOf(plzWorkshopSyncedAt));
         }
@@ -1477,7 +1493,6 @@ public class GameServer {
         CustomSandboxOptions.instance.initInstance(SandboxOptions.instance);
         ModRegistries.init();
         ScriptManager.instance.Load();
-        CustomizationManager.getInstance().load();
         ClothingDecals.init();
         BeardStyles.init();
         HairStyles.init();
@@ -1543,11 +1558,11 @@ public class GameServer {
         DebugLog.log(DebugType.Network, "*** SERVER STARTED ****");
         DebugLog.log(DebugType.Network, "*** Steam is " + (SteamUtils.isSteamModeEnabled() ? "enabled" : "not enabled"));
         if (SteamUtils.isSteamModeEnabled()) {
-            DebugType.DetailedInfo
-                .trace("Server is listening on port " + defaultPort + " (for Steam connection) and port " + udpPort + " (for UDPRakNet connection)");
-            DebugType.DetailedInfo.trace("Clients should use " + defaultPort + " port for connections");
+            DebugType.General
+                .println("Server is listening on port " + defaultPort + " (for Steam connection) and port " + udpPort + " (for UDPRakNet connection)");
+            DebugType.General.println("Clients should use " + defaultPort + " port for connections");
         } else {
-            DebugType.DetailedInfo.trace("server is listening on port " + defaultPort);
+            DebugType.General.println("server is listening on port " + defaultPort);
         }
 
         resetId = ServerOptions.instance.resetId.getValue();
@@ -1575,7 +1590,7 @@ public class GameServer {
         String discordChatChannel = ServerOptions.instance.discordChatChannel.getValue();
         String discordLogChannel = ServerOptions.instance.discordLogChannel.getValue();
         String discordCommandChannel = ServerOptions.instance.discordCommandChannel.getValue();
-        discordBot.connect(discordEnable, discordToken, discordChatChannel, discordLogChannel, discordCommandChannel);
+        discordBot.connect(serverName, discordEnable, discordToken, discordChatChannel, discordLogChannel, discordCommandChannel);
         EventManager.instance().registerCallback(discordBot);
         EventManager.instance().report("Server connected");
         String webhookAddress = ServerOptions.instance.webhookAddress.getValue();
@@ -1621,6 +1636,7 @@ public class GameServer {
                         DebugLog.log(DebugType.Network, "Error with packet of type: " + d.type + " connection is null.");
                     } else {
                         DebugType.General.error("Error with packet of type: " + d.type + " for " + connection.getConnectedGUID());
+                        DebugType.DetailedInfo.error("Error with packet of type: " + d.type + " for " + connection.getUserName());
                         AntiCheat.PacketException.act(connection, d.type.name() + ": exception occurred");
                     }
 
@@ -2653,6 +2669,16 @@ public class GameServer {
         }
     }
 
+    public static void addDelayToDelayedConnection(String username, float seconds) {
+        long millisToAdd = (long)(seconds * 1000.0F);
+        synchronized (MainLoopDelayedDisconnectQ) {
+            GameServer.DelayedConnection conn = MainLoopDelayedDisconnectQ.get(username);
+            if (conn != null) {
+                conn.timestamp += millisToAdd;
+            }
+        }
+    }
+
     public static boolean isDelayedDisconnect(UdpConnection con) {
         return con != null && con.getUserName() != null ? MainLoopDelayedDisconnectQ.containsKey(con.getUserName()) : false;
     }
@@ -2712,7 +2738,8 @@ public class GameServer {
             INetworkPacket.sendToAll(PacketType.PlayerTimeout, player);
             ServerLOS.instance.removePlayer(player);
             ZombiePopulationManager.instance.updateLoadedAreas();
-            DebugType.DetailedInfo.trace("Disconnected player \"" + player.getDisplayName() + "\" " + connection.getConnectedGUID());
+            DebugType.DetailedInfo
+                .println("Disconnected player \"" + player.getDisplayName() + "\" " + connection.getConnectedGUID() + " " + connection.getIDStr());
             LoggerManager.getLogger("user")
                 .write(connection.getIDStr() + " \"" + player.getUsername() + "\" disconnected player " + LoggerManager.getPlayerCoords(player));
             SteamGameServer.RemovePlayer(player);
@@ -2752,6 +2779,7 @@ public class GameServer {
             IDToAddressMap.put(playerID, connection.getConnectedGUID());
             connection.setPlayerDownloadServer(new PlayerDownloadServer(connection));
             DebugLog.log(DebugType.Network, "Connected new client " + connection.getConnectedGUID() + " ID # " + playerID);
+            DebugType.DetailedInfo.println("Connected new client " + connection.getUserName() + " ID # " + playerID);
             KahluaTable spawnRegions = SpawnPoints.instance.getSpawnRegions();
 
             for (int i = 1; i < spawnRegions.size() + 1; i++) {
@@ -2853,126 +2881,139 @@ public class GameServer {
 
     public static void receivePlayerConnect(ByteBufferReader bb, IConnection connection, String username) {
         ConnectionManager.log("receive-packet", "player-connect", connection);
-        int playerIndex = bb.getByte();
-        DebugType.DetailedInfo.trace("User: \"%s\" index=%d ip=%s is trying to connect", username, playerIndex, connection.getIP());
-        if (playerIndex >= 0 && playerIndex < 4 && connection.getPlayerAt(playerIndex) == null) {
-            byte range = (byte)Math.max(12, Math.min(20, bb.getByte()));
-            connection.setRelevantRange((byte)(range / 2 + 2));
-            IsoPlayer player;
-            if (coop && SteamUtils.isSteamModeEnabled()) {
-                player = ServerPlayerDB.getInstance().serverLoadNetworkCharacter(playerIndex, connection.getIDStr());
-            } else {
-                player = ServerPlayerDB.getInstance().serverLoadNetworkCharacter(playerIndex, connection.getUserName());
-            }
-
-            if (player == null) {
-                kick(connection, "UI_LoadPlayerProfileError", null);
-                connection.forceDisconnect("UI_LoadPlayerProfileError");
-            } else {
-                connection.getRelevantPos(playerIndex).x = player.getX();
-                connection.getRelevantPos(playerIndex).y = player.getY();
-                connection.getRelevantPos(playerIndex).z = player.getZ();
-                connection.setConnectArea(playerIndex, null);
-                connection.setChunkGridWidth(range);
-                connection.setLoadedCells(playerIndex, new ClientServerMap(playerIndex, PZMath.fastfloor(player.getX()), PZMath.fastfloor(player.getY()), range));
-                player.realx = player.getX();
-                player.realy = player.getY();
-                player.realz = (byte)player.getZi();
-                player.playerIndex = playerIndex;
-                player.onlineChunkGridWidth = range;
-                Players.add(player);
-                player.remote = true;
-                connection.setPlayerAt(playerIndex, player);
-                short o = connection.getPlayerId(playerIndex);
-                IDToPlayerMap.put(o, player);
-                PlayerToAddressMap.put(player, connection.getConnectedGUID());
-                UserNameToPlayerMap.put(username, o);
-                player.setOnlineID(o);
-                byte extraInfoFlags = bb.getByte();
-                player.setRole(connection.getRole());
-                player.setExtraInfoFlags(extraInfoFlags, true);
-                if (SteamUtils.isSteamModeEnabled()) {
-                    player.setSteamID(connection.getSteamId());
-                    SteamGameServer.BUpdateUserData(connection.getSteamId(), connection.getUserName(), 0);
+        if (SteamUtils.isSteamModeEnabled() && !coop && connection.getSteamId() <= 0L) {
+            LoggerManager.getLogger("user")
+                .write(
+                    "access denied: user \""
+                        + username
+                        + "\" reached player-connect without a validated Steam session (steam-id="
+                        + connection.getSteamId()
+                        + ")"
+                );
+            kick(connection, "AccessDenied", "no-steam-session");
+            connection.forceDisconnect("access-denied-no-steam-session");
+        } else {
+            int playerIndex = bb.getByte();
+            DebugType.DetailedInfo.println("User: \"%s\" index=%d ip=%s is trying to connect", username, playerIndex, connection.getIP());
+            if (playerIndex >= 0 && playerIndex < 4 && connection.getPlayerAt(playerIndex) == null) {
+                byte range = (byte)Math.max(12, Math.min(20, bb.getByte()));
+                connection.setRelevantRange((byte)(range / 2 + 2));
+                IsoPlayer player;
+                if (coop && SteamUtils.isSteamModeEnabled()) {
+                    player = ServerPlayerDB.getInstance().serverLoadNetworkCharacter(playerIndex, connection.getIDStr());
+                } else {
+                    player = ServerPlayerDB.getInstance().serverLoadNetworkCharacter(playerIndex, connection.getUserName());
                 }
 
-                player.username = username;
-                ChatServer.getInstance().initPlayer(player.onlineId);
-                connection.setFullyConnected();
-                sendWeather(connection);
-                SafetySystemManager.restoreSafety(player);
-                if (!connection.getRole().hasCapability(Capability.HideFromSteamUserList)) {
-                    SteamGameServer.AddPlayer(player);
-                }
-
-                // PLZ: sendPlayerExtraInfo ignores its connection argument and broadcasts to every
-                // connection, so calling it once per connection made a join N*N ExtraInfo packets.
-                boolean plzOneExtraInfo = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
-
-                for (int n = 0; n < udpEngine.connections.size(); n++) {
-                    UdpConnection c = udpEngine.connections.get(n);
-                    sendPlayerConnected(player, c);
-                    if (!plzOneExtraInfo) {
-                        sendPlayerExtraInfo(player, c, true);
+                if (player == null) {
+                    kick(connection, "UI_LoadPlayerProfileError", null);
+                    connection.forceDisconnect("UI_LoadPlayerProfileError");
+                } else {
+                    connection.getRelevantPos(playerIndex).x = player.getX();
+                    connection.getRelevantPos(playerIndex).y = player.getY();
+                    connection.getRelevantPos(playerIndex).z = player.getZ();
+                    connection.setConnectArea(playerIndex, null);
+                    connection.setChunkGridWidth(range);
+                    connection.setLoadedCells(playerIndex, new ClientServerMap(playerIndex, PZMath.fastfloor(player.getX()), PZMath.fastfloor(player.getY()), range));
+                    player.realx = player.getX();
+                    player.realy = player.getY();
+                    player.realz = (byte)player.getZi();
+                    player.playerIndex = playerIndex;
+                    player.onlineChunkGridWidth = range;
+                    Players.add(player);
+                    player.remote = true;
+                    connection.setPlayerAt(playerIndex, player);
+                    short o = connection.getPlayerId(playerIndex);
+                    IDToPlayerMap.put(o, player);
+                    PlayerToAddressMap.put(player, connection.getConnectedGUID());
+                    UserNameToPlayerMap.put(username, o);
+                    player.setOnlineID(o);
+                    byte extraInfoFlags = bb.getByte();
+                    player.setRole(connection.getRole());
+                    player.setExtraInfoFlags(extraInfoFlags, true);
+                    if (SteamUtils.isSteamModeEnabled()) {
+                        player.setSteamID(connection.getSteamId());
+                        SteamGameServer.BUpdateUserData(connection.getSteamId(), connection.getUserName(), 0);
                     }
-                }
 
-                if (plzOneExtraInfo) {
-                    zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
-                    sendPlayerExtraInfo(player, null, true);
-                }
+                    player.username = username;
+                    ChatServer.getInstance().initPlayer(player.onlineId);
+                    connection.setFullyConnected();
+                    sendWeather(connection);
+                    SafetySystemManager.restoreSafety(player);
+                    if (!connection.getRole().hasCapability(Capability.HideFromSteamUserList)) {
+                        SteamGameServer.AddPlayer(player);
+                    }
 
-                // PLZ: sendPlayerConnected already ran setCustomVariables for the same player and
-                // connection, so every synced variable reached the joiner twice.
-                boolean plzVariableSyncOnce = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
-                if (plzVariableSyncOnce) {
-                    zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
-                }
+                    // PLZ: sendPlayerExtraInfo ignores its connection argument and broadcasts to every
+                    // connection, so calling it once per connection made a join N*N ExtraInfo packets.
+                    boolean plzOneExtraInfo = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
 
-                for (IsoPlayer isoPlayer : IDToPlayerMap.values()) {
-                    if (isoPlayer.getOnlineID() != player.getOnlineID() && isoPlayer.isAlive()) {
-                        sendPlayerConnected(isoPlayer, connection);
-                        if (!plzVariableSyncOnce) {
-                            setCustomVariables(isoPlayer, connection);
+                    for (int n = 0; n < udpEngine.connections.size(); n++) {
+                        UdpConnection c = udpEngine.connections.get(n);
+                        sendPlayerConnected(player, c);
+                        if (!plzOneExtraInfo) {
+                            sendPlayerExtraInfo(player, c, true);
                         }
-
-                        isoPlayer.getNetworkCharacterAI().getState().sync(connection);
-                        INetworkPacket.send(connection, PacketType.PlayerInjuries, isoPlayer);
                     }
-                }
 
-                connection.getLoadedCell(playerIndex).setLoaded();
-                connection.getLoadedCell(playerIndex).sendPacket(connection);
-                preventIndoorZombies(PZMath.fastfloor(player.getX()), PZMath.fastfloor(player.getY()), PZMath.fastfloor(player.getZ()));
-                ServerLOS.instance.addPlayer(player);
-                WarManager.sendWarToPlayer(player);
-                Set<String> hiddenAuthorsSet = HiddenAuthors.getSetForUser(username);
-                if (hiddenAuthorsSet != null) {
-                    if (hiddenAuthorsSet.size() <= 127) {
-                        INetworkPacket.send(connection, PacketType.HiddenAuthors, true, hiddenAuthorsSet);
-                    } else {
-                        Set<String> chunk = new HashSet<>();
+                    if (plzOneExtraInfo) {
+                        zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_EXTRA_INFO_FANOUT);
+                        sendPlayerExtraInfo(player, null, true);
+                    }
 
-                        for (String s : hiddenAuthorsSet) {
-                            chunk.add(s);
-                            if (chunk.size() == 127) {
+                    // PLZ: sendPlayerConnected already ran setCustomVariables for the same player and
+                    // connection, so every synced variable reached the joiner twice.
+                    boolean plzVariableSyncOnce = zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
+                    if (plzVariableSyncOnce) {
+                        zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.CONNECT_VARIABLE_SYNC_ONCE);
+                    }
+
+                    for (IsoPlayer isoPlayer : IDToPlayerMap.values()) {
+                        if (isoPlayer.getOnlineID() != player.getOnlineID() && isoPlayer.isAlive()) {
+                            sendPlayerConnected(isoPlayer, connection);
+                            if (!plzVariableSyncOnce) {
+                                setCustomVariables(isoPlayer, connection);
+                            }
+
+                            isoPlayer.getNetworkCharacterAI().getState().sync(connection);
+                            INetworkPacket.send(connection, PacketType.PlayerInjuries, isoPlayer);
+                        }
+                    }
+
+                    connection.getLoadedCell(playerIndex).setLoaded();
+                    connection.getLoadedCell(playerIndex).sendPacket(connection);
+                    preventIndoorZombies(PZMath.fastfloor(player.getX()), PZMath.fastfloor(player.getY()), PZMath.fastfloor(player.getZ()));
+                    ServerLOS.instance.addPlayer(player);
+                    WarManager.sendWarToPlayer(player);
+                    Set<String> hiddenAuthorsSet = HiddenAuthors.getSetForUser(username);
+                    if (hiddenAuthorsSet != null) {
+                        if (hiddenAuthorsSet.size() <= 127) {
+                            INetworkPacket.send(connection, PacketType.HiddenAuthors, true, hiddenAuthorsSet);
+                        } else {
+                            Set<String> chunk = new HashSet<>();
+
+                            for (String s : hiddenAuthorsSet) {
+                                chunk.add(s);
+                                if (chunk.size() == 127) {
+                                    INetworkPacket.send(connection, PacketType.HiddenAuthors, true, chunk);
+                                    chunk.clear();
+                                }
+                            }
+
+                            if (!chunk.isEmpty()) {
                                 INetworkPacket.send(connection, PacketType.HiddenAuthors, true, chunk);
-                                chunk.clear();
                             }
                         }
-
-                        if (!chunk.isEmpty()) {
-                            INetworkPacket.send(connection, PacketType.HiddenAuthors, true, chunk);
-                        }
                     }
-                }
 
-                LoggerManager.getLogger("user")
-                    .write(connection.getIDStr() + " \"" + player.username + "\" fully connected " + LoggerManager.getPlayerCoords(player));
-                // PLZ: OnCreatePlayer is a client event, so the server has no join
-                // hook at all. Fired LAST, once the character, the online list and
-                // the connection are all true. See zombie.plz.PLZConnectWatch.
-                PLZConnectWatch.onConnect(playerIndex, player);
+                    LoggerManager.getLogger("user")
+                        .write(connection.getIDStr() + " \"" + player.username + "\" fully connected " + LoggerManager.getPlayerCoords(player));
+                    // PLZ: OnCreatePlayer is a client event, so the server has no join
+                    // hook at all. Fired LAST, once the character, the online list and
+                    // the connection are all true. See zombie.plz.PLZConnectWatch.
+                    PLZConnectWatch.onConnect(playerIndex, player);
+                }
             }
         }
     }
@@ -3713,101 +3754,82 @@ public class GameServer {
     }
 
     public static String changeRole(String adminName, UdpConnection adminConnection, String user, String newAccessLevelName) throws SQLException {
-        IsoPlayer pl = getPlayerByUserName(user);
-        if (!ServerWorldDatabase.instance.containsUser(user) && pl != null) {
-            UdpConnection c = getConnectionFromPlayer(pl);
-            if (c != null) {
-                String addUserResult = addUser(user, c.password);
-                if (!ServerWorldDatabase.instance.containsUser(user)) {
-                    return addUserResult;
-                }
-            }
-        }
-
-        if ((adminConnection == null || !adminConnection.isCoopHost) && !ServerWorldDatabase.instance.containsUser(user) && adminConnection != null) {
-            return "User \"" + user + "\" is not in the whitelist nor the server, use /adduser first";
-        }
-
         Role newRole = Roles.getRole(newAccessLevelName.trim());
-        if (adminConnection == null
+        if (newRole == null) {
+            String accessLevels = "";
+
+            for (Role role : Roles.getRoles()) {
+                if (!accessLevels.isEmpty()) {
+                    accessLevels = accessLevels + ", ";
+                }
+
+                accessLevels = accessLevels + role.getName();
+            }
+
+            return "Access Level '" + newAccessLevelName.trim() + "' unknown, list of access level: " + accessLevels;
+        } else if (adminConnection == null
+            || adminConnection.isCoopHost
             || !adminConnection.getRole().hasCapability(Capability.ChangeAccessLevel)
             || adminConnection.getRole().getPosition() >= ServerWorldDatabase.instance.getUserRoleNameByUsername(user).getPosition()
                 && adminConnection.getRole().getPosition() >= newRole.getPosition()) {
-            if (newRole == null) {
-                String accessLevels = "";
-
-                for (Role r : Roles.getRoles()) {
-                    if (!accessLevels.isEmpty()) {
-                        accessLevels = accessLevels + ", ";
-                    }
-
-                    accessLevels = accessLevels + r.getName();
+            IsoPlayer pl = getPlayerByUserName(user);
+            if (pl != null) {
+                if (pl.getNetworkCharacterAI() != null) {
+                    pl.getNetworkCharacterAI().setCheckAccessLevelDelay(2000L);
                 }
 
-                return "Access Level '" + newAccessLevelName.trim() + "' unknown, list of access level: " + accessLevels;
-            } else {
-                if (pl != null) {
-                    if (pl.getNetworkCharacterAI() != null) {
-                        pl.getNetworkCharacterAI().setCheckAccessLevelDelay(2000L);
+                UdpConnection connection1 = getConnectionFromPlayer(pl);
+                Role oldRole = pl.getRole();
+                if (oldRole != newRole) {
+                    if (newRole.hasCapability(Capability.AdminChat) && !oldRole.hasCapability(Capability.AdminChat)) {
+                        ChatServer.getInstance().joinAdminChat(pl.onlineId);
+                    } else if (!newRole.hasCapability(Capability.AdminChat) && oldRole.hasCapability(Capability.AdminChat)) {
+                        ChatServer.getInstance().leaveAdminChat(pl.onlineId);
                     }
-
-                    UdpConnection connection1 = getConnectionFromPlayer(pl);
-                    Role oldRole = null;
-                    if (connection1 != null) {
-                        oldRole = connection1.getRole();
-                    }
-
-                    if (oldRole != newRole) {
-                        if (newRole.hasCapability(Capability.AdminChat) && !oldRole.hasCapability(Capability.AdminChat)) {
-                            ChatServer.getInstance().joinAdminChat(pl.onlineId);
-                        } else if (!newRole.hasCapability(Capability.AdminChat) && oldRole.hasCapability(Capability.AdminChat)) {
-                            ChatServer.getInstance().leaveAdminChat(pl.onlineId);
-                        }
-                    }
-
-                    if (!newRole.hasCapability(Capability.ToggleInvisibleHimself) && oldRole.hasCapability(Capability.ToggleInvisibleHimself)) {
-                        pl.setGhostMode(false);
-                    }
-
-                    if (!newRole.hasCapability(Capability.ToggleNoclipHimself) && oldRole.hasCapability(Capability.ToggleNoclipHimself)) {
-                        pl.setNoClip(false);
-                    }
-
-                    if (!newRole.hasCapability(Capability.ToggleGodModHimself) && oldRole.hasCapability(Capability.ToggleGodModHimself)) {
-                        pl.setGodMod(false);
-                    }
-
-                    pl.setRole(newRole);
-                    if (connection1 != null) {
-                        connection1.setRole(newRole);
-                    }
-
-                    if (!newRole.hasCapability(Capability.HideFromSteamUserList) && oldRole.hasCapability(Capability.HideFromSteamUserList)) {
-                        SteamGameServer.AddPlayer(pl);
-                    }
-
-                    if (newRole.hasCapability(Capability.HideFromSteamUserList) && !oldRole.hasCapability(Capability.HideFromSteamUserList)) {
-                        SteamGameServer.RemovePlayer(pl);
-                    }
-
-                    if (newRole.hasCapability(Capability.ToggleInvisibleHimself) && !oldRole.hasCapability(Capability.ToggleInvisibleHimself)) {
-                        pl.setGhostMode(true);
-                    }
-
-                    if (newRole.hasCapability(Capability.ToggleNoclipHimself) && !oldRole.hasCapability(Capability.ToggleNoclipHimself)) {
-                        pl.setNoClip(true);
-                    }
-
-                    if (newRole.hasCapability(Capability.ToggleGodModHimself) && !oldRole.hasCapability(Capability.ToggleGodModHimself)) {
-                        pl.setGodMod(true);
-                    }
-
-                    sendPlayerExtraInfo(pl, null);
                 }
 
-                LoggerManager.getLogger("admin").write(adminName + " granted " + newRole.getName() + " access level on " + user);
-                return ServerWorldDatabase.instance.setRole(user, newRole);
+                if (!newRole.hasCapability(Capability.ToggleInvisibleHimself) && oldRole.hasCapability(Capability.ToggleInvisibleHimself)) {
+                    pl.setGhostMode(false);
+                }
+
+                if (!newRole.hasCapability(Capability.ToggleNoclipHimself) && oldRole.hasCapability(Capability.ToggleNoclipHimself)) {
+                    pl.setNoClip(false);
+                }
+
+                if (!newRole.hasCapability(Capability.ToggleGodModHimself) && oldRole.hasCapability(Capability.ToggleGodModHimself)) {
+                    pl.setGodMod(false);
+                }
+
+                pl.setRole(newRole);
+                if (connection1 != null) {
+                    connection1.setRole(newRole);
+                }
+
+                if (!newRole.hasCapability(Capability.HideFromSteamUserList) && oldRole.hasCapability(Capability.HideFromSteamUserList)) {
+                    SteamGameServer.AddPlayer(pl);
+                }
+
+                if (newRole.hasCapability(Capability.HideFromSteamUserList) && !oldRole.hasCapability(Capability.HideFromSteamUserList)) {
+                    SteamGameServer.RemovePlayer(pl);
+                }
+
+                if (newRole.hasCapability(Capability.ToggleInvisibleHimself) && !oldRole.hasCapability(Capability.ToggleInvisibleHimself)) {
+                    pl.setGhostMode(true);
+                }
+
+                if (newRole.hasCapability(Capability.ToggleNoclipHimself) && !oldRole.hasCapability(Capability.ToggleNoclipHimself)) {
+                    pl.setNoClip(true);
+                }
+
+                if (newRole.hasCapability(Capability.ToggleGodModHimself) && !oldRole.hasCapability(Capability.ToggleGodModHimself)) {
+                    pl.setGodMod(true);
+                }
+
+                sendPlayerExtraInfo(pl, null);
             }
+
+            LoggerManager.getLogger("admin").write(adminName + " granted " + newRole.getName() + " access level on " + user);
+            return ServerWorldDatabase.instance.setRole(user, newRole);
         } else {
             return "You do not have sufficient rights to set this access level.";
         }
@@ -4184,10 +4206,27 @@ public class GameServer {
         IsoRegions.receiveClientRequestFullDataChunks(bb, connection);
     }
 
+    public static long getWorldWipeTimestamp() {
+        GameTime gt = GameTime.getInstance();
+        if (gt == null) {
+            return 0L;
+        } else {
+            return gt.getModData().rawget("lastWipe") instanceof Double doubleValue ? doubleValue.longValue() : 0L;
+        }
+    }
+
+    private static void setWorldWipeTimestamp(long epochSeconds) {
+        GameTime gt = GameTime.getInstance();
+        if (gt != null) {
+            gt.getModData().rawset("lastWipe", (double)epochSeconds);
+        }
+    }
+
     private static String isWorldVersionUnsupported() {
         File inFile = new File(
             ZomboidFileSystem.instance.getSaveDir() + File.separator + "Multiplayer" + File.separator + serverName + File.separator + "map_t.bin"
         );
+        worldExistedAtStartup = inFile.exists();
         if (inFile.exists()) {
             DebugLog.log("checking server WorldVersion in map_t.bin");
 

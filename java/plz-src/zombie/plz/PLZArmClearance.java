@@ -4,7 +4,8 @@ import org.lwjgl.util.vector.Matrix4f;
 
 /** Render-only: turns each arm at the shoulder so a widened hip, thigh or belly keeps the skin gap the clip authored. */
 public final class PLZArmClearance {
-    public static final float MAX_GAP = 0.04F;
+    public static final float CLEAR = 0.012F;
+    public static final float MAX_GROWTH = 2.0F;
     public static final float SLOPE = 0.6F;
     public static final float MAX_ANGLE = 0.5F;
     public static final int ITERATIONS = 4;
@@ -353,7 +354,8 @@ public final class PLZArmClearance {
         final float[] cD = new float[3];
         final float[] shoulder = new float[3];
         final float[] p = new float[3];
-        final float[] u = new float[3];
+        final float[] u = new float[4];
+        final float[] extentD = new float[POINTS];
         final float[] axis = new float[3];
         final float[] r = new float[9];
         final float[] step = new float[9];
@@ -455,7 +457,8 @@ public final class PLZArmClearance {
         for (int i = 0; i < POINTS; i++) {
             st.radiusD[i] = l.armRadius[POINT_RADIUS[i]] * girth(st.drawnAxes, l.arm[s][POINT_RADIUS[i]]);
             float g = gap(st.ptsD[i], fleshD, st.cD, st.upD, st.u);
-            near |= g - st.radiusD[i] < MAX_GAP;
+            st.extentD[i] = st.u[3];
+            near |= g - st.radiusD[i] < CLEAR * MAX_GROWTH;
         }
         if (!near) {
             return 0.0F;
@@ -482,7 +485,8 @@ public final class PLZArmClearance {
                 st.allowed[i] = Float.NEGATIVE_INFINITY;
                 continue;
             }
-            st.allowed[i] = Math.min(gV - rV, MAX_GAP) + st.radiusD[i];
+            float growth = st.u[3] > 1.0E-4F ? Math.max(1.0F, Math.min(MAX_GROWTH, st.extentD[i] / st.u[3])) : 1.0F;
+            st.allowed[i] = Math.min(gV - rV, CLEAR * growth) + st.radiusD[i];
             any = true;
         }
         if (!any) {
@@ -630,6 +634,9 @@ public final class PLZArmClearance {
             if (e > extent) {
                 extent = e;
             }
+        }
+        if (outDir.length > 3) {
+            outDir[3] = extent;
         }
         return n - extent;
     }

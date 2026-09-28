@@ -76,6 +76,7 @@ import zombie.iso.IsoMovingObject;
 import zombie.iso.IsoObject;
 import zombie.iso.IsoPuddles;
 import zombie.iso.IsoPuddlesGeometry;
+import zombie.iso.IsoTreeJumbo;
 import zombie.iso.IsoUtils;
 import zombie.iso.IsoWater;
 import zombie.iso.IsoWaterGeometry;
@@ -90,6 +91,7 @@ import zombie.iso.SpriteDetails.IsoFlagType;
 import zombie.iso.SpriteDetails.IsoObjectType;
 import zombie.iso.areas.IsoBuilding;
 import zombie.iso.areas.IsoRoom;
+import zombie.iso.objects.GridSquareEdgeFacingDirection;
 import zombie.iso.objects.IsoBarbecue;
 import zombie.iso.objects.IsoBarricade;
 import zombie.iso.objects.IsoCarBatteryCharger;
@@ -995,7 +997,7 @@ public final class FBORenderCell {
 
         ArrayList<IsoGridSquare> squares = renderLevels.treeSquares;
         boolean bChanged = false;
-        boolean plzAiming = IsoPlayer.getPlayer(IsoCamera.frameState.playerIndex).isAnyAimKeyDown();
+        boolean plzAiming = plzTreeAiming(IsoCamera.frameState.playerIndex);
 
         for (int i = 0; i < squares.size(); i++) {
             IsoGridSquare square = squares.get(i);
@@ -2162,8 +2164,19 @@ public final class FBORenderCell {
 
     public boolean isTreeRenderedEveryFrame(IsoObject object) {
         return PLZPerf.TREES_IN_CHUNK_TEXTURE && !this.plzTreesPerFrameNow
-            ? object instanceof IsoTree && !plzTreeTextureReady(object)
+            ? object instanceof IsoTree && (!plzTreeTextureReady(object) || plzHasJumboCutaway(object))
             : object instanceof IsoTree;
+    }
+
+    // 42.21 fades an XXL canopy per frame inside IsoTree.render; a crown baked into the chunk texture cannot fade.
+    private static boolean plzHasJumboCutaway(IsoObject object) {
+        IsoSprite sprite = object.getSprite();
+        return sprite != null && sprite.name != null && sprite.name.contains("XL") && IsoTreeJumbo.Jumbos.containsKey(sprite.name);
+    }
+
+    private static boolean plzTreeAiming(int playerIndex) {
+        IsoPlayer player = IsoPlayer.getPlayer(playerIndex);
+        return player.isAnyAimKeyDown() || player.getVehicle() != null;
     }
 
     private boolean plzTreePassActive() {
@@ -2443,7 +2456,7 @@ public final class FBORenderCell {
             this.camX = PZMath.fastfloor(IsoCamera.frameState.camCharacterX);
             this.camY = PZMath.fastfloor(IsoCamera.frameState.camCharacterY);
             this.tileScale = Core.tileScale;
-            this.aiming = IsoPlayer.getPlayer(playerIndex).isAnyAimKeyDown();
+            this.aiming = plzTreeAiming(playerIndex);
             this.drawer = null;
             Arrays.fill(this.exports, 0);
 
@@ -2567,7 +2580,7 @@ public final class FBORenderCell {
         }
 
         int playerIndex = IsoCamera.frameState.playerIndex;
-        boolean isAiming = IsoPlayer.getPlayer(playerIndex).isAnyAimKeyDown();
+        boolean isAiming = plzTreeAiming(playerIndex);
         return this.plzIsTranslucentTree(object, isAiming);
     }
 
@@ -5302,7 +5315,8 @@ public final class FBORenderCell {
             IsoSprite sprite = object.getSprite();
             if (sprite.getProperties().has(IsoFlagType.WallW) && PZMath.coordmodulo(square.y, 8) == 7) {
                 IsoGridSquare s = square.getAdjacentSquare(IsoDirections.S);
-                if (s != null && ((s.getWallType() & 4) != 0 || s.getWindowFrame(false) != null || s.has(IsoFlagType.DoorWallW))) {
+                if (s != null
+                    && ((s.getWallType() & 4) != 0 || s.getWindowFrame(GridSquareEdgeFacingDirection.EAST_WEST) != null || s.has(IsoFlagType.DoorWallW))) {
                     sprite.renderWallSliceW(
                         object,
                         x,
@@ -5320,7 +5334,8 @@ public final class FBORenderCell {
 
             if (sprite.getProperties().has(IsoFlagType.WallN) && PZMath.coordmodulo(square.x, 8) == 7) {
                 IsoGridSquare e = square.getAdjacentSquare(IsoDirections.E);
-                if (e != null && ((e.getWallType() & 1) != 0 || e.getWindowFrame(true) != null || e.has(IsoFlagType.DoorWallN))) {
+                if (e != null
+                    && ((e.getWallType() & 1) != 0 || e.getWindowFrame(GridSquareEdgeFacingDirection.NORTH_SOUTH) != null || e.has(IsoFlagType.DoorWallN))) {
                     sprite.renderWallSliceN(
                         object,
                         x,
@@ -5349,7 +5364,7 @@ public final class FBORenderCell {
                 && (sprite.tilesetName == null || !sprite.tilesetName.equals("walls_logs"))) {
                 if (sprite.getProperties().has(IsoFlagType.WallNW) && texdModifier == WallShaperW.instance && PZMath.coordmodulo(square.y, 8) == 7) {
                     IsoGridSquare s = square.getAdjacentSquare(IsoDirections.S);
-                    if (s != null && ((s.getWallType() & 4) != 0 || s.getWindowFrame(false) != null || s.has(IsoFlagType.DoorWallW))) {
+                    if (s != null && ((s.getWallType() & 4) != 0 || s.getWindowFrame(GridSquareEdgeFacingDirection.EAST_WEST) != null || s.has(IsoFlagType.DoorWallW))) {
                         IsoSprite.seamFix2 = Tiles.WallSouth;
                         object.sx = 0.0F;
                         sprite.render(
@@ -5371,7 +5386,7 @@ public final class FBORenderCell {
 
                 if (sprite.getProperties().has(IsoFlagType.WallNW) && texdModifier == WallShaperN.instance && PZMath.coordmodulo(square.x, 8) == 7) {
                     IsoGridSquare e = square.getAdjacentSquare(IsoDirections.E);
-                    if (e != null && ((e.getWallType() & 1) != 0 || e.getWindowFrame(true) != null || e.has(IsoFlagType.DoorWallN))) {
+                    if (e != null && ((e.getWallType() & 1) != 0 || e.getWindowFrame(GridSquareEdgeFacingDirection.NORTH_SOUTH) != null || e.has(IsoFlagType.DoorWallN))) {
                         IsoSprite.seamFix2 = Tiles.WallEast;
                         object.sx = 0.0F;
                         sprite.render(
@@ -5393,7 +5408,7 @@ public final class FBORenderCell {
 
                 if ((sprite.getProperties().has(IsoFlagType.WallW) || sprite.getProperties().has(IsoFlagType.WindowW)) && PZMath.coordmodulo(square.y, 8) == 7) {
                     IsoGridSquare s = square.getAdjacentSquare(IsoDirections.S);
-                    if (s != null && ((s.getWallType() & 4) != 0 || s.getWindowFrame(false) != null || s.has(IsoFlagType.DoorWallW))) {
+                    if (s != null && ((s.getWallType() & 4) != 0 || s.getWindowFrame(GridSquareEdgeFacingDirection.EAST_WEST) != null || s.has(IsoFlagType.DoorWallW))) {
                         IsoSprite.seamFix2 = Tiles.WallSouth;
                         object.sx = 0.0F;
                         sprite.render(
@@ -5415,7 +5430,7 @@ public final class FBORenderCell {
 
                 if ((sprite.getProperties().has(IsoFlagType.WallN) || sprite.getProperties().has(IsoFlagType.WindowN)) && PZMath.coordmodulo(square.x, 8) == 7) {
                     IsoGridSquare e = square.getAdjacentSquare(IsoDirections.E);
-                    if (e != null && ((e.getWallType() & 1) != 0 || e.getWindowFrame(true) != null || e.has(IsoFlagType.DoorWallN))) {
+                    if (e != null && ((e.getWallType() & 1) != 0 || e.getWindowFrame(GridSquareEdgeFacingDirection.NORTH_SOUTH) != null || e.has(IsoFlagType.DoorWallN))) {
                         IsoSprite.seamFix2 = Tiles.WallEast;
                         object.sx = 0.0F;
                         sprite.render(

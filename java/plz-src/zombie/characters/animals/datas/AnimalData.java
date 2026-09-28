@@ -180,13 +180,13 @@ public class AnimalData {
     private void checkPregnancy() {
         if (this.pregnant && this.pregnantTime > 0) {
             if (this.parent.stressLevel > 80.0F && Rand.NextBool(50)) {
-                DebugType.DetailedInfo.trace("Animal " + this.parent.getFullName() + " lose baby due to stress");
+                DebugType.General.trace("Animal " + this.parent.getFullName() + " lose baby due to stress");
                 this.pregnant = false;
                 this.pregnantTime = 0;
             }
 
             if (this.pregnantTime >= this.getPregnantPeriod()) {
-                DebugType.DetailedInfo.trace("Pregnancy done for " + this.parent.getFullName());
+                DebugType.General.trace("Pregnancy done for " + this.parent.getFullName());
                 this.pregnant = false;
                 this.pregnantTime = 0;
                 int babyNbr = Rand.Next(this.parent.adef.minBaby, this.parent.adef.maxBaby + 1);
@@ -1413,7 +1413,7 @@ public class AnimalData {
         // same creature; ModData was simply left off that list, so a calf that became a cow
         // stopped belonging to anybody. See PLZAnimalOwner.carryOver.
         PLZAnimalOwner.carryOver(this.parent, newAnimal);
-        if (!this.parent.checkForChickenpocalypse() && !this.parent.checkForWater()) {
+        if (!this.parent.checkForChickenpocalypse(newAnimal) && !this.parent.checkForWater()) {
             float sizeDelta = (this.size - this.getMinSize()) / (this.getMaxSize() - this.getMinSize());
             if (sizeDelta > 0.7) {
                 sizeDelta -= 0.7F;
