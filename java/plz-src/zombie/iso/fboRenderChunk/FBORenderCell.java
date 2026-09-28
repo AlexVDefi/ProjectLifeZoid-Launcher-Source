@@ -11,6 +11,7 @@ import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import org.joml.Vector2f;
+import zombie.plz.PLZAnimalForm;
 import zombie.plz.PLZChunkRate;
 import zombie.plz.PLZPerf;
 import zombie.plz.PLZBakeScheduler;
@@ -4621,7 +4622,7 @@ public final class FBORenderCell {
                 IsoGameCharacter chr = Type.tryCastTo(isoMovingObject, IsoGameCharacter.class);
                 if (chr != null && chr.getCurrentSquare() != null && chr.getCurrentSquare().HasStairs() && chr.isRagdoll()) {
                     boolean vehicle = true;
-                } else if (chr != null) {
+                } else if (chr != null && !PLZAnimalForm.renderShadow(chr, isoMovingObject.getX(), isoMovingObject.getY(), isoMovingObject.getZ())) {
                     chr.renderShadow(isoMovingObject.getX(), isoMovingObject.getY(), isoMovingObject.getZ());
                 }
 

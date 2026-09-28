@@ -22,6 +22,7 @@ import zombie.debug.DebugOptions;
 import zombie.debug.DebugType;
 import zombie.iso.Vector2;
 import zombie.iso.Vector3;
+import zombie.plz.PLZAnimalForm;
 import zombie.plz.PLZGrappleEdit;
 import zombie.util.IPooledObject;
 import zombie.util.Pool;
@@ -202,6 +203,10 @@ public final class AnimLayer extends PooledObject implements IAnimListener {
                 )
              {
                 this.parentAnimator.incrementWhileAliveFlag(evtSetFlag.variableReference, evtSetFlag.flagValue);
+            }
+
+            if (PLZAnimalForm.silences(this.character, animEvent.eventName)) {
+                return;
             }
 
             this.parentAnimator.OnAnimEvent(this, track, animEvent);

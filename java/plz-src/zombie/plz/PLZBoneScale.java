@@ -747,6 +747,7 @@ public final class PLZBoneScale {
                 return false;
             }
             animated.getAnimationPlayer().plzSetPreviewKey(key);
+            animated.getAnimationPlayer().plzSetPreviewFemale(animated.isFemale());
             return true;
         } catch (ReflectiveOperationException | RuntimeException e) {
             return false;

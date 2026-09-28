@@ -10897,6 +10897,9 @@ public abstract class IsoGameCharacter
 
     @Override
     public float getAnimationTimeDelta() {
+        if (zombie.plz.PLZGrappleIK.frozen(this)) { // PLZ
+            return 0.0F;
+        }
         return GameTime.instance.getTimeDelta() * this.animationTimeScale;
     }
 

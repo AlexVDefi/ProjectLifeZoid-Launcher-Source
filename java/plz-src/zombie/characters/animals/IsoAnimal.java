@@ -1031,7 +1031,9 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
    }
 
    public void spotted(IsoMovingObject other, boolean bForced, float dist) {
-      this.behavior.spotted(other, bForced, dist);
+      if (!zombie.plz.PLZAnimalForm.isMorphed(other)) {
+         this.behavior.spotted(other, bForced, dist);
+      }
    }
 
    public void drawRope(IsoGameCharacter chr) {
@@ -3942,7 +3944,8 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
                      if (!(movingCharacter instanceof IsoAnimal)
                         && movingCharacter instanceof IsoPlayer player
                         && !movingCharacter.isInvisible()
-                        && !player.isGhostMode()) {
+                        && !player.isGhostMode()
+                        && !zombie.plz.PLZAnimalForm.isMorphed(player)) {
                         this.getBehavior().spotted(movingCharacter, false, distanceToMovingObject);
                      }
                   }

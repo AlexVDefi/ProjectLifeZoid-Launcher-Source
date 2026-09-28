@@ -7953,6 +7953,30 @@ public final class IsoGridSquare {
         }
     }
 
+    public static void plzAnimalFormMark(IsoAnimal animal) {
+        zombie.plz.PLZAnimalForm.mark(animal);
+    }
+
+    public static void plzAnimalFormRelease(IsoAnimal animal) {
+        zombie.plz.PLZAnimalForm.release(animal);
+    }
+
+    public static boolean plzAnimalFormIsStandIn(Object object) {
+        return zombie.plz.PLZAnimalForm.isStandIn(object);
+    }
+
+    public static void plzAnimalFormBindStride(IsoGameCharacter mover, IsoAnimal animal) {
+        zombie.plz.PLZAnimalForm.bindStride(mover, animal);
+    }
+
+    public static void plzAnimalFormUnbindStride(IsoGameCharacter mover) {
+        zombie.plz.PLZAnimalForm.unbindStride(mover);
+    }
+
+    public static void plzAnimalFormSetMorphed(String username, boolean morphed) {
+        zombie.plz.PLZAnimalForm.setMorphed(username, morphed);
+    }
+
     public static void plzBarrierBeginUpdate() {
         PLZBarrierGrid.beginUpdate();
     }

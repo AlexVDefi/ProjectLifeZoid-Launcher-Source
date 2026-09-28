@@ -1,13 +1,19 @@
 package zombie.characters;
 
+import org.lwjgl.util.vector.Matrix4f;
 import zombie.UsedFromLua;
+import zombie.core.skinnedmodel.animation.AnimationPlayer;
+import zombie.core.skinnedmodel.model.Model;
+import zombie.iso.Vector3;
 import zombie.characters.component.CharacterInputComponent;
 import zombie.characters.ecs.ECSEntity;
 import zombie.core.raknet.VoiceManager;
 import zombie.iso.Vector2;
 import zombie.plz.PLZVoice;
+import zombie.plz.PLZArmClearance;
 import zombie.plz.PLZBoneScale;
 import zombie.plz.PLZGrappleEdit;
+import zombie.plz.PLZGrappleIK;
 import zombie.util.lambda.PZOptional;
 
 public interface CharacterInputComponentEntity extends ECSEntity {
@@ -447,6 +453,88 @@ public interface CharacterInputComponentEntity extends ECSEntity {
 
     default boolean plzBoneScaleBindPreview(Object ui3dModel, String key) {
         return PLZBoneScale.bindPreview(ui3dModel, key);
+    }
+
+    default void plzGrappleIkSetEnabled(boolean on) {
+        PLZGrappleIK.setEnabled(on);
+    }
+
+    default boolean plzGrappleIkIsEnabled() {
+        return PLZGrappleIK.isEnabled();
+    }
+
+    default void plzGrappleIkNode(String node, boolean holder, boolean held, float near, float far) {
+        PLZGrappleIK.setNode(node, holder, held, near, far);
+    }
+
+    default void plzGrappleIkClearNodes() {
+        PLZGrappleIK.clearNodes();
+    }
+
+    default void plzGrappleIkFreeze(float fraction) {
+        PLZGrappleIK.setFreezeAt(fraction);
+    }
+
+    /** Last pass on this character: side 0 left, 1 right; field per PLZGrappleIK.INFO_*. */
+    default float plzGrappleIkInfo(int side, int field) {
+        return this instanceof IsoGameCharacter character && character.getAnimationPlayer() != null
+            ? character.getAnimationPlayer().plzIkPose().info(side, field)
+            : 0.0F;
+    }
+
+    default String plzGrappleIkAnchor(int side) {
+        return this instanceof IsoGameCharacter character && character.getAnimationPlayer() != null
+            ? character.getAnimationPlayer().plzIkPose().anchor(side)
+            : null;
+    }
+
+    default void plzArmClearanceSetEnabled(boolean on) {
+        PLZArmClearance.setEnabled(on);
+    }
+
+    default boolean plzArmClearanceIsEnabled() {
+        return PLZArmClearance.isEnabled();
+    }
+
+    default String plzArmClearanceStatus() {
+        return this instanceof IsoGameCharacter character && character.getAnimationPlayer() != null
+            ? character.getAnimationPlayer().plzArmState().status()
+            : "no animation player";
+    }
+
+    /** Radians the arm was last turned out at the shoulder; side 0 left, 1 right. */
+    default float plzArmClearanceAngle(int side) {
+        return this instanceof IsoGameCharacter character && character.getAnimationPlayer() != null
+            ? character.getAnimationPlayer().plzArmState().angle(side)
+            : 0.0F;
+    }
+
+    /** World position of a bone on axis 0/1/2; drawn = the PLZ-resized pose, otherwise the vanilla animated one. NaN if unknown. */
+    default float plzBoneWorld(String boneName, int axis, boolean drawn) {
+        if (!(this instanceof IsoGameCharacter character)) {
+            return Float.NaN;
+        }
+
+        AnimationPlayer player = character.getAnimationPlayer();
+        if (player == null || !player.isReady()) {
+            return Float.NaN;
+        }
+
+        int boneIdx = player.getSkinningBoneIndex(boneName, -1);
+        if (boneIdx < 0) {
+            return Float.NaN;
+        }
+
+        Vector3 pos = new Vector3();
+        if (drawn) {
+            Model.boneToWorldCoords(character, boneIdx, pos);
+        } else {
+            Matrix4f model = player.getBoneModelTransform(boneIdx, new Matrix4f());
+            pos.set(model.m03, model.m13, model.m23);
+            Model.vectorToWorldCoords(character, pos);
+        }
+
+        return axis == 0 ? pos.x : (axis == 1 ? pos.y : pos.z);
     }
 
     /** Also the patch probe: an unpatched client throws here rather than answering. */

@@ -31,7 +31,10 @@ import zombie.debug.DebugOptions;
 import zombie.debug.DebugType;
 import zombie.iso.Vector2;
 import zombie.iso.Vector3;
+import zombie.plz.PLZAnimalForm;
+import zombie.plz.PLZArmClearance;
 import zombie.plz.PLZBoneScale;
+import zombie.plz.PLZGrappleIK;
 import zombie.util.IPooledObject;
 import zombie.util.Lambda;
 import zombie.util.Pool;
@@ -307,6 +310,7 @@ public final class AnimationPlayer extends PooledObject {
         this.ragdollAnimationWeight = 0.0F;
         this.character = null;
         this.plzPreviewKey = null;
+        this.plzPreviewFemale = false;
         this.plzRigUser = null;
         this.plzRigVersion = -1;
         this.plzRig = null;
@@ -1547,7 +1551,48 @@ public final class AnimationPlayer extends PooledObject {
             this.boneTransforms[boneIdx].getMatrix(this.plzLocal[boneIdx]);
         }
 
+        boolean clear = PLZArmClearance.wants(rig) && this.plzArmBind(count);
+        if (clear) {
+            this.plzArmState.captureVanilla(this.modelTransforms);
+        }
+
         PLZBoneScale.compose(this.plzLayout, rig, this.plzLocal, this.modelTransforms);
+        if (clear) {
+            PLZArmClearance.apply(this.plzArmState, this.modelTransforms);
+        }
+    }
+
+    private boolean plzPreviewFemale;
+    private PLZArmClearance.Layout plzArmLayout;
+    private final PLZArmClearance.State plzArmState = new PLZArmClearance.State();
+
+    public void plzSetPreviewFemale(boolean female) {
+        this.plzPreviewFemale = female;
+    }
+
+    public PLZArmClearance.State plzArmState() {
+        return this.plzArmState;
+    }
+
+    private boolean plzArmBind(int count) {
+        boolean female = this.character != null ? this.character.isFemale() : this.plzPreviewFemale;
+        if (this.plzArmLayout == null || !this.plzArmLayout.isFor(this.skinningData, count, female)) {
+            String[] names = new String[count];
+            int[] parents = new int[count];
+            boolean hasOffsets = this.skinningData.boneOffset != null && this.skinningData.boneOffset.size() >= count;
+            Matrix4f[] offsets = hasOffsets ? new Matrix4f[count] : null;
+            for (int boneIdx = 0; boneIdx < count; boneIdx++) {
+                SkinningBone bone = this.skinningData.getBoneAt(boneIdx);
+                names[boneIdx] = bone == null ? null : bone.name;
+                parents[boneIdx] = bone == null || bone.parent == null ? -1 : bone.parent.index;
+                if (hasOffsets) {
+                    offsets[boneIdx] = this.skinningData.boneOffset.get(boneIdx);
+                }
+            }
+            this.plzArmLayout = new PLZArmClearance.Layout(this.skinningData, names, parents, offsets, female);
+            this.plzArmState.bind(this.plzArmLayout);
+        }
+        return this.plzArmLayout.ok();
     }
 
     private void updateModelTransformsInternal() {
@@ -1559,7 +1604,69 @@ public final class AnimationPlayer extends PooledObject {
             BoneTransform.mul(this.boneTransforms[bone.index], this.modelTransforms[parentBone.index], this.modelTransforms[bone.index]);
         }
 
+        boolean ik = PLZGrappleIK.wants(this.character) && this.plzIkBind(); // PLZ
+        if (ik) {
+            this.plzIkPose.captureVanilla(this.modelTransforms);
+        }
+
         this.plzApplyBoneScale(); // PLZ
+        if (ik) {
+            this.plzApplyGrappleIK();
+        }
+    }
+
+    // PLZ: grapple contact IK, render-only like the resize it corrects.
+    private PLZGrappleIK.Rig plzIkRig;
+    private final PLZGrappleIK.Pose plzIkPose = new PLZGrappleIK.Pose();
+
+    public PLZGrappleIK.Pose plzIkPose() {
+        return this.plzIkPose;
+    }
+
+    private boolean plzIkBind() {
+        if (this.skinningData == null || this.modelTransforms == null) {
+            return false;
+        }
+
+        int count = this.modelTransforms.length;
+        if (this.plzIkRig == null || !this.plzIkRig.isFor(this.skinningData, count)) {
+            String[] names = new String[count];
+            int[] parents = new int[count];
+            for (int boneIdx = 0; boneIdx < count; boneIdx++) {
+                SkinningBone bone = this.skinningData.getBoneAt(boneIdx);
+                names[boneIdx] = bone == null ? null : bone.name;
+                parents[boneIdx] = bone == null || bone.parent == null ? -1 : bone.parent.index;
+            }
+            this.plzIkRig = new PLZGrappleIK.Rig(this.skinningData, names, parents);
+        }
+
+        this.plzIkPose.bind(this.plzIkRig);
+        return true;
+    }
+
+    private void plzApplyGrappleIK() {
+        IsoGameCharacter chr = (IsoGameCharacter)this.character;
+        long now = System.currentTimeMillis();
+        this.plzIkPose.captureDrawn(this.modelTransforms, chr.getX(), chr.getY(), chr.getZ(), this.getRenderedAngle(), now);
+
+        IsoGameCharacter partner = PLZGrappleIK.partnerOf(chr);
+        AnimationPlayer other = partner == null ? null : partner.getAnimationPlayer();
+        if (other == null || other == this) {
+            return;
+        }
+
+        PLZGrappleIK.Pose otherPose = other.plzIkPose;
+        if (!otherPose.fresh(now)) {
+            return;
+        }
+
+        boolean holder = chr.isGrappling();
+        float[] cfg = PLZGrappleIK.nodeConfig(chr.getSharedGrappleAnimNode());
+        if (cfg[holder ? PLZGrappleIK.CFG_HOLDER : PLZGrappleIK.CFG_HELD] <= 0.0F) {
+            return;
+        }
+
+        PLZGrappleIK.apply(this.plzIkPose, otherPose, cfg[PLZGrappleIK.CFG_NEAR], cfg[PLZGrappleIK.CFG_FAR], holder, this.modelTransforms, now);
     }
 
     public void transformRootChildBones(String boneName, Quaternion rotation) {
@@ -1697,6 +1804,7 @@ public final class AnimationPlayer extends PooledObject {
             }
         }
 
+        PLZAnimalForm.matchStride(this.character, result, reset);
         return result;
     }
 
