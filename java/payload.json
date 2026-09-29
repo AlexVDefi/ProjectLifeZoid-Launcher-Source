@@ -77,6 +77,7 @@
     "zombie/network/packets/service/ChecksumPacket",
     "zombie/plz/PLZAfkKick",
     "zombie/plz/PLZAnimalForm",
+    "zombie/plz/PLZAnimalCalm",
     "zombie/plz/PLZAnimalSync",
     "zombie/plz/PLZArmClearance",
     "zombie/plz/PLZArmClearanceMesh",
