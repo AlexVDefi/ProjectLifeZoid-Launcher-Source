@@ -215,6 +215,9 @@ public class IsoAnimal extends IsoPlayer implements IAnimalVisual {
     private static final Position3D L_renderCustomName = new Position3D();
     private String nextFootstepSound;
     private String forceNextIdleSound;
+    public long plzNetSeenMs;
+    public long plzNetAskedMs;
+    public int plzNetAsks;
 
     public IsoAnimal(IsoCell cell) {
         this(cell, 0, 0, 0, null, "");

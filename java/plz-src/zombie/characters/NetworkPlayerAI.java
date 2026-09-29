@@ -327,6 +327,7 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
 
     public void parse(AnimalPacket packet) {
         if (this.player instanceof IsoAnimal animal) {
+            zombie.plz.PLZAnimalSync.touch(animal, (packet.flags & AnimalPacket.Flags.init) != 0);
             this.targetX = packet.prediction.position.x;
             this.targetY = packet.prediction.position.y;
             this.targetZ = (byte)packet.prediction.position.z;
@@ -489,6 +490,8 @@ public class NetworkPlayerAI extends NetworkCharacterAI {
                             animal.realz,
                             addedToWorld ? "was added" : "square not found"
                         );
+                } else if (!animal.isExistInTheWorld() && zombie.plz.PLZAnimalSync.contradicted(animal)) {
+                    return;
                 }
 
                 if (distToReal > 10.0F && (this.player.getCurrentState() == null || !this.player.getCurrentState().isSyncOnSquare())) {

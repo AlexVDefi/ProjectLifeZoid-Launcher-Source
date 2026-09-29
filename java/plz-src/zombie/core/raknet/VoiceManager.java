@@ -455,6 +455,13 @@ public class VoiceManager {
                 return 1;
             }
         });
+        table.rawset("isTransmitting", new JavaFunction() {
+            @Override
+            public int call(LuaCallFrame callFrame, int nArguments) {
+                callFrame.push(serverVOIPEnable && System.currentTimeMillis() - VoiceManager.this.indicatorIsVoice <= 300L);
+                return 1;
+            }
+        });
         table.rawset("setRadioPttBinding", new JavaFunction() {
             @Override
             public int call(LuaCallFrame callFrame, int nArguments) {

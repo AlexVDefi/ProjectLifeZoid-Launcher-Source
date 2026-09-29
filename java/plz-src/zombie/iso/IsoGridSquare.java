@@ -7964,6 +7964,14 @@ public final class IsoGridSquare {
         PLZRemoteHeal.reset();
     }
 
+    public static String plzAnimalSyncStatus() {
+        return zombie.plz.PLZAnimalSync.status();
+    }
+
+    public static void plzAnimalSyncReset() {
+        zombie.plz.PLZAnimalSync.reset();
+    }
+
     public void RecalcPropertiesIfNeeded() {
         if (this.propertiesDirty) {
             this.RecalcProperties();

@@ -37,6 +37,8 @@ public final class PLZFixes {
     public static final String ANIMAL_CLIMB_STAIRS_GUARD = "animalClimbStairsGuard";
     public static final String ANIMAL_REATTACH = "animalReattach";
     public static final String ANIMAL_REGISTRY = "animalRegistry";
+    public static final String ANIMAL_SYNC_CLIENT = "animalSyncClient";
+    public static final String ANIMAL_SYNC_SERVER = "animalSyncServer";
     public static final String ANIMAL_TROUGH_EXPIRY = "animalTroughExpiry";
     public static final String ANIMAL_UPDATE_GUARD = "animalUpdateGuard";
     public static final String ANIMAL_ZONE_CONTAINMENT = "animalZoneContainment";
