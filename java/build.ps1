@@ -264,6 +264,43 @@ if ($missing.Count -gt 0) {
 if ($clientFiles.Count -eq 0) { throw "no client classes produced; the launcher would ship an empty payload" }
 if ($serverFiles.Count -eq 0) { throw "no server classes produced; the server patch would be empty" }
 
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$inJar = @{}
+$jarZip = [System.IO.Compression.ZipFile]::OpenRead($pzJar)
+try {
+    foreach ($e in $jarZip.Entries) {
+        if ($e.FullName.EndsWith(".class")) { $inJar[$e.FullName -replace '\.class$', ''] = $true }
+    }
+} finally { $jarZip.Dispose() }
+$patchOnly = @($produced.Keys | Where-Object { -not $inJar.ContainsKey($_) } | Sort-Object Length -Descending)
+if ($patchOnly.Count -gt 0) {
+    $refRegex = [regex]('(' + (($patchOnly | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(?![A-Za-z0-9_])')
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $unshipped = @()
+    foreach ($side in @(
+            @{ Name = "client"; Files = $clientFiles; Set = $clientSet },
+            @{ Name = "server"; Files = $serverFiles; Set = $serverSet })) {
+        foreach ($rel in $side.Files) {
+            $text = $latin1.GetString([System.IO.File]::ReadAllBytes((Join-Path $outDir $rel)))
+            foreach ($m in $refRegex.Matches($text)) {
+                $dep = $m.Groups[1].Value
+                if (-not $side.Set.ContainsKey($dep)) { $unshipped += "    $($side.Name): $dep  (used by $rel)" }
+            }
+        }
+    }
+    $unshipped = @($unshipped | Sort-Object -Unique)
+    if ($unshipped.Count -gt 0) {
+        throw @"
+$($unshipped.Count) shipped class(es) reference a patch-only class that is not listed on the same side
+in payload.json. The game has no copy of it, so the first call throws NoClassDefFoundError:
+
+$($unshipped -join "`n")
+
+Add each dependency to that side's list in java/payload.json.
+"@
+    }
+}
+
 $sourceCommit = ""
 $sourceDirty = 0
 try {
