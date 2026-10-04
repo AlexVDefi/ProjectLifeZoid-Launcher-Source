@@ -2,7 +2,9 @@ package zombie.characters;
 
 import org.lwjgl.util.vector.Matrix4f;
 import zombie.UsedFromLua;
+import zombie.core.skinnedmodel.animation.AnimationMultiTrack;
 import zombie.core.skinnedmodel.animation.AnimationPlayer;
+import zombie.core.skinnedmodel.animation.AnimationTrack;
 import zombie.core.skinnedmodel.model.Model;
 import zombie.iso.Vector3;
 import zombie.characters.component.CharacterInputComponent;
@@ -535,6 +537,32 @@ public interface CharacterInputComponentEntity extends ECSEntity {
         }
 
         return axis == 0 ? pos.x : (axis == 1 ? pos.y : pos.z);
+    }
+
+    /** PLZ. How far (0-1) the newest track whose clip name contains this text is through its clip; -1 if none plays. */
+    default float plzAnimTrackFraction(String clipContains) {
+        if (!(this instanceof IsoGameCharacter character) || clipContains == null) {
+            return -1.0F;
+        }
+
+        AnimationPlayer player = character.getAnimationPlayer();
+        if (player == null || !player.isReady()) {
+            return -1.0F;
+        }
+
+        AnimationMultiTrack multiTrack = player.getMultiTrack();
+        if (multiTrack == null) {
+            return -1.0F;
+        }
+
+        for (int i = multiTrack.getTrackCount() - 1; i >= 0; i--) {
+            AnimationTrack track = multiTrack.getTrackAt(i);
+            if (track != null && track.hasClip() && track.getName().contains(clipContains)) {
+                return track.getCurrentTimeFraction();
+            }
+        }
+
+        return -1.0F;
     }
 
     /** Also the patch probe: an unpatched client throws here rather than answering. */

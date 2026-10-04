@@ -8,6 +8,7 @@ import java.io.FileOutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import zombie.GameTime;
 import zombie.ZomboidFileSystem;
@@ -22,6 +23,7 @@ import zombie.iso.IsoWorld;
 import zombie.iso.WorldReuserThread;
 import zombie.iso.SpriteDetails.IsoFlagType;
 import zombie.iso.areas.IsoRoom;
+import zombie.plz.PLZMapScan;
 
 public class ServerChunkLoader {
     private final long debugSlowMapLoadingDelay = 0L;
@@ -158,11 +160,66 @@ public class ServerChunkLoader {
         private final LinkedBlockingQueue<ServerMap.ServerCell> fromThread = new LinkedBlockingQueue<>();
         ArrayDeque<IsoGridSquare> isoGridSquareCache = new ArrayDeque<>();
 
+        private void plzScanSlice() {
+            if (this.isoGridSquareCache.size() < 10000) {
+                IsoGridSquare.getSquaresForThread(this.isoGridSquareCache, 10000);
+                IsoGridSquare.loadGridSquareCache = this.isoGridSquareCache;
+            }
+
+            long deadline = System.nanoTime() + PLZMapScan.workNanos();
+
+            try {
+                while (this.toThread.isEmpty() && System.nanoTime() < deadline) {
+                    long key = PLZMapScan.loaderNext();
+                    if (key == PLZMapScan.NONE) {
+                        return;
+                    }
+
+                    if (key == PLZMapScan.BUSY) {
+                        continue;
+                    }
+
+                    int wx = PLZMapScan.keyX(key);
+                    int wy = PLZMapScan.keyY(key);
+                    IsoChunk chunk = IsoChunkMap.chunkStore.poll();
+                    if (chunk == null) {
+                        chunk = new IsoChunk((IsoCell)null);
+                    }
+
+                    try {
+                        chunk.assignLoadID();
+                        ServerChunkLoader.this.threadSave.saveNow(wx, wy);
+                        chunk.wx = wx;
+                        chunk.wy = wy;
+                        chunk.LoadFromDisk();
+                        PLZMapScan.loaderChunk(chunk);
+                    } catch (Throwable t) {
+                        PLZMapScan.loaderFailed(wx, wy, t);
+                        if (t instanceof VirtualMachineError) {
+                            PLZMapScan.fail(t);
+                        }
+                    }
+
+                    WorldReuserThread.instance.addReuseChunk(chunk);
+                }
+            } catch (Throwable t) {
+                PLZMapScan.fail(t);
+            }
+        }
+
         @Override
         public void run() {
             while (true) {
                 try {
-                    ServerMap.ServerCell cell = this.toThread.take();
+                    ServerMap.ServerCell cell = this.toThread.poll(PLZMapScan.loaderWaitMs(), TimeUnit.MILLISECONDS);
+                    if (cell == null) {
+                        if (PLZMapScan.wantsLoaderTime()) {
+                            this.plzScanSlice();
+                        }
+
+                        continue;
+                    }
+
                     if (this.isoGridSquareCache.size() < 10000) {
                         IsoGridSquare.getSquaresForThread(this.isoGridSquareCache, 10000);
                         IsoGridSquare.loadGridSquareCache = this.isoGridSquareCache;

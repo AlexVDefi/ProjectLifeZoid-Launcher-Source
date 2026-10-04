@@ -183,6 +183,7 @@ import zombie.plz.PLZDoorAccess;
 import zombie.plz.PLZGatedGrid;
 import zombie.plz.PLZObjectDamage;
 import zombie.plz.PLZMapPin;
+import zombie.plz.PLZMapScan;
 import zombie.plz.PLZFlightRecorder;
 import zombie.plz.PLZLuaProfile;
 import zombie.plz.PLZEventSkip;
@@ -7808,6 +7809,43 @@ public final class IsoGridSquare {
 
     public static String plzMapPinStatus() {
         return PLZMapPin.status();
+    }
+
+    public static String plzMapScanStart(double objects, double items, boolean containers, boolean excludeMapOriginals, double speed,
+        String ignoreList) {
+        return PLZMapScan.start(objects, items, containers, excludeMapOriginals, speed, ignoreList);
+    }
+
+    public static void plzMapScanCancel() {
+        PLZMapScan.cancel();
+    }
+
+    public static void plzMapScanSetSpeed(double speed) {
+        PLZMapScan.setSpeed(speed);
+    }
+
+    public static boolean plzMapScanActive() {
+        return PLZMapScan.isActive();
+    }
+
+    public static void plzMapScanPump() {
+        PLZMapScan.pumpLive();
+    }
+
+    public static double plzMapScanStat(String name) {
+        return PLZMapScan.stat(name);
+    }
+
+    public static String plzMapScanText(String name) {
+        return PLZMapScan.text(name);
+    }
+
+    public static int plzMapScanResultCount() {
+        return PLZMapScan.resultCount();
+    }
+
+    public static String plzMapScanResultRow(double index) {
+        return PLZMapScan.resultRow((int)index);
     }
 
     // PERFORMANCE INSTRUMENTATION. Same door as every block above: LuaManager's exposer is a

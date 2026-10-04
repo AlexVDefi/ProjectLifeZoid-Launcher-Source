@@ -5,6 +5,7 @@ import fmod.fmod.FMOD_STUDIO_EVENT_DESCRIPTION;
 import fmod.fmod.FMOD_STUDIO_PARAMETER_DESCRIPTION;
 import java.util.ArrayList;
 import zombie.UsedFromLua;
+import zombie.plz.PLZHighFX;
 import zombie.plz.PLZSoundGain;
 
 @UsedFromLua
@@ -127,6 +128,11 @@ public final class GameSoundClip {
     /** Why one sound resolved to the mod it did. Diagnostic; see PLZSoundGain.describe. */
     public static String describeSoundOwner(GameSound sound) {
         return PLZSoundGain.describe(sound);
+    }
+
+    /** PLZ. The cannabis high's screen and input feel, hung here because this class is already Lua-reachable. See PLZHighFX. */
+    public static void plzSetHighFX(int playerIndex, float visual, float wobble, float moveTau, float aimTau, int driveLevel) {
+        PLZHighFX.set(playerIndex, visual, wobble, moveTau, aimTau, driveLevel);
     }
 
     public GameSoundClip checkReloaded() {

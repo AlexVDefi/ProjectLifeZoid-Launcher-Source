@@ -19,6 +19,7 @@ import zombie.core.skinnedmodel.animation.debug.AnimationPlayerRecorder;
 import zombie.input.GameKeyboard;
 import zombie.iso.IsoDirections;
 import zombie.iso.Vector2;
+import zombie.plz.PLZHighFX;
 import zombie.ui.UIManager;
 
 public class CharacterInputComponent extends ECSComponent implements ECSFrameStep, ECSInGameStateEnter, ECSGameLoadingStateEnter, IAnimationVariableLogger {
@@ -41,6 +42,9 @@ public class CharacterInputComponent extends ECSComponent implements ECSFrameSte
     private boolean allowSprint = true;
     private boolean allowRun = true;
     private boolean allowAttack = true;
+    private static final float PLZ_MOVE_STOP_SQ = 0.342F;
+    private final Vector2 plzMove = new Vector2();
+    private long plzMoveAt;
     private boolean forceAim;
     private boolean forceRun;
     private boolean forceSprint;
@@ -187,6 +191,33 @@ public class CharacterInputComponent extends ECSComponent implements ECSFrameSte
     }
 
     public Vector2 getInputMoveVector(Vector2 out) {
+        return this.plzHighSmooth(this.getRawInputMoveVector(out));
+    }
+
+    /** PLZ. The cannabis high's heavy legs; time-based, so repeat calls within a frame change nothing. See PLZHighFX. */
+    private Vector2 plzHighSmooth(Vector2 out) {
+        IsoPlayer player = this.tryGetECSOwnerEntityAs(IsoPlayer.class);
+        float tau = player != null && player.isLocalPlayer() ? PLZHighFX.moveTau(player.getPlayerNum()) : 0.0F;
+        long now = System.nanoTime();
+        float k = PLZHighFX.follow(tau, PLZHighFX.secondsSince(this.plzMoveAt, now));
+        this.plzMoveAt = now;
+        if (k >= 1.0F) {
+            this.plzMove.set(out);
+            return out;
+        }
+
+        float x = this.plzMove.x + (out.x - this.plzMove.x) * k;
+        float y = this.plzMove.y + (out.y - this.plzMove.y) * k;
+        if (out.x == 0.0F && out.y == 0.0F && x * x + y * y < PLZ_MOVE_STOP_SQ) {
+            x = 0.0F;
+            y = 0.0F;
+        }
+
+        this.plzMove.set(x, y);
+        return out.set(x, y);
+    }
+
+    private Vector2 getRawInputMoveVector(Vector2 out) {
         out.set(0.0F, 0.0F);
         boolean isRunButtonDown = this.isAllowRun() && this.isRunButtonDown();
         float maxMovementRate = isRunButtonDown ? 2.0F : 1.95F;

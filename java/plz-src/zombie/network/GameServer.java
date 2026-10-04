@@ -203,6 +203,7 @@ import zombie.popman.PoolCaps;
 import zombie.plz.PLZChunkCrc;
 import zombie.plz.PLZConnectWatch;
 import zombie.plz.PLZDisconnectWatch;
+import zombie.plz.PLZRelay;
 import zombie.popman.ZombiePopulationManager;
 import zombie.popman.animal.AnimalInstanceManager;
 import zombie.radio.ZomboidRadio;
@@ -1365,6 +1366,11 @@ public class GameServer {
         String plzSlots = PLZSlots.handleCommand(input, adminUsername, accessLevel);
         if (plzSlots != null) {
             return plzSlots;
+        }
+
+        String plzRelay = PLZRelay.handleCommand(input, connection != null);
+        if (plzRelay != null) {
+            return plzRelay;
         }
 
         Class<?> cls = CommandBase.findCommandCls(input);
@@ -3377,6 +3383,8 @@ public class GameServer {
             for (int i = 0; i < radioDataSize; i++) {
                 radioData[i] = bb.getInt();
             }
+
+            zombie.plz.PLZBroadcast.clamp(connection, radioData, radioDataSize);
 
             // PLZ: this table is republished only every 3010 ms and the native voice server routes
             // from it, so a speaker who has moved since their last publish is simply not
