@@ -26,7 +26,7 @@
         {
             "id": "3766571591",
             "name": "'70 Chevrolet Chevelle / El Camino",
-            "timeUpdated": 1789673015
+            "timeUpdated": 1790929241
         },
         {
             "id": "3743371090",
@@ -256,7 +256,7 @@
         {
             "id": "3152529790",
             "name": "'93 Chevrolet Suburban / Silverado",
-            "timeUpdated": 1781804780
+            "timeUpdated": 1790877906
         },
         {
             "id": "3110913021",
@@ -426,7 +426,7 @@
         {
             "id": "3409472393",
             "name": "W900 Semi-Truck [B42]",
-            "timeUpdated": 1790586535
+            "timeUpdated": 1790971578
         },
         {
             "id": "3402491515",
@@ -436,7 +436,7 @@
         {
             "id": "3577903007",
             "name": "Vanilla Foods Expanded",
-            "timeUpdated": 1790825024
+            "timeUpdated": 1790992757
         },
         {
             "id": "3661336777",
@@ -446,7 +446,7 @@
         {
             "id": "3775272983",
             "name": "Brush Tool Save Fix [B42]",
-            "timeUpdated": 1790639402
+            "timeUpdated": 1790979577
         },
         {
             "id": "3722064198",
@@ -727,6 +727,16 @@
             "id": "3798149669",
             "name": "[B42MP] Frockin Splendor! Vol.6",
             "timeUpdated": 1788889835
+        },
+        {
+            "id": "3718883428",
+            "name": "RC's Structures Framework [B42.17+ MP]",
+            "timeUpdated": 1791069463
+        },
+        {
+            "id": "3812970899",
+            "name": "Better Building Plus [B42 MP]",
+            "timeUpdated": 1791069500
         }
     ],
     "newsUrl": "https://launcher.projectlifezoid.com/news.json",
