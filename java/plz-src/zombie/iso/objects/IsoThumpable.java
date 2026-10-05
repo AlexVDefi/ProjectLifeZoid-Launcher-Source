@@ -31,6 +31,7 @@ import zombie.core.Translator;
 import zombie.core.math.PZMath;
 import zombie.core.network.ByteBufferReader;
 import zombie.core.network.ByteBufferWriter;
+import zombie.core.raknet.UdpConnection;
 import zombie.core.opengl.Shader;
 import zombie.core.properties.IsoObjectChange;
 import zombie.core.properties.IsoPropertyType;
@@ -1271,6 +1272,8 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
             return false;
         } else if (this.isBarricaded()) {
             return false;
+        } else if (chr instanceof IsoPlayer && !this.open && this.plzAbsolutelyLocked()) {
+            return false;
         } else if (this.isLockedByKey()
             && chr instanceof IsoPlayer
             && chr.getCurrentSquare().has(IsoFlagType.exterior)
@@ -1296,6 +1299,10 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
                 }
 
                 this.wasTryingToggleBarricadedDoor = true;
+                this.sync();
+            } else if (chr instanceof IsoPlayer && !this.open && this.plzAbsolutelyLocked()) {
+                this.TriggerLockedDoor(chr);
+                this.wasTryingToggleLockedDoor = true;
                 this.sync();
             } else if (this.isLockedByKey()
                 && chr instanceof IsoPlayer
@@ -1365,6 +1372,24 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
                 }
             }
         }
+    }
+
+    private boolean plzAbsolutelyLocked() {
+        return this.hasModData()
+            && this.getModData().rawget("PLZLock") instanceof Boolean plzLock
+            && plzLock;
+    }
+
+    private void plzTellSenderTheTruth() {
+        UdpConnection connection = GameServer.getConnectionByPlayerOnlineID(this.lastPlayerOnlineId);
+        if (connection == null) {
+            return;
+        }
+
+        ByteBufferWriter b = connection.startPacket();
+        PacketTypes.PacketType.SyncIsoObject.doPacket(b);
+        this.syncIsoObjectSend(b);
+        PacketTypes.PacketType.SyncIsoObject.send(connection);
     }
 
     private void TriggerLockedDoor(IsoGameCharacter chr) {
@@ -1913,15 +1938,28 @@ public class IsoThumpable extends IsoObject implements BarricadeAble, Thumpable,
         GameTime.instance.lightSourceUpdate = 100.0F;
         boolean bOpen = bb.getBoolean();
         boolean locked = bb.getBoolean();
+        boolean bLockedByKey = bb.getBoolean();
+        boolean bLockedByPadlock = bb.getBoolean();
+        int keyId = bb.getInt();
+        int health = bb.getInt();
+        this.lastPlayerOnlineId = bb.getShort();
+        boolean bTriedBarricaded = bb.getBoolean();
+        boolean bTriedLocked = bb.getBoolean();
+        if (GameServer.server
+            && this.plzAbsolutelyLocked()
+            && (bOpen && !this.open || this.lockedByKey && !bLockedByKey)) {
+            this.plzTellSenderTheTruth();
+            return;
+        }
+
         boolean wasLocked = this.locked && !locked;
         this.locked = locked;
-        this.lockedByKey = bb.getBoolean();
-        this.lockedByPadlock = bb.getBoolean();
-        this.keyId = bb.getInt();
-        this.health = bb.getInt();
-        this.lastPlayerOnlineId = bb.getShort();
-        this.wasTryingToggleBarricadedDoor = bb.getBoolean();
-        this.wasTryingToggleLockedDoor = bb.getBoolean();
+        this.lockedByKey = bLockedByKey;
+        this.lockedByPadlock = bLockedByPadlock;
+        this.keyId = keyId;
+        this.health = health;
+        this.wasTryingToggleBarricadedDoor = bTriedBarricaded;
+        this.wasTryingToggleLockedDoor = bTriedLocked;
         IsoPlayer player = null;
         if (GameClient.client && this.lastPlayerOnlineId != -1) {
             player = GameClient.IDToPlayerMap.get(this.lastPlayerOnlineId);

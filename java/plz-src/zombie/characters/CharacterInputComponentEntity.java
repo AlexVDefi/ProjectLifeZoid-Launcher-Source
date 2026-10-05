@@ -511,6 +511,21 @@ public interface CharacterInputComponentEntity extends ECSEntity {
             : 0.0F;
     }
 
+    default void plzArmClearanceSetElbowReturn(boolean on) {
+        PLZArmClearance.setElbowReturn(on);
+    }
+
+    default boolean plzArmClearanceIsElbowReturn() {
+        return PLZArmClearance.isElbowReturn();
+    }
+
+    /** Radians the forearm was last turned back at the elbow; side 0 left, 1 right. */
+    default float plzArmClearanceElbowAngle(int side) {
+        return this instanceof IsoGameCharacter character && character.getAnimationPlayer() != null
+            ? character.getAnimationPlayer().plzArmState().elbowAngle(side)
+            : 0.0F;
+    }
+
     /** World position of a bone on axis 0/1/2; drawn = the PLZ-resized pose, otherwise the vanilla animated one. NaN if unknown. */
     default float plzBoneWorld(String boneName, int axis, boolean drawn) {
         if (!(this instanceof IsoGameCharacter character)) {

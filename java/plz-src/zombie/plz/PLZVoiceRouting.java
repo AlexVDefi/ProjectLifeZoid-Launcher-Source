@@ -5,6 +5,7 @@ import java.util.Map;
 import zombie.characters.IsoPlayer;
 import zombie.core.raknet.RakVoice;
 import zombie.core.raknet.UdpConnection;
+import zombie.debug.DebugLog;
 
 /**
  * Keeps the NATIVE voice routing table current, instead of paying for its staleness in range.
@@ -63,6 +64,14 @@ public final class PLZVoiceRouting {
      */
     public static final float SLACK_TILES = 40.0F;
 
+    /** A walker covers about nine tiles between on-foot publishes, so this is the floor for anyone not in a vehicle. */
+    public static final float CROWD_SLACK_TILES = 12.0F;
+    public static final float CROWD_RADIUS_TILES = SLACK_TILES;
+    public static final int CROWD_ENTER = 12;
+    public static final int CROWD_EXIT = 8;
+    private static final long CROWD_LOG_MS = 60000L;
+    private static long crowdLoggedMs;
+
     /** Re-pushing a table whose owner has not moved is wasted work; native keeps the last one. */
     private static final float MOVED_EPSILON = 0.5F;
 
@@ -93,6 +102,7 @@ public final class PLZVoiceRouting {
         int size;
         float lastX = Float.NaN;
         float lastY = Float.NaN;
+        volatile boolean crowded;
     }
 
     private static final Map<Long, Table> tables = new LinkedHashMap<Long, Table>(32, 0.75F, true) {
@@ -131,13 +141,25 @@ public final class PLZVoiceRouting {
             return;
         }
 
+        Table previous;
+        synchronized (tables) {
+            previous = tables.get(connection.getConnectedGUID());
+        }
+
+        boolean crowded = previous != null && previous.crowded;
+        float slack = SLACK_TILES;
+        if (crowded && !inVehicle(connection) && PLZFixes.on(PLZFixes.VOICE_CROWD_SLACK)) {
+            slack = CROWD_SLACK_TILES;
+            PLZFixes.hit(PLZFixes.VOICE_CROWD_SLACK);
+        }
+
         int count = Math.min(size, radioData.length) / 4;
 
         for (int i = 0; i < count; i++) {
             int range = radioData[i * 4 + 1];
             // Zero is a decision, not a distance. Leave it.
             if (range > 0 && PLZVoice.isVoiceChannel(radioData[i * 4])) {
-                radioData[i * 4 + 1] = range + (int)Math.ceil(SLACK_TILES);
+                radioData[i * 4 + 1] = range + (int)Math.ceil(slack);
             }
         }
 
@@ -146,6 +168,7 @@ public final class PLZVoiceRouting {
         entry.canHearAll = canHearAll;
         entry.data = radioData;
         entry.size = size;
+        entry.crowded = crowded;
 
         synchronized (tables) {
             tables.put(connection.getConnectedGUID(), entry);
@@ -169,6 +192,64 @@ public final class PLZVoiceRouting {
 
         for (Table entry : snapshot) {
             correctAndPush(entry, false);
+        }
+
+        if (PLZFixes.on(PLZFixes.VOICE_CROWD_SLACK)) {
+            updateCrowds(snapshot);
+        }
+    }
+
+    private static boolean inVehicle(UdpConnection connection) {
+        IsoPlayer owner = connection.players.length > 0 ? connection.players[0] : null;
+        return owner != null && owner.getVehicle() != null;
+    }
+
+    // Takes effect at each table's next publish, never by a push of its own: a routing replace drops frames in flight.
+    private static void updateCrowds(Table[] snapshot) {
+        int n = snapshot.length;
+        float[] xs = new float[n];
+        float[] ys = new float[n];
+        boolean[] present = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            UdpConnection connection = snapshot[i].connection;
+            IsoPlayer owner = connection != null && connection.players.length > 0 ? connection.players[0] : null;
+            if (owner != null) {
+                present[i] = true;
+                xs[i] = owner.getX();
+                ys[i] = owner.getY();
+            }
+        }
+
+        float radiusSq = CROWD_RADIUS_TILES * CROWD_RADIUS_TILES;
+        int crowdedCount = 0;
+        for (int i = 0; i < n; i++) {
+            if (!present[i]) {
+                snapshot[i].crowded = false;
+                continue;
+            }
+
+            int near = 0;
+            for (int j = 0; j < n; j++) {
+                if (j != i && present[j]) {
+                    float dx = xs[j] - xs[i];
+                    float dy = ys[j] - ys[i];
+                    if (dx * dx + dy * dy <= radiusSq) {
+                        near++;
+                    }
+                }
+            }
+
+            boolean crowded = snapshot[i].crowded ? near >= CROWD_EXIT : near >= CROWD_ENTER;
+            snapshot[i].crowded = crowded;
+            if (crowded) {
+                crowdedCount++;
+            }
+        }
+
+        long now = System.currentTimeMillis();
+        if (crowdedCount > 0 && now - crowdLoggedMs >= CROWD_LOG_MS) {
+            crowdLoggedMs = now;
+            DebugLog.log("PLZVoiceRouting: " + crowdedCount + " of " + n + " speakers on crowd slack " + (int)CROWD_SLACK_TILES);
         }
     }
 

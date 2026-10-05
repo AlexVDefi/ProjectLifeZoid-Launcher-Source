@@ -1504,6 +1504,7 @@ public final class AnimationPlayer extends PooledObject {
 
     private void plzApplyBoneScale() {
         if (!PLZBoneScale.isActive()) {
+            this.plzArmState.clearAngles();
             return;
         }
 
@@ -1525,6 +1526,7 @@ public final class AnimationPlayer extends PooledObject {
 
         PLZBoneScale.Rig rig = this.plzRig;
         if (rig == null || this.skinningData == null || this.boneTransforms == null) {
+            this.plzArmState.clearAngles();
             return;
         }
 
@@ -1563,6 +1565,8 @@ public final class AnimationPlayer extends PooledObject {
         PLZBoneScale.compose(this.plzLayout, rig, this.plzLocal, this.modelTransforms);
         if (clear) {
             PLZArmClearance.apply(this.plzArmState, this.modelTransforms);
+        } else {
+            this.plzArmState.clearAngles();
         }
     }
 

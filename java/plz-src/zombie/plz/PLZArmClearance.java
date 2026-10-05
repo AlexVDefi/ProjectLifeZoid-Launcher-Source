@@ -2,7 +2,7 @@ package zombie.plz;
 
 import org.lwjgl.util.vector.Matrix4f;
 
-/** Render-only: turns each arm at the shoulder so a widened hip, thigh or belly keeps the skin gap the clip authored. */
+/** Render-only: turns each arm out at the shoulder and back at the elbow so a widened body keeps the skin gap the clip authored. */
 public final class PLZArmClearance {
     public static final float CLEAR = 0.012F;
     public static final float MAX_GROWTH = 2.0F;
@@ -24,6 +24,7 @@ public final class PLZArmClearance {
     private static final int SHOULDERS = groupIndices("shoulders")[0];
 
     private static volatile boolean enabled = true;
+    private static volatile boolean elbowReturn = true;
 
     private PLZArmClearance() {
     }
@@ -34,6 +35,15 @@ public final class PLZArmClearance {
 
     public static boolean isEnabled() {
         return enabled;
+    }
+
+    /** Off turns the whole arm at the shoulder only, the 1.0.51 behaviour, for an A/B. */
+    public static void setElbowReturn(boolean on) {
+        elbowReturn = on;
+    }
+
+    public static boolean isElbowReturn() {
+        return elbowReturn;
     }
 
     /** Whether this rig can bring flesh closer to the arms than the animation put it. */
@@ -79,6 +89,7 @@ public final class PLZArmClearance {
         final int[][] arm = new int[2][5];
         final boolean[] armOk = new boolean[2];
         final int[][] subtree = new int[2][];
+        final int[][] forearm = new int[2][];
         final int pelvis;
         final int spine1;
         final int[] props = { -1, -1 };
@@ -119,6 +130,7 @@ public final class PLZArmClearance {
                 }
                 this.armOk[s] = all;
                 this.subtree[s] = all ? descendants(parent, this.arm[s][0]) : new int[0];
+                this.forearm[s] = all ? descendants(parent, this.arm[s][1]) : new int[0];
             }
             this.pelvis = indexOf(names, "bip01_pelvis");
             this.spine1 = indexOf(names, "bip01_spine1");
@@ -341,11 +353,13 @@ public final class PLZArmClearance {
         final Flesh[] vanFlesh = new Flesh[2];
         final Flesh[] drawnFlesh = new Flesh[2];
         final float[] angle = new float[2];
+        final float[] elbow = new float[2];
         boolean vanReady;
         boolean vanUpOk;
 
         final float[][] ptsV = new float[POINTS][3];
         final float[][] ptsD = new float[POINTS][3];
+        final float[][] ptsT = new float[POINTS][3];
         final float[] allowed = new float[POINTS];
         final float[] radiusD = new float[POINTS];
         final float[] upV = new float[3];
@@ -353,6 +367,7 @@ public final class PLZArmClearance {
         final float[] cV = new float[3];
         final float[] cD = new float[3];
         final float[] shoulder = new float[3];
+        final float[] q = new float[9];
         final float[] p = new float[3];
         final float[] u = new float[4];
         final float[] extentD = new float[POINTS];
@@ -398,6 +413,19 @@ public final class PLZArmClearance {
             return side >= 0 && side < 2 ? this.angle[side] : 0.0F;
         }
 
+        /** Last turn back at the elbow, radians; side 0 left, 1 right. */
+        public float elbowAngle(int side) {
+            return side >= 0 && side < 2 ? this.elbow[side] : 0.0F;
+        }
+
+        /** For a frame the pass skipped, so a readout never shows the last body's turn. */
+        public void clearAngles() {
+            this.angle[0] = 0.0F;
+            this.angle[1] = 0.0F;
+            this.elbow[0] = 0.0F;
+            this.elbow[1] = 0.0F;
+        }
+
         public void captureVanilla(Matrix4f[] model) {
             copy(model, this.layout.needed, this.vanPos, this.vanAxes);
         }
@@ -428,8 +456,7 @@ public final class PLZArmClearance {
 
     /** {@code model} is the drawn palette, already resized; only the arms and the props they hold are turned. */
     public static void apply(State st, Matrix4f[] model) {
-        st.angle[0] = 0.0F;
-        st.angle[1] = 0.0F;
+        st.clearAngles();
         st.vanReady = false;
         Layout l = st.layout;
         if (l == null || !l.ok) {
@@ -497,6 +524,76 @@ public final class PLZArmClearance {
         float[] shoulder = st.shoulder;
         float[] r = st.r;
         identity(r);
+        push(st, fleshD, shoulder, st.ptsD, 0, r);
+        float angle = cap(st, r);
+        if (angle == 0.0F) {
+            return 0.0F;
+        }
+
+        int hand = l.arm[s][2];
+        int prop = -1;
+        float best = PROP_NEAR;
+        for (int k = 0; k < 2; k++) {
+            int pb = l.props[k];
+            if (pb >= 0) {
+                float d = dist(st.vanPos, pb, hand);
+                if (d < best) {
+                    best = d;
+                    prop = pb;
+                }
+            }
+        }
+        PLZGrappleIK.rotate(model, l.subtree[s], shoulder, r);
+        if (prop >= 0 && !contains(l.subtree[s], prop)) {
+            rotateBone(model[prop], shoulder, r);
+        }
+        if (elbowReturn) {
+            st.elbow[s] = returnForearm(l, st, s, fleshD, model, prop);
+        }
+        return angle;
+    }
+
+    /**
+     * The shoulder turn that clears the elbow throws the hand out by the lever ratio, about 2.5x.
+     * Aim the forearm back at where the hand was, then push out only what its own points need.
+     */
+    private static float returnForearm(Layout l, State st, int s, Flesh fleshD, Matrix4f[] model, int prop) {
+        for (int i = 0; i < POINTS; i++) {
+            turn(st.r, st.shoulder, st.ptsD[i], st.ptsT[i]);
+        }
+        float[] elbow = st.ptsT[0];
+        float[] q = st.q;
+        float[] from = st.ptsT[POINTS - 1];
+        float[] to = st.ptsD[POINTS - 1];
+        float fx = from[0] - elbow[0];
+        float fy = from[1] - elbow[1];
+        float fz = from[2] - elbow[2];
+        float tx = to[0] - elbow[0];
+        float ty = to[1] - elbow[1];
+        float tz = to[2] - elbow[2];
+        float cx = fy * tz - fz * ty;
+        float cy = fz * tx - fx * tz;
+        float cz = fx * ty - fy * tx;
+        float n = (float)Math.sqrt(cx * cx + cy * cy + cz * cz);
+        if (n < 1.0E-9F) {
+            identity(q);
+        } else {
+            rodrigues(cx / n, cy / n, cz / n, (float)Math.atan2(n, fx * tx + fy * ty + fz * tz), q);
+        }
+        push(st, fleshD, elbow, st.ptsT, 1, q);
+        float angle = cap(st, q);
+        if (angle == 0.0F) {
+            return 0.0F;
+        }
+        PLZGrappleIK.rotate(model, l.forearm[s], elbow, q);
+        if (prop >= 0 && !contains(l.forearm[s], prop)) {
+            rotateBone(model[prop], elbow, q);
+        }
+        return angle;
+    }
+
+    /** Grows {@code r} about {@code pivot} until every point from {@code first} on keeps its allowed gap. */
+    private static void push(State st, Flesh fleshD, float[] pivot, float[][] base, int first, float[] r) {
         float[] p = st.p;
         float[] u = st.u;
         for (int iter = 0; iter < ITERATIONS; iter++) {
@@ -504,19 +601,19 @@ public final class PLZArmClearance {
             float ay = 0.0F;
             float az = 0.0F;
             float total = 0.0F;
-            for (int i = 0; i < POINTS; i++) {
+            for (int i = first; i < POINTS; i++) {
                 if (st.allowed[i] == Float.NEGATIVE_INFINITY) {
                     continue;
                 }
-                turn(r, shoulder, st.ptsD[i], p);
+                turn(r, pivot, base[i], p);
                 float g = gap(p, fleshD, st.cD, st.upD, u);
                 float e = Float.isNaN(g) ? 0.0F : st.allowed[i] - g;
                 if (e <= 0.0F) {
                     continue;
                 }
-                float rx = p[0] - shoulder[0];
-                float ry = p[1] - shoulder[1];
-                float rz = p[2] - shoulder[2];
+                float rx = p[0] - pivot[0];
+                float ry = p[1] - pivot[1];
+                float rz = p[2] - pivot[2];
                 float tx = rx + u[0] * e;
                 float ty = ry + u[1] * e;
                 float tz = rz + u[2] * e;
@@ -547,7 +644,10 @@ public final class PLZArmClearance {
             mul(st.step, r, st.tmp);
             System.arraycopy(st.tmp, 0, r, 0, 9);
         }
+    }
 
+    /** Clamps {@code r} to MAX_ANGLE; 0 when it is too small to apply. */
+    private static float cap(State st, float[] r) {
         float angle = rotationAngle(r);
         if (angle < 1.0E-5F) {
             return 0.0F;
@@ -558,24 +658,6 @@ public final class PLZArmClearance {
             }
             rodrigues(st.axis[0], st.axis[1], st.axis[2], MAX_ANGLE, r);
             angle = MAX_ANGLE;
-        }
-
-        int hand = l.arm[s][2];
-        int prop = -1;
-        float best = PROP_NEAR;
-        for (int k = 0; k < 2; k++) {
-            int pb = l.props[k];
-            if (pb >= 0) {
-                float d = dist(st.vanPos, pb, hand);
-                if (d < best) {
-                    best = d;
-                    prop = pb;
-                }
-            }
-        }
-        PLZGrappleIK.rotate(model, l.subtree[s], shoulder, r);
-        if (prop >= 0 && !contains(l.subtree[s], prop)) {
-            rotateBone(model[prop], shoulder, r);
         }
         return angle;
     }

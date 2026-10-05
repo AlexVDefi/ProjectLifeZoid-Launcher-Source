@@ -156,6 +156,10 @@ public class VehiclePhysicsPacket extends VehicleInterpolationData implements IN
      */
     @Override
     public void sync(PacketTypes.PacketType packetType, UdpConnection connection) {
+        if (GameServer.server && connection != null) {
+            zombie.plz.PLZVehicleGhost.noteDriving(this.vehicleId.getID(), connection.getUserName());
+        }
+
         if (GameServer.server && zombie.plz.PLZFixes.on(zombie.plz.PLZFixes.VEHICLE_GHOST_REPORT)) {
             zombie.plz.PLZFixes.hit(zombie.plz.PLZFixes.VEHICLE_GHOST_REPORT);
             zombie.plz.PLZVehicleGhost.report(this.vehicleId.getID(), connection == null ? null : connection.getUserName());

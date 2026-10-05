@@ -11,6 +11,7 @@ const STEPS = [
     ["server", "Checking server"],
     ["mods", "Checking Workshop mods"],
     ["download", "Syncing patch"],
+    ["films", "Syncing cinema videos"],
     ["patch", "Patching launch config"],
     ["account", "Preparing Steam account"],
     ["launch", "Starting through Steam"],
@@ -858,6 +859,57 @@ $("body-override").addEventListener("change", async (e) => {
     }
 });
 
+async function saveFilmsChoices(skip, background) {
+    const saved = await invoke("set_films_choices", { skipCopyrighted: skip, background });
+    $("films-skip-copyrighted").checked = saved.skipCopyrighted === true;
+    $("films-background").checked = saved.background === true;
+}
+
+async function loadFilmsChoices() {
+    let choices;
+    try {
+        choices = await invoke("get_films_choices");
+    } catch {
+        return;
+    }
+    $("films-skip-copyrighted").checked = choices.skipCopyrighted === true;
+    $("films-background").checked = choices.background === true;
+    // Either question unanswered reopens the dialog, so players who answered only the first still get the second.
+    if (choices.skipCopyrighted === null || choices.background === null) {
+        $("films-dialog-skip").checked = choices.skipCopyrighted === true;
+        $("films-dialog-background").checked = choices.background !== false;
+        $("films-dialog").showModal();
+    }
+}
+
+for (const [id, message] of [
+    ["films-skip-copyrighted", (on) => [on ? "Skipping copyrighted videos" : "Keeping every video", "Takes effect the next time you press Play."]],
+    ["films-background", (on) => on
+        ? ["Downloading new videos while you play", "Takes effect within a few minutes, even mid-session."]
+        : ["New videos wait for your next Play", "A download already under way finishes first."]],
+]) {
+    $(id).addEventListener("change", async (e) => {
+        try {
+            await saveFilmsChoices($("films-skip-copyrighted").checked, $("films-background").checked);
+            toast(...message(e.target.checked));
+        } catch (err) {
+            e.target.checked = !e.target.checked;
+            toast("Could not change that", String(err), true);
+        }
+    });
+}
+
+$("films-dialog").addEventListener("cancel", (e) => e.preventDefault());
+
+$("films-dialog-save").addEventListener("click", async () => {
+    try {
+        await saveFilmsChoices($("films-dialog-skip").checked, $("films-dialog-background").checked);
+        $("films-dialog").close();
+    } catch (err) {
+        toast("Could not save that", String(err), true);
+    }
+});
+
 // Read off options.ini every time rather than trusting a stored flag: the player can undo the
 // preset by hand in the game's own options screen, and the box has to follow the file.
 async function loadPerformanceMode() {
@@ -1251,6 +1303,7 @@ refreshStatus();
 loadServerOverride();
 loadBodyOverride();
 loadPerformanceMode();
+loadFilmsChoices();
 refreshServer();
 refreshCommunity();
 checkForUpdate(true);

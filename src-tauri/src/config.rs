@@ -39,6 +39,14 @@ pub fn patch_dir(build: u64) -> PathBuf {
     app_dir().join("patch").join(build.to_string())
 }
 
+pub fn films_ledger_path() -> PathBuf {
+    app_dir().join("films").join("installed.json")
+}
+
+pub fn films_seq_guard_path() -> PathBuf {
+    app_dir().join("security").join("films-seq.json")
+}
+
 pub fn backup_dir() -> PathBuf {
     app_dir().join("backup")
 }
@@ -97,6 +105,22 @@ pub fn join_result_path() -> PathBuf {
         .join("Lua")
         .join("PLZLauncher")
         .join("result.txt")
+}
+
+/// ProjectLifeZoidCore's PLZCinemaClient reads this exact file to grey out the films it skips.
+pub fn films_choice_path() -> PathBuf {
+    zomboid_home()
+        .join("Lua")
+        .join("PLZLauncher")
+        .join("films.txt")
+}
+
+/// PLZCinemaClient polls this to learn which films finished downloading mid-session.
+pub fn films_ready_path() -> PathBuf {
+    zomboid_home()
+        .join("Lua")
+        .join("PLZLauncher")
+        .join("films-ready.txt")
 }
 
 pub fn role_path() -> PathBuf {

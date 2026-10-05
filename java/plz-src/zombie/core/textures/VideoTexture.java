@@ -516,6 +516,51 @@ public class VideoTexture extends Texture {
         return 1;
     }
 
+    public static int cinemaDrawFree(VideoTexture tex, float lx, float ly, float rx, float ry, int z, float lift, float offset, float bias, float border, float frame) {
+        IsoCell cell = IsoWorld.instance.currentCell;
+        if (cell == null || !PerformanceSettings.fboRenderChunk) {
+            return -1;
+        }
+
+        float width = (float)Math.hypot(rx - lx, ry - ly);
+        if (width < 0.01F) {
+            return -1;
+        }
+
+        int playerIndex = IsoCamera.frameState.playerIndex;
+        IsoGridSquare square = cell.getGridSquare(PZMath.fastfloor((lx + rx) / 2.0F), PZMath.fastfloor((ly + ry) / 2.0F), z);
+        if (square == null) {
+            cinemaLastHidden = 1;
+            return 0;
+        }
+
+        if (!FBORenderCutaways.getInstance().shouldRenderBuildingSquare(playerIndex, square)) {
+            cinemaLastHidden = 3;
+            return 0;
+        }
+
+        cinemaLastHidden = 0;
+        float aspect = tex != null && tex.getWidth() > 0 ? (float)tex.getHeight() / tex.getWidth() : 0.5625F;
+        float height = width * aspect / LEVEL_UNITS;
+        ScreenDrawer drawer = screenDrawerPool.poll();
+        if (drawer == null) {
+            drawer = new ScreenDrawer();
+        }
+
+        drawer.tex = tex != null && tex.isValid() ? tex : null;
+        drawer.level = z;
+        drawer.frame = frame;
+        float dx = (rx - lx) / width;
+        float dy = (ry - ly) / width;
+        float backX = dy * offset * 0.5F;
+        float backY = -dx * offset * 0.5F;
+        float b = border / LEVEL_UNITS;
+        drawer.setQuad(0, lx - dx * border + backX, ly - dy * border + backY, rx + dx * border + backX, ry + dy * border + backY, z + lift - b, z + lift + height + b, bias);
+        drawer.setQuad(1, lx, ly, rx, ry, z + lift, z + lift + height, bias);
+        SpriteRenderer.instance.drawGeneric(drawer);
+        return 1;
+    }
+
     private static final class ScreenDrawer extends TextureDraw.GenericDrawer {
         final float[] quads = new float[14];
         VideoTexture tex;

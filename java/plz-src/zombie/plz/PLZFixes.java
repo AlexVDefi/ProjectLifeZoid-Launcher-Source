@@ -76,8 +76,11 @@ public final class PLZFixes {
     public static final String TRANSLATOR_ARGS = "translatorArgs";
     public static final String VEHICLE_CHUNK_REHOME = "vehicleChunkRehome";
     public static final String VOICE_ROUTING_SLACK = "voiceRoutingSlack";
+    public static final String VOICE_CROWD_SLACK = "voiceCrowdSlack";
     public static final String VOICE_IDLE_CHANNEL = "voiceIdleChannel";
     public static final String VEHICLE_GHOST_REPORT = "vehicleGhostReport";
+    public static final String VEHICLE_PHANTOM_REMOVE = "vehiclePhantomRemove";
+    public static final String VEHICLE_REMOVE_KEEP_OCCUPIED = "vehicleRemoveKeepOccupied";
     public static final String VEHICLE_SAVE_ANIMALS = "vehicleSaveAnimals";
     public static final String VEHICLE_SOUNDS_CLIENT = "vehicleSoundsClient";
     public static final String WORLD_ITEM_SPRITE_GUARD = "worldItemSpriteGuard";

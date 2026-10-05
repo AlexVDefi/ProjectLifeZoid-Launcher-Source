@@ -184,6 +184,7 @@ import zombie.plz.PLZGatedGrid;
 import zombie.plz.PLZObjectDamage;
 import zombie.plz.PLZMapPin;
 import zombie.plz.PLZMapScan;
+import zombie.plz.PLZSnowClear;
 import zombie.plz.PLZFlightRecorder;
 import zombie.plz.PLZLuaProfile;
 import zombie.plz.PLZEventSkip;
@@ -7635,6 +7636,22 @@ public final class IsoGridSquare {
         return (int)PLZChannelProbe.sinceLastVirtualMs();
     }
 
+    public static int plzVoiceMutedFrames() {
+        return (int)PLZChannelProbe.getMutedFrames();
+    }
+
+    public static int plzVoicePeakOpen() {
+        return PLZChannelProbe.getPeakOpen();
+    }
+
+    public static int plzVoicePeakAudible() {
+        return PLZChannelProbe.getPeakAudible();
+    }
+
+    public static int plzVoicePeakStolen() {
+        return PLZChannelProbe.getPeakStolen();
+    }
+
     public static void plzVoiceVirtualReset() {
         PLZChannelProbe.reset();
     }
@@ -7809,6 +7826,30 @@ public final class IsoGridSquare {
 
     public static String plzMapPinStatus() {
         return PLZMapPin.status();
+    }
+
+    public static int plzSnowClearSquares(String packed) {
+        return PLZSnowClear.clearSquares(packed);
+    }
+
+    public static int plzSnowRestoreSquares(String packed) {
+        return PLZSnowClear.restoreSquares(packed);
+    }
+
+    public static boolean plzSnowIsCleared(double x, double y) {
+        return PLZSnowClear.isCleared((int)Math.floor(x), (int)Math.floor(y));
+    }
+
+    public static int plzSnowClearReset() {
+        return PLZSnowClear.reset();
+    }
+
+    public static int plzSnowClearCount() {
+        return PLZSnowClear.count();
+    }
+
+    public static String plzSnowClearStatus() {
+        return PLZSnowClear.status();
     }
 
     public static String plzMapScanStart(double objects, double items, boolean containers, boolean excludeMapOriginals, double speed,

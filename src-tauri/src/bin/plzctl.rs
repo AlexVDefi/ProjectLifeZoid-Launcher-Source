@@ -1,5 +1,5 @@
 use app_lib::{
-    bootstrap, config, install, launch, patch, payload, query, state::State,
+    bootstrap, config, films, install, launch, patch, payload, query, state::State,
     workshop_override,
 };
 
@@ -497,6 +497,50 @@ Only the built-in `admin` role carries ConnectWithDebug. moderator and gm do not
         "workshop-proof-stage" => workshop_proof_stage(),
         "workshop-proof-status" => workshop_proof_status(),
         "workshop-proof-clear" => workshop_proof_clear(),
+        "films" => {
+            let st = State::load();
+            match (
+                install::find_install(st.install_dir.as_deref()),
+                films::fetch_index().await,
+            ) {
+                (Ok(dir), Ok(list)) => {
+                    let choices = films::read_choices();
+                    let wanted = films::wanted(&list, choices.skip_copyrighted.unwrap_or(false));
+                    line("signed films", list.len());
+                    line(
+                        "copyrighted films",
+                        match choices.skip_copyrighted {
+                            Some(true) => "skipped",
+                            Some(false) => "kept",
+                            None => "kept (player not asked yet)",
+                        },
+                    );
+                    line(
+                        "background",
+                        match choices.background {
+                            Some(true) => "on",
+                            Some(false) => "off",
+                            None => "off (player not asked yet)",
+                        },
+                    );
+                    line("videos dir", films::videos_dir(&dir).display());
+                    let mode = films::Mode::before_launch(false);
+                    match films::sync(&dir, &wanted, &mode, &|msg: &str| line("syncing", msg)).await {
+                        Ok(r) => {
+                            line("ready", format!("{} of {}", r.ready, r.films));
+                            line("downloaded", format!("{} file(s), {} bytes", r.downloaded, r.bytes));
+                            line("removed", r.removed);
+                            for f in &r.failed {
+                                line("FAILED", f);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
         "play" => match app_lib::run_play(&|step, detail| println!("[{step:<9}] {detail}")).await {
             Ok(r) => {
                 line("launched", r.launched);
@@ -525,7 +569,7 @@ JOIN REFUSED: {e}"
         other => {
             eprintln!("unknown command: {other}");
             eprintln!(
-                "try: status | name [value] | install [folder|auto] | debug on|off | bootstrap | server | mods | sync | patch | restore | stamp | running | workshop-proof-stage ID=TIMESTAMP [...] | workshop-proof-status | workshop-proof-clear | play"
+                "try: status | name [value] | install [folder|auto] | debug on|off | bootstrap | server | mods | sync | films | patch | restore | stamp | running | workshop-proof-stage ID=TIMESTAMP [...] | workshop-proof-status | workshop-proof-clear | play"
             );
             std::process::exit(2);
         }

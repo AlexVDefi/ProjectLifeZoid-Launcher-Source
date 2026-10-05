@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const PUBLIC_KEY_HEX: &str = "cee5e242040235eecccad136376acedf3abb9a4919b15551d23461abc937a403";
+pub(crate) const PUBLIC_KEY_HEX: &str = "cee5e242040235eecccad136376acedf3abb9a4919b15551d23461abc937a403";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PayloadFile {
@@ -116,6 +116,10 @@ fn resolve_baked(baked: &str) -> String {
     }
 }
 
+pub(crate) fn release_base() -> String {
+    base_url(&manifest_url())
+}
+
 fn base_url(manifest: &str) -> String {
     match manifest.rfind(['/', '\\']) {
         Some(i) => manifest[..i].to_string(),
@@ -172,7 +176,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const FETCH_ATTEMPTS: u32 = 3;
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -197,7 +201,7 @@ async fn fetch_once(url: &str) -> Result<Vec<u8>> {
 
 // A 4xx that is not "slow down" or "try again" means the file is not there. Retrying makes the
 // player wait three times as long for the same answer.
-fn worth_retrying(e: &Error) -> bool {
+pub(crate) fn worth_retrying(e: &Error) -> bool {
     match e {
         Error::Http { status, .. } => *status == 408 || *status == 429 || *status >= 500,
         _ => true,

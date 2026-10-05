@@ -158,7 +158,7 @@ struct SeqGuard {
     highest_seen_seq: u64,
 }
 
-fn read_seq(path: &Path) -> u64 {
+pub(crate) fn read_seq(path: &Path) -> u64 {
     fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice::<SeqGuard>(&b).ok())
@@ -166,7 +166,7 @@ fn read_seq(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn write_seq(path: &Path, seq: u64) -> Result<()> {
+pub(crate) fn write_seq(path: &Path, seq: u64) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -429,14 +429,14 @@ pub fn log_outcome(outcome: &Result<Option<Report>>) {
 
 // Its own thread and runtime: run_play blocks its worker for the whole session, and a task spawned
 // there sits in that worker's LIFO slot, which no other worker steals, until the game exits.
-fn run_every<F, Fut>(stop: Arc<AtomicBool>, period: Duration, job: F)
+pub(crate) fn run_every<F, Fut>(name: &str, stop: Arc<AtomicBool>, first: Duration, period: Duration, job: F)
 where
     F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = ()>,
 {
     let step = period.min(Duration::from_secs(1));
     let spawned = std::thread::Builder::new()
-        .name("press-refresh".into())
+        .name(name.into())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
@@ -446,9 +446,10 @@ where
                 }
             };
             runtime.block_on(async {
+                let mut wait = first;
                 loop {
                     let mut waited = Duration::ZERO;
-                    while waited < period {
+                    while waited < wait {
                         if stop.load(Ordering::Relaxed) {
                             return;
                         }
@@ -456,6 +457,7 @@ where
                         waited += step;
                     }
                     job().await;
+                    wait = period;
                 }
             });
         });
@@ -465,7 +467,7 @@ where
 }
 
 pub fn refresh_until(stop: Arc<AtomicBool>) {
-    run_every(stop, REFRESH, || async { log_outcome(&sync().await) });
+    run_every("press-refresh", stop, REFRESH, REFRESH, || async { log_outcome(&sync().await) });
 }
 
 #[cfg(test)]
@@ -574,7 +576,7 @@ mod tests {
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = runs.clone();
         run(async {
-            run_every(stop.clone(), Duration::from_millis(20), move || {
+            run_every("t", stop.clone(), Duration::from_millis(20), Duration::from_millis(20), move || {
                 let counted = counted.clone();
                 async move {
                     counted.fetch_add(1, Ordering::Relaxed);

@@ -2,6 +2,7 @@ pub mod account;
 pub mod bootstrap;
 pub mod config;
 pub mod error;
+pub mod films;
 pub mod install;
 pub mod jvmpath;
 pub mod launch;
@@ -685,6 +686,24 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
             notes.push(format!("Downloaded {} Press page(s).", report.downloaded));
         }
     }
+    progress("films", "Checking cinema videos");
+    let film_choices = films::read_choices();
+    let synced = match films::fetch_index().await {
+        Ok(list) => {
+            let wanted = films::wanted(&list, film_choices.skip_copyrighted.unwrap_or(false));
+            let mode = films::Mode::before_launch(film_choices.background == Some(true));
+            films::sync(&install_dir, &wanted, &mode, &|msg: &str| progress("films", msg)).await
+        }
+        Err(e) => Err(e),
+    };
+    match synced {
+        Ok(report) => {
+            session_log::log("films", &format!("{report:?}"));
+            notes.extend(films::describe(&report));
+        }
+        // A film is never worth keeping someone out of the server over.
+        Err(e) => notes.push(format!("Cinema videos not updated: {e}")),
+    }
     st.installed_build = Some(m.build);
     st.install_dir = Some(install_dir.clone());
     st.jar = Some(fp);
@@ -735,6 +754,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         let mut last_code: Option<String> = None;
         let press_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         press::refresh_until(press_stop.clone());
+        films::refresh_until(press_stop.clone(), install_dir.clone());
         launch::wait_for_exit_with(&mut watch, || {
             let Some(result) = bootstrap::read_join_result() else {
                 return;
@@ -925,6 +945,17 @@ async fn set_body_override(enabled: bool) -> Result<bool> {
 
     std::fs::write(&path, format!("enabled={}\r\n", enabled))?;
     Ok(enabled)
+}
+
+#[tauri::command]
+async fn get_films_choices() -> Result<films::Choices> {
+    Ok(films::read_choices())
+}
+
+#[tauri::command]
+async fn set_films_choices(skip_copyrighted: bool, background: bool) -> Result<films::Choices> {
+    films::write_choices(skip_copyrighted, background)?;
+    Ok(films::read_choices())
 }
 
 #[tauri::command]
@@ -1250,6 +1281,8 @@ pub fn run() {
             get_server_override,
             set_body_override,
             get_body_override,
+            get_films_choices,
+            set_films_choices,
             perfmode_commands::get_performance_mode,
             perfmode_commands::set_performance_mode,
             fit_window

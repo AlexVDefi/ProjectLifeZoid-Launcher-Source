@@ -29,6 +29,35 @@ restores it before doing anything else.
 macOS has no `ProjectZomboid64.json`, so there the payload is copied into the app bundle's
 `Contents/Java` instead. Every file written is recorded, and a restore removes exactly those.
 
+### Cinema films
+
+The server's in-game screens play films, and the game can only read video from its own
+install, so the launcher downloads them into `media/videos/plz/` inside the game folder.
+That folder is the one exception to "put back exactly as it was": films are large, so they
+stay between sessions instead of being downloaded on every Play.
+
+- Films have their own list, `release/films/index.json`, signed with the release key but
+  separate from the manifest, so a film can be added without a release. Every film file is
+  named in it with its SHA-256 and size. A file that does not match is never written.
+- The launcher deletes only files it wrote itself (recorded in
+  `%LOCALAPPDATA%\ProjectLifeZoidLauncher\films\installed.json`), and only on Play, when the
+  list stops naming them or you turn on **Skip copyrighted films**. Anything else in that
+  folder is left alone, and nothing is deleted while the game runs.
+- Each film is marked copyrighted or not. With **Skip copyrighted films** on (Details), the
+  copyrighted ones are not downloaded and any already downloaded are removed.
+- With **Download new films while I play** on, Play does not wait for films: the launcher
+  checks the list every five minutes while the game runs and downloads at up to 2 MB/s.
+  With it off, Play downloads everything first and new films wait for the next Play.
+- Both choices live in `Zomboid/Lua/PLZLauncher/films.txt`, and the launcher writes the films
+  that are complete to `films-ready.txt` beside it. The game reads both, so a film becomes
+  playable the moment its last file lands.
+- To remove every film, delete `media/videos/plz/` from the game folder.
+
+Publishing a film is `python tools/film.py add ...` and then `tools/film-publish.ps1`, which
+uploads the files, signs and uploads the list, and drops the catalog the server reads
+(`server-data/Lua/PLZCinema/catalog.json`). The server picks it up within 30 seconds, with
+no restart.
+
 ## What it does not do
 
 - No web sign-in, no password. You pick a username; identity comes from the Steam session

@@ -225,6 +225,23 @@
                 </p>
             </section>
             <section>
+                <h3>Cinema videos</h3>
+                <p class="hint">
+                    Videos shown on the server are downloaded through the launcher. Some are
+                    copyrighted; if you opt out of those you will still see all non-copyright
+                    videos. The launcher can also download videos while your game is running. If
+                    you opt out of that, you will need to restart the game to get any added videos.
+                </p>
+                <label class="toggle">
+                    <input type="checkbox" id="films-skip-copyrighted" />
+                    <span>Skip copyrighted videos</span>
+                </label>
+                <label class="toggle">
+                    <input type="checkbox" id="films-background" />
+                    <span>Download new videos while I play</span>
+                </label>
+            </section>
+            <section>
                 <h3>Performance mode</h3>
                 <label class="toggle">
                     <input type="checkbox" id="performance-mode" />
@@ -280,6 +297,33 @@
         <div class="modal-actions">
             <button class="btn btn-secondary" id="update-dialog-later" type="button">Not now</button>
             <button class="btn btn-primary" id="update-dialog-install" type="button">Install</button>
+        </div>
+    </dialog>
+
+    <dialog class="modal" id="films-dialog" aria-labelledby="films-dialog-title">
+        <h2 id="films-dialog-title">Videos on the server</h2>
+        <p>
+            We can now show videos on the server, and they are downloaded through the launcher.
+            Some videos are going to be copyrighted, just like the songs from Lifestyle and the
+            server's music mods are. If you don't want to have any copyrighted videos sent to
+            you, you can opt out and you will still see all non-copyright videos.
+        </p>
+        <p>
+            The videos are heavily compressed, so they use very little disk space and we will be
+            archiving older videos if they start piling up. The launcher is able to download them
+            even when your game is running, but you can opt-out of that too if you want, and
+            instead you will need to restart the game to download any added videos.
+        </p>
+        <label class="toggle">
+            <input type="checkbox" id="films-dialog-skip" />
+            <span>Skip copyrighted videos</span>
+        </label>
+        <label class="toggle">
+            <input type="checkbox" id="films-dialog-background" checked />
+            <span>Download new videos while I play</span>
+        </label>
+        <div class="modal-actions">
+            <button class="btn btn-primary" id="films-dialog-save" type="button">Save</button>
         </div>
     </dialog>
 

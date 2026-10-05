@@ -49,7 +49,51 @@ public final class PLZVehicleGhost {
         }
     };
 
+    /** How long after its last physics packet a client still counts as driving an unknown id. */
+    private static final long DRIVING_MS = 5000L;
+
+    private static final Map<String, Long> driving = new LinkedHashMap<String, Long>(16, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+            return this.size() > MAX_TRACKED;
+        }
+    };
+
     private PLZVehicleGhost() {
+    }
+
+    /** Records that this user is sending physics for a vehicle id the server cannot resolve. */
+    public static void noteDriving(short vehicleId, String username) {
+        noteDrivingAt(vehicleId, username, System.currentTimeMillis());
+    }
+
+    static void noteDrivingAt(short vehicleId, String username, long nowMs) {
+        if (username == null) {
+            return;
+        }
+
+        synchronized (driving) {
+            driving.put(username + "#" + vehicleId, nowMs);
+        }
+    }
+
+    /**
+     * True while this user is driving an id the server cannot resolve. Telling such a client to remove
+     * that car would freeze a client without the VehicleRemovePacket occupant guard, so callers skip it.
+     */
+    public static boolean isDriving(short vehicleId, String username) {
+        return isDrivingAt(vehicleId, username, System.currentTimeMillis());
+    }
+
+    static boolean isDrivingAt(short vehicleId, String username, long nowMs) {
+        if (username == null) {
+            return false;
+        }
+
+        synchronized (driving) {
+            Long last = driving.get(username + "#" + vehicleId);
+            return last != null && nowMs - last < DRIVING_MS;
+        }
     }
 
     /**

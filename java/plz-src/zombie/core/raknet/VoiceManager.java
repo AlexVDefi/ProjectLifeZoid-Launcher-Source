@@ -900,10 +900,15 @@ public class VoiceManager {
     // other caller passes a value at or below 1.0 and is unaffected, because the
     // slider can only ever bring those down.
     private void setUserPlaySound(long userPlayChannel, float volume) {
+        this.plzSetUserPlaySound(userPlayChannel, volume);
+    }
+
+    private float plzSetUserPlaySound(long userPlayChannel, float volume) {
         volume = IsoUtils.clamp(
             volume * IsoUtils.lerp(this.volumePlayers, 0.0F, 12.0F), 0.0F, PLZVoice.playbackCeiling()
         );
         javafmod.FMOD_Channel_SetVolume(userPlayChannel, volume);
+        return volume;
     }
 
     private long getUserPlaySound(short onlineId) {
@@ -1189,6 +1194,7 @@ public class VoiceManager {
                 plzRadioOnlyPeers.clear();
             }
 
+            boolean plzCensus = PLZFixes.on(PLZFixes.CHANNEL_PROBE) && PLZChannelProbe.censusBegin();
             for (int i = 0; i < data.size(); i++) {
                 VoiceManagerData d = data.get(i);
                 d.online = false;
@@ -1223,6 +1229,14 @@ public class VoiceManager {
                     this.plzCloseVoiceChannel(d);
                     PLZFixes.hit(PLZFixes.VOICE_IDLE_CHANNEL);
                 }
+
+                if (plzCensus) {
+                    PLZChannelProbe.census(d.userplaychannel, d.index);
+                }
+            }
+
+            if (plzCensus) {
+                PLZChannelProbe.censusEnd();
             }
 
             long currentTime = System.currentTimeMillis() - this.timeLast;
@@ -1246,9 +1260,7 @@ public class VoiceManager {
                             if (!d.userplaymute) {
                                 // Open the channel before it is positioned, or the first frame after an idle close plays unplaced.
                                 this.getUserPlaySound(d.index);
-                                if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
-                                    PLZChannelProbe.observe(d.userplaychannel);
-                                }
+                                float plzVolume = 0.0F;
                                 float range = player != null ? IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY()) : 0.0F;
                                 PLZBroadcast.Point bp = PLZBroadcast.nearest(d.index, me.getX(), me.getY());
                                 boolean plzHearsDirect = player != null && range <= PLZVoice.rangeForMode(plzSpeakerMode(d), maxDistance);
@@ -1262,18 +1274,18 @@ public class VoiceManager {
                                     javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 1.0F);
                                     javafmod.FMOD_Channel_Set3DMinMaxDistance(d.userplaychannel, bp.range, bp.range * 2.0F);
                                     javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, bp.x, bp.y, bp.z * 3.0F, 0.0F, 0.0F, 0.0F);
-                                    this.setUserPlaySound(d.userplaychannel, PLZBroadcast.volumeAt(bp, me.getX(), me.getY()));
+                                    plzVolume = this.plzSetUserPlaySound(d.userplaychannel, PLZBroadcast.volumeAt(bp, me.getX(), me.getY()));
                                 } else if (me.canHearAll()) {
                                     javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                     javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
-                                    this.setUserPlaySound(d.userplaychannel, this.getCanHearAllVolume(range));
+                                    plzVolume = this.plzSetUserPlaySound(d.userplaychannel, this.getCanHearAllVolume(range));
                                 } else {
                                     boolean plzSameVehicle = plzSharesVehicle(me, player);
                                     VoiceManagerData.RadioData rdata = this.checkForNearbyRadios(d);
                                     if (rdata != null && rdata.deviceData != null && !plzSameVehicle) {
                                         javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                         javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
-                                        this.setUserPlaySound(d.userplaychannel, rdata.deviceData.getDeviceVolume());
+                                        plzVolume = this.plzSetUserPlaySound(d.userplaychannel, rdata.deviceData.getDeviceVolume());
                                         rdata.deviceData.doReceiveMPSignal(rdata.lastReceiveDistance);
                                     } else if (player != null) {
                                         if (rdata == null && !plzSameVehicle) {
@@ -1306,7 +1318,7 @@ public class VoiceManager {
                                             // hear-all branch, and it is what makes the falloff
                                             // smooth AND makes it - rather than the routing gate -
                                             // the thing that decides where a voice stops.
-                                            this.setUserPlaySound(
+                                            plzVolume = this.plzSetUserPlaySound(
                                                 d.userplaychannel,
                                                 PLZVoice.volumeFor(
                                                     speakerMode, range, minDistance, maxDistance
@@ -1329,6 +1341,10 @@ public class VoiceManager {
                                             logFrame(me, player, range);
                                         }
                                     }
+                                }
+
+                                if (PLZFixes.on(PLZFixes.CHANNEL_PROBE)) {
+                                    PLZChannelProbe.observe(d.userplaychannel, d.index, plzVolume > 0.0F);
                                 }
 
                                 javafmod.FMOD_System_RAWPlayData(this.getUserPlaySound(d.index), this.buf, this.buf.length);
