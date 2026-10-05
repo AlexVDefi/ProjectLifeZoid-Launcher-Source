@@ -1,6 +1,35 @@
 ﻿{
     "releases":  [
                      {
+                         "date":  "2026-10-05T18:00:17Z",
+                         "workshopVersion":  "1.1.0",
+                         "payloadBuild":  70,
+                         "serverTag":  70,
+                         "workshopItem":  [
+                                              "3788277235"
+                                          ],
+                         "workshopUpdated":  1791219986,
+                         "builtAgainstJar":  "e1a69eb743ede60b213a0fe7f8b83d4fcab773036d256cc4543a336f3b058a33",
+                         "provenance":  {
+                                            "repo":  "AlexVDefi/ProjectLifeZoid-Launcher-Source",
+                                            "commit":  "4390e8c5982e1f3425c2e45c4c912ebffd44173e",
+                                            "workflow":  ".github/workflows/payload.yml",
+                                            "run":  "https://github.com/AlexVDefi/ProjectLifeZoid-Launcher-Source/actions/runs/37345554175/attempts/1",
+                                            "release":  "payload-build-70",
+                                            "sums":  "3a85349949e036eba236f73874ff29366b13a24c5a455810bee1f5cc909ac70e"
+                                        },
+                         "clientFiles":  472,
+                         "serverFiles":  350,
+                         "launcher":  {
+                                          "sha":  "79ae3bc",
+                                          "dirty":  3
+                                      },
+                         "mods":  {
+                                      "sha":  "198bf82",
+                                      "dirty":  5
+                                  }
+                     },
+                     {
                          "date":  "2026-10-04T04:34:20Z",
                          "workshopVersion":  "1.0.60",
                          "payloadBuild":  69,
