@@ -3,7 +3,7 @@ use app_lib::{
     workshop_override,
 };
 
-#[path = "plzctl_live/mod.rs"]
+#[path = "../../cli/live_loopback.rs"]
 mod live_loopback;
 
 fn line(k: &str, v: impl std::fmt::Display) {
