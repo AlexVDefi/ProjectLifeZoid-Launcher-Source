@@ -1,28 +1,19 @@
 package zombie.plz;
 
-import java.awt.image.BufferedImage;
-import java.awt.image.DataBufferByte;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
+import java.nio.channels.SocketChannel;
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL32;
-import zombie.ZomboidFileSystem;
 import zombie.core.Core;
 import zombie.core.SpriteRenderer;
 import zombie.core.opengl.GLStateRenderThread;
@@ -36,22 +27,25 @@ public final class PLZLiveVideo {
     private static final int GL_ALREADY_SIGNALED = 0x911A;
     private static final int GL_CONDITION_SATISFIED = 0x911C;
     private static final int RING = 3;
-    private static final long POLL_MS = 30L;
 
     private PLZLiveVideo() {
     }
 
-    public static String framePath(String key) {
-        String safe = key == null ? "unknown" : key.replaceAll("[^A-Za-z0-9_-]", "_");
-        return ZomboidFileSystem.instance.getCacheDir() + File.separator + "plz-broadcast" + File.separator + safe + ".jpg";
+    private static final class Frame {
+        final ByteBuffer pixels;
+        final long tsMs;
+
+        Frame(ByteBuffer pixels, long tsMs) {
+            this.pixels = pixels;
+            this.tsMs = tsMs;
+        }
     }
 
     public static final class Capture {
-        final String path;
-        final int width;
-        final int height;
+        public final int width;
+        public final int height;
+        final int fps;
         final long intervalMs;
-        final int quality;
         long nextAtMs;
         volatile boolean stopped;
 
@@ -59,87 +53,54 @@ public final class PLZLiveVideo {
         int rbo;
         final int[] pbo = new int[RING];
         final long[] fence = new long[RING];
+        final long[] slotTs = new long[RING];
         int slot;
 
-        final ArrayBlockingQueue<ByteBuffer> encodeQueue = new ArrayBlockingQueue<>(1);
-        final ArrayBlockingQueue<ByteBuffer> freeBuffers = new ArrayBlockingQueue<>(RING + 2);
-        Thread encoder;
+        final ArrayBlockingQueue<Frame> sendQueue = new ArrayBlockingQueue<>(1);
+        final ArrayBlockingQueue<ByteBuffer> freeBuffers = new ArrayBlockingQueue<>(RING + 3);
+        Thread sender;
 
         public volatile long frames;
         public volatile long dropped;
-        public volatile long lastBytes;
-        public volatile double encodeMsAvg;
         public volatile double gpuMsAvg;
 
-        Capture(String key, int width, int height, int fps, int quality) {
-            this.path = framePath(key);
+        Capture(int width, int height, int fps) {
             this.width = width;
             this.height = height;
-            this.intervalMs = Math.max(20L, 1000L / Math.max(1, fps));
-            this.quality = quality;
-            for (int i = 0; i < RING + 2; i++) {
+            this.fps = fps;
+            this.intervalMs = Math.max(16L, 1000L / Math.max(1, fps));
+            for (int i = 0; i < RING + 3; i++) {
                 this.freeBuffers.offer(BufferUtils.createByteBuffer(width * height * 4));
             }
         }
 
-        void startEncoder() {
-            new File(this.path).getParentFile().mkdirs();
-            this.encoder = new Thread(this::encodeLoop, "PLZLiveEncode");
-            this.encoder.setDaemon(true);
-            this.encoder.start();
+        void startSender() {
+            this.sender = new Thread(this::sendLoop, "PLZLiveSend");
+            this.sender.setDaemon(true);
+            this.sender.start();
         }
 
-        private void encodeLoop() {
-            ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
-            BufferedImage image = new BufferedImage(this.width, this.height, BufferedImage.TYPE_3BYTE_BGR);
-            byte[] bgr = ((DataBufferByte)image.getRaster().getDataBuffer()).getData();
-            byte[] rgba = new byte[this.width * this.height * 4];
-            ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
-            ImageWriteParam param = writer.getDefaultWriteParam();
-            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-            param.setCompressionQuality(this.quality / 100.0F);
-            File target = new File(this.path);
-            File tmp = new File(this.path + ".tmp");
+        private void sendLoop() {
             try {
                 while (!this.stopped) {
-                    ByteBuffer pixels = this.encodeQueue.poll(250L, TimeUnit.MILLISECONDS);
-                    if (pixels == null) {
+                    Frame f = this.sendQueue.poll(250L, TimeUnit.MILLISECONDS);
+                    if (f == null) {
                         continue;
                     }
-                    long t0 = System.nanoTime();
-                    pixels.rewind();
-                    pixels.get(rgba);
-                    this.freeBuffers.offer(pixels);
-                    for (int i = 0, j = 0; j < bgr.length; i += 4) {
-                        bgr[j++] = rgba[i + 2];
-                        bgr[j++] = rgba[i + 1];
-                        bgr[j++] = rgba[i];
-                    }
-                    out.reset();
-                    try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
-                        writer.setOutput(ios);
-                        writer.write(null, new IIOImage(image, null, null), param);
-                    }
-                    try {
-                        Files.write(tmp.toPath(), out.toByteArray());
-                        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                    } catch (IOException e) {
+                    ByteBuffer pixels = f.pixels;
+                    if (PLZLiveLink.castVideo(f.tsMs, this.width, this.height, pixels, () -> this.freeBuffers.offer(pixels))) {
+                        this.frames++;
+                    } else {
+                        this.freeBuffers.offer(pixels);
                         this.dropped++;
-                        continue;
                     }
-                    double ms = (System.nanoTime() - t0) / 1.0E6;
-                    this.encodeMsAvg = this.frames == 0 ? ms : this.encodeMsAvg * 0.9 + ms * 0.1;
-                    this.lastBytes = out.size();
-                    this.frames++;
                 }
-            } catch (Exception e) {
-                DebugLog.log("PLZLiveVideo: encoder stopped: " + e);
-            } finally {
-                writer.dispose();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
-        void renderStep() {
+        void renderStep(long tsMs) {
             if (this.stopped) {
                 this.release();
                 return;
@@ -178,6 +139,7 @@ public final class PLZLiveVideo {
                 GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 4);
                 GL11.glReadPixels(0, 0, this.width, this.height, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 0L);
                 this.fence[s] = GL32.glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                this.slotTs[s] = tsMs;
                 this.slot = (s + 1) % RING;
             } finally {
                 GL15.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
@@ -232,7 +194,7 @@ public final class PLZLiveVideo {
                     target.put(mapped);
                     target.flip();
                     GL15.glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-                    if (!this.encodeQueue.offer(target)) {
+                    if (!this.sendQueue.offer(new Frame(target, this.slotTs[i]))) {
                         this.freeBuffers.offer(target);
                         this.dropped++;
                     }
@@ -263,12 +225,13 @@ public final class PLZLiveVideo {
 
     private static final class CaptureDrawer extends TextureDraw.GenericDrawer {
         Capture capture;
+        long tsMs;
 
         @Override
         public void render() {
             Capture c = this.capture;
             if (c != null) {
-                c.renderStep();
+                c.renderStep(this.tsMs);
             }
         }
 
@@ -279,23 +242,42 @@ public final class PLZLiveVideo {
     }
 
     private static volatile Capture capture;
+    private static volatile long castStartMs;
+    private static volatile int wantWidth;
+    private static volatile int wantHeight;
 
-    public static void captureStart(String key, int width, int height, int fps, int quality) {
+    private static void retire(Capture c) {
+        c.stopped = true;
+        CaptureDrawer drawer = new CaptureDrawer();
+        drawer.capture = c;
+        SpriteRenderer.instance.drawGeneric(drawer);
+    }
+
+    public static void captureStart(String token, int width, int height, int fps) {
         captureStop();
-        ImageIO.setUseCache(false);
-        Capture c = new Capture(key, width, height, fps, quality);
-        c.startEncoder();
+        castStartMs = System.currentTimeMillis();
+        wantWidth = width;
+        wantHeight = height;
+        Capture c = new Capture(width, height, fps);
+        c.startSender();
         capture = c;
+        PLZLiveLink.castStart(token, width, height, fps);
     }
 
     public static void captureStop() {
         Capture c = capture;
         capture = null;
         if (c != null) {
-            c.stopped = true;
-            CaptureDrawer drawer = new CaptureDrawer();
-            drawer.capture = c;
-            SpriteRenderer.instance.drawGeneric(drawer);
+            retire(c);
+        }
+        PLZLiveLink.castStop();
+    }
+
+    /** From the link's reader thread; applied on the next main-thread tick. */
+    static void requestSize(int width, int height) {
+        if (width >= 160 && height >= 90 && width % 2 == 0 && height % 2 == 0) {
+            wantWidth = width;
+            wantHeight = height;
         }
     }
 
@@ -308,102 +290,65 @@ public final class PLZLiveVideo {
         if (c == null) {
             return false;
         }
+        if (wantWidth != c.width || wantHeight != c.height) {
+            Capture next = new Capture(wantWidth, wantHeight, c.fps);
+            next.startSender();
+            capture = next;
+            retire(c);
+            DebugLog.log("PLZLiveVideo: capture now " + wantWidth + "x" + wantHeight);
+            c = next;
+        }
         long now = System.currentTimeMillis();
         if (now < c.nextAtMs) {
             return false;
         }
-        c.nextAtMs = now + c.intervalMs;
+        c.nextAtMs = Math.max(c.nextAtMs + c.intervalMs, now - c.intervalMs);
         CaptureDrawer drawer = new CaptureDrawer();
         drawer.capture = c;
+        drawer.tsMs = now - castStartMs;
         SpriteRenderer.instance.drawGeneric(drawer);
         return true;
     }
 
+    /** From the voice thread, for every frame the player's own mic actually transmitted. */
+    public static void castVoice(byte[] pcmLe, int bytes, int rate) {
+        if (capture != null && pcmLe != null && bytes > 1) {
+            PLZLiveLink.castAudio(System.currentTimeMillis() - castStartMs, rate, pcmLe, bytes);
+        }
+    }
+
     public static final class Feed {
-        final File file;
+        final String stream;
         final AtomicReference<ByteBuffer> pending = new AtomicReference<>();
         final ArrayBlockingQueue<ByteBuffer> freeBuffers = new ArrayBlockingQueue<>(4);
-        volatile boolean stopped;
         volatile int width;
         volatile int height;
         public volatile long decoded;
-        public volatile double decodeMsAvg;
         public volatile long lastFrameMs;
-        long lastModified;
 
-        Feed(String key) {
-            this.file = new File(framePath(key));
-            Thread t = new Thread(this::loop, "PLZLiveDecode");
-            t.setDaemon(true);
-            t.start();
+        Feed(String stream) {
+            this.stream = stream;
         }
 
-        private void loop() {
-            byte[] rgba = new byte[0];
-            try {
-                while (!this.stopped) {
-                    Thread.sleep(POLL_MS);
-                    long modified = this.file.lastModified();
-                    if (modified == 0L || modified == this.lastModified) {
-                        continue;
-                    }
-                    BufferedImage image;
-                    try {
-                        byte[] bytes = Files.readAllBytes(this.file.toPath());
-                        image = ImageIO.read(new ByteArrayInputStream(bytes));
-                    } catch (IOException e) {
-                        continue;
-                    }
-                    this.lastModified = modified;
-                    if (image == null) {
-                        continue;
-                    }
-                    long t0 = System.nanoTime();
-                    int w = image.getWidth();
-                    int h = image.getHeight();
-                    int size = w * h * 4;
-                    if (rgba.length != size) {
-                        rgba = new byte[size];
-                    }
-                    if (image.getType() == BufferedImage.TYPE_3BYTE_BGR) {
-                        byte[] bgr = ((DataBufferByte)image.getRaster().getDataBuffer()).getData();
-                        for (int i = 0, j = 0; i < bgr.length; i += 3) {
-                            rgba[j++] = bgr[i + 2];
-                            rgba[j++] = bgr[i + 1];
-                            rgba[j++] = bgr[i];
-                            rgba[j++] = (byte)255;
-                        }
-                    } else {
-                        int[] argb = image.getRGB(0, 0, w, h, null, 0, w);
-                        for (int i = 0, j = 0; i < argb.length; i++) {
-                            int c = argb[i];
-                            rgba[j++] = (byte)(c >> 16);
-                            rgba[j++] = (byte)(c >> 8);
-                            rgba[j++] = (byte)c;
-                            rgba[j++] = (byte)255;
-                        }
-                    }
-                    ByteBuffer target = this.freeBuffers.poll();
-                    if (target == null || target.capacity() < size) {
-                        target = BufferUtils.createByteBuffer(size);
-                    }
-                    target.clear();
-                    target.put(rgba, 0, size);
-                    target.flip();
-                    this.width = w;
-                    this.height = h;
-                    ByteBuffer old = this.pending.getAndSet(target);
-                    if (old != null) {
-                        this.freeBuffers.offer(old);
-                    }
-                    double ms = (System.nanoTime() - t0) / 1.0E6;
-                    this.decodeMsAvg = this.decoded == 0 ? ms : this.decodeMsAvg * 0.9 + ms * 0.1;
-                    this.decoded++;
-                    this.lastFrameMs = System.currentTimeMillis();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        ByteBuffer obtain(int size) {
+            ByteBuffer b = this.freeBuffers.poll();
+            if (b == null || b.capacity() < size) {
+                b = BufferUtils.createByteBuffer(size);
             }
+            b.clear();
+            b.limit(size);
+            return b;
+        }
+
+        void publish(ByteBuffer b, int w, int h) {
+            this.width = w;
+            this.height = h;
+            ByteBuffer old = this.pending.getAndSet(b);
+            if (old != null) {
+                this.freeBuffers.offer(old);
+            }
+            this.decoded++;
+            this.lastFrameMs = System.currentTimeMillis();
         }
 
         public ByteBuffer takePending() {
@@ -423,12 +368,59 @@ public final class PLZLiveVideo {
         }
 
         public void stop() {
-            this.stopped = true;
+            List<Feed> list = feeds.get(this.stream);
+            if (list != null && list.remove(this) && list.isEmpty()) {
+                feeds.remove(this.stream, list);
+                PLZLiveLink.unwatch(this.stream);
+                PLZLiveAudio.release(this.stream);
+            }
         }
     }
 
-    public static Feed openFeed(String key) {
-        ImageIO.setUseCache(false);
-        return new Feed(key);
+    private static final ConcurrentHashMap<String, CopyOnWriteArrayList<Feed>> feeds = new ConcurrentHashMap<>();
+    private static final ByteBuffer scratch = ByteBuffer.allocateDirect(64 * 1024);
+
+    public static Feed openFeed(String stream) {
+        Feed feed = new Feed(stream);
+        feeds.computeIfAbsent(stream, k -> new CopyOnWriteArrayList<>()).add(feed);
+        PLZLiveLink.watch(stream);
+        return feed;
+    }
+
+    static boolean watching(String stream) {
+        List<Feed> list = feeds.get(stream);
+        return list != null && !list.isEmpty();
+    }
+
+    static void receiveFrame(SocketChannel ch, String stream, int w, int h, int bytes) throws IOException {
+        List<Feed> list = feeds.get(stream);
+        if (list == null || list.isEmpty() || bytes != w * h * 4 || bytes <= 0) {
+            skip(ch, bytes);
+            return;
+        }
+        Feed first = list.get(0);
+        ByteBuffer b = first.obtain(bytes);
+        PLZLiveLink.readFully(ch, b);
+        b.flip();
+        for (int i = 1; i < list.size(); i++) {
+            Feed f = list.get(i);
+            ByteBuffer copy = f.obtain(bytes);
+            b.rewind();
+            copy.put(b);
+            copy.flip();
+            f.publish(copy, w, h);
+        }
+        b.rewind();
+        first.publish(b, w, h);
+    }
+
+    private static void skip(SocketChannel ch, int bytes) throws IOException {
+        int left = bytes;
+        while (left > 0) {
+            scratch.clear();
+            scratch.limit(Math.min(left, scratch.capacity()));
+            PLZLiveLink.readFully(ch, scratch);
+            left -= scratch.limit();
+        }
     }
 }

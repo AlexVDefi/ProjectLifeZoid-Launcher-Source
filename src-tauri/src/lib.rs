@@ -7,6 +7,7 @@ pub mod install;
 pub mod jvmpath;
 pub mod launch;
 pub mod linuxfix;
+pub mod live;
 pub mod news;
 pub mod patch;
 pub mod payload;
@@ -755,6 +756,7 @@ pub async fn run_play(progress: &(dyn Fn(&str, &str) + Send + Sync)) -> Result<P
         let press_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         press::refresh_until(press_stop.clone());
         films::refresh_until(press_stop.clone(), install_dir.clone());
+        live::serve_until(press_stop.clone());
         launch::wait_for_exit_with(&mut watch, || {
             let Some(result) = bootstrap::read_join_result() else {
                 return;

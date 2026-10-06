@@ -18043,4 +18043,12 @@ public abstract class IsoGameCharacter
     public static String plzDownedPatchStatus() {
         return zombie.plz.PLZDowned.patchStatus();
     }
+
+    public static String plzLiveNewStream() {
+        return zombie.plz.PLZLiveToken.newStream();
+    }
+
+    public static String plzLiveToken(String stream, double ttlSeconds) {
+        return zombie.plz.PLZLiveToken.token(stream, (long)ttlSeconds);
+    }
 }

@@ -3384,8 +3384,6 @@ public class GameServer {
                 radioData[i] = bb.getInt();
             }
 
-            zombie.plz.PLZBroadcast.clamp(connection, radioData, radioDataSize);
-
             // PLZ: this table is republished only every 3010 ms and the native voice server routes
             // from it, so a speaker who has moved since their last publish is simply not
             // transmitted - which is why voice cuts out in a moving car. PLZVoiceRouting overwrites

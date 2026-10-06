@@ -37,7 +37,8 @@ ed25519-dalek = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
-tokio = { version = "1", features = ["time", "net", "rt", "macros"] }
+tokio = { version = "1", features = ["time", "net", "rt", "macros", "sync"] }
+openh264 = "0.9.8"
 dirs = "5"
 tauri-plugin-updater = "2"
 base64 = "0.22"

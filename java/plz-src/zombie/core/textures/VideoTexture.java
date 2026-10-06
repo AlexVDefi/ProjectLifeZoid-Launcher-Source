@@ -1,6 +1,7 @@
 package zombie.core.textures;
 
 import fmod.javafmod;
+import fmod.javafmodJNI;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -27,6 +28,8 @@ import zombie.iso.IsoGridSquare;
 import zombie.iso.IsoWorld;
 import zombie.iso.PlayerCamera;
 import zombie.iso.fboRenderChunk.FBORenderCutaways;
+import zombie.plz.PLZLiveAudio;
+import zombie.plz.PLZLiveLink;
 import zombie.plz.PLZLiveVideo;
 
 @UsedFromLua
@@ -222,16 +225,24 @@ public class VideoTexture extends Texture {
         return feed.decoded;
     }
 
-    public double cinemaLiveDecodeMs() {
-        return this.liveFeed == null ? -1.0 : this.liveFeed.decodeMsAvg;
-    }
-
     public long cinemaLiveAgeMs() {
         return this.liveFeed == null || this.liveFeed.lastFrameMs == 0L ? -1L : System.currentTimeMillis() - this.liveFeed.lastFrameMs;
     }
 
-    public static void cinemaCaptureStart(String key, int width, int height, int fps, int quality) {
-        PLZLiveVideo.captureStart(key, width, height, fps, quality);
+    public static void cinemaLiveAudioPlace(String stream, float x, float y, float z, float range, float volume) {
+        PLZLiveAudio.place(stream, x, y, z, range, volume);
+    }
+
+    public static String cinemaLiveStatus(String key) {
+        return PLZLiveLink.status(key);
+    }
+
+    public static boolean cinemaLiveLinked() {
+        return PLZLiveLink.connected();
+    }
+
+    public static void cinemaCaptureStart(String token, int width, int height, int fps) {
+        PLZLiveVideo.captureStart(token, width, height, fps);
     }
 
     public static void cinemaCaptureStop() {
@@ -248,7 +259,8 @@ public class VideoTexture extends Texture {
             return "off";
         }
         return String.format(
-            "frames=%d dropped=%d bytes=%d encodeMs=%.2f gpuMs=%.3f", c.frames, c.dropped, c.lastBytes, c.encodeMsAvg, c.gpuMsAvg
+            "size=%dx%d frames=%d dropped=%d gpuMs=%.3f linked=%b audio=%d",
+            c.width, c.height, c.frames, c.dropped, c.gpuMsAvg, PLZLiveLink.connected(), PLZLiveLink.sentAudio
         );
     }
 
@@ -425,6 +437,11 @@ public class VideoTexture extends Texture {
         return s == null || s.channel == 0L ? -1.0 : (double)javafmod.FMOD_Channel_GetPosition(s.channel, 1);
     }
 
+    public static double cinemaAudioAudibility(String slot) {
+        AudioSlot s = audioSlots.get(slot);
+        return s == null || s.channel == 0L ? -1.0 : (double)javafmod.FMOD_Channel_GetAudibility(s.channel);
+    }
+
     public static boolean cinemaAudioIsVirtual(String slot) {
         AudioSlot s = audioSlots.get(slot);
         return s != null && s.channel != 0L && javafmod.FMOD_Channel_IsVirtual(s.channel);
@@ -441,7 +458,7 @@ public class VideoTexture extends Texture {
         }
     }
 
-    public static int cinemaAudioPlace(String slot, float sx, float sy, float sz, float minDist, float maxDist, float occlusion) {
+    public static int cinemaAudioPlace(String slot, float sx, float sy, float sz, float minDist, float maxDist, float occlusion, float level) {
         AudioSlot s = audioSlots.get(slot);
         if (s == null || s.channel == 0L) {
             return -1;
@@ -449,6 +466,8 @@ public class VideoTexture extends Texture {
 
         javafmod.FMOD_Channel_Set3DMinMaxDistance(s.channel, minDist, maxDist);
         javafmod.FMOD_Channel_Set3DOcclusion(s.channel, occlusion, occlusion);
+        // films are mono, so Set3DSpread is a no-op; the javafmod wrapper wants a SWIG handle, the JNI native takes the raw one
+        javafmodJNI.FMOD_Channel_Set3DLevel(s.channel, level);
         // world coords with z * 3: the core listener follows SoundListener's Studio listener
         return javafmod.FMOD_Channel_Set3DAttributes(s.channel, sx, sy, sz * 3.0F, 0.0F, 0.0F, 0.0F);
     }

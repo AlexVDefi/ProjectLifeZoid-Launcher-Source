@@ -3,6 +3,9 @@ use app_lib::{
     workshop_override,
 };
 
+#[path = "plzctl_live/mod.rs"]
+mod live_loopback;
+
 fn line(k: &str, v: impl std::fmt::Display) {
     println!("{k:<22} {v}");
 }
@@ -497,6 +500,14 @@ Only the built-in `admin` role carries ConnectWithDebug. moderator and gm do not
         "workshop-proof-stage" => workshop_proof_stage(),
         "workshop-proof-status" => workshop_proof_status(),
         "workshop-proof-clear" => workshop_proof_clear(),
+        "live-loopback" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            live_loopback::run(&args)
+        }
+        "live-serve" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            live_loopback::serve_only(&args)
+        }
         "films" => {
             let st = State::load();
             match (

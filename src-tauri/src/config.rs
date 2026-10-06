@@ -9,6 +9,13 @@ pub const DEFAULT_MANIFEST_URL: &str = match option_env!("PLZ_MANIFEST_URL_BAKED
 
 pub const STEAM_APP_ID: &str = "108600";
 
+pub const LIVE_RELAY_URL_ENV: &str = "PLZ_LIVE_RELAY_URL";
+
+pub const DEFAULT_LIVE_RELAY_URL: &str = match option_env!("PLZ_LIVE_RELAY_URL_BAKED") {
+    Some(url) => url,
+    None => "https://plz-live-relay.rcpz.workers.dev",
+};
+
 pub const PRESS_URL_ENV: &str = "PLZ_PRESS_URL";
 
 pub const DEFAULT_PRESS_URL: &str = match option_env!("PLZ_PRESS_URL_BAKED") {
@@ -121,6 +128,14 @@ pub fn films_ready_path() -> PathBuf {
         .join("Lua")
         .join("PLZLauncher")
         .join("films-ready.txt")
+}
+
+/// zombie.plz.PLZLiveLink reads the port and key from this exact file.
+pub fn live_link_path() -> PathBuf {
+    zomboid_home()
+        .join("Lua")
+        .join("PLZLauncher")
+        .join("live-link.txt")
 }
 
 pub fn role_path() -> PathBuf {

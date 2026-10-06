@@ -35,7 +35,7 @@ import zombie.network.GameClient;
 import zombie.network.GameServer;
 import zombie.network.PacketTypes;
 import zombie.network.ServerOptions;
-import zombie.plz.PLZBroadcast;
+import zombie.plz.PLZLiveVideo;
 import zombie.plz.PLZChannelProbe;
 import zombie.plz.PLZFixes;
 import zombie.plz.PLZVoice;
@@ -474,45 +474,6 @@ public class VoiceManager {
                 // setVoiceConfig - see .claude/PLZ-VOICE.md section 0.
                 Object arg1 = callFrame.get(0);
                 VoiceManager.plzRadioPttBinding = arg1 instanceof String s && !s.isEmpty() ? s : null;
-                return 1;
-            }
-        });
-        table.rawset("setBroadcastLive", new JavaFunction() {
-            @Override
-            public int call(LuaCallFrame callFrame, int nArguments) {
-                Object arg1 = callFrame.get(0);
-                if (PLZBroadcast.setLive(arg1 instanceof Boolean && (Boolean)arg1)) {
-                    VoiceManager.plzRepublishChannels();
-                }
-                return 1;
-            }
-        });
-        table.rawset("setBroadcastListen", new JavaFunction() {
-            @Override
-            public int call(LuaCallFrame callFrame, int nArguments) {
-                Object arg1 = callFrame.get(0);
-                IsoPlayer me = IsoPlayer.getInstance();
-                float x = me != null ? me.getX() : 0.0F;
-                float y = me != null ? me.getY() : 0.0F;
-                if (PLZBroadcast.setPoints(arg1 instanceof KahluaTable t ? t : null, x, y)) {
-                    VoiceManager.plzRepublishChannels();
-                }
-                return 1;
-            }
-        });
-        table.rawset("setBroadcastAllowed", new JavaFunction() {
-            @Override
-            public int call(LuaCallFrame callFrame, int nArguments) {
-                Object arg1 = callFrame.get(0);
-                Object arg2 = nArguments > 1 ? callFrame.get(1) : null;
-                PLZBroadcast.setAllowed(arg1 instanceof String s ? s : null, arg2 instanceof Boolean && (Boolean)arg2);
-                return 1;
-            }
-        });
-        table.rawset("getBroadcastInfo", new JavaFunction() {
-            @Override
-            public int call(LuaCallFrame callFrame, int nArguments) {
-                callFrame.push(PLZBroadcast.describe(callFrame.getPlatform().newTable()));
                 return 1;
             }
         });
@@ -1151,6 +1112,7 @@ public class VoiceManager {
 
                         if ((IsoPlayer.getInstance() != null && GameClient.connection != null || FakeClientManager.isVOIPEnabled())
                             && (!is3D || !IsoPlayer.getInstance().isDead())) {
+                            boolean plzSent = false;
                             if (this.isModePpt) {
                                 if (GameKeyboard.isKeyDown(KeybindId.ENABLE_VOICE_TRANSMIT) || plzIsRadioPttDown()) {
                                     RakVoice.SendFrame(
@@ -1160,6 +1122,7 @@ public class VoiceManager {
                                         this.fmodSoundData.size
                                     );
                                     this.indicatorIsVoice = System.currentTimeMillis();
+                                    plzSent = true;
                                 } else if (FakeClientManager.isVOIPEnabled()) {
                                     RakVoice.SendFrame(
                                         FakeClientManager.getConnectedGUID(), FakeClientManager.getOnlineID(), fmodReceiveBuffer, this.fmodSoundData.size
@@ -1173,6 +1136,11 @@ public class VoiceManager {
                                     GameClient.connection.getConnectedGUID(), IsoPlayer.getInstance().getOnlineID(), fmodReceiveBuffer, this.fmodSoundData.size
                                 );
                                 this.indicatorIsVoice = System.currentTimeMillis();
+                                plzSent = true;
+                            }
+
+                            if (plzSent) {
+                                PLZLiveVideo.castVoice(fmodReceiveBuffer, (int)this.fmodSoundData.size, sampleRate);
                             }
                         }
                     }
@@ -1210,7 +1178,7 @@ public class VoiceManager {
 
                 if (!d.online) {
                     VoiceManagerData.RadioData rdata = this.checkForNearbyRadios(d);
-                    d.online = rdata != null && rdata.deviceData != null || PLZBroadcast.isSpeaker(d.index);
+                    d.online = rdata != null && rdata.deviceData != null;
                 }
 
                 if (d.online && d.player == null) {
@@ -1262,20 +1230,7 @@ public class VoiceManager {
                                 this.getUserPlaySound(d.index);
                                 float plzVolume = 0.0F;
                                 float range = player != null ? IsoUtils.DistanceTo(me.getX(), me.getY(), player.getX(), player.getY()) : 0.0F;
-                                PLZBroadcast.Point bp = PLZBroadcast.nearest(d.index, me.getX(), me.getY());
-                                boolean plzHearsDirect = player != null && range <= PLZVoice.rangeForMode(plzSpeakerMode(d), maxDistance);
-                                boolean plzOnScreen = bp != null && !plzHearsDirect;
-                                if (!plzOnScreen && PLZBroadcast.markPlaced(d.index, false) && is3D) {
-                                    javafmod.FMOD_Channel_Set3DMinMaxDistance(d.userplaychannel, minDistance / 2.0F, maxDistance);
-                                }
-
-                                if (plzOnScreen) {
-                                    PLZBroadcast.markPlaced(d.index, true);
-                                    javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 1.0F);
-                                    javafmod.FMOD_Channel_Set3DMinMaxDistance(d.userplaychannel, bp.range, bp.range * 2.0F);
-                                    javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, bp.x, bp.y, bp.z * 3.0F, 0.0F, 0.0F, 0.0F);
-                                    plzVolume = this.plzSetUserPlaySound(d.userplaychannel, PLZBroadcast.volumeAt(bp, me.getX(), me.getY()));
-                                } else if (me.canHearAll()) {
+                                if (me.canHearAll()) {
                                     javafmodJNI.FMOD_Channel_Set3DLevel(d.userplaychannel, 0.0F);
                                     javafmod.FMOD_Channel_Set3DAttributes(d.userplaychannel, me.getX(), me.getY(), me.getZ(), 0.0F, 0.0F, 0.0F);
                                     plzVolume = this.plzSetUserPlaySound(d.userplaychannel, this.getCanHearAllVolume(range));
@@ -1630,14 +1585,6 @@ public class VoiceManager {
                             }
                         }
                     }
-                }
-
-                if (PLZBroadcast.isLive()) {
-                    myRadioData.radioData.add(new VoiceManagerData.RadioData(PLZBroadcast.CHANNEL, PLZBroadcast.TRANSMIT_RANGE, me.getX(), me.getY()));
-                }
-
-                if (PLZBroadcast.isListening()) {
-                    myRadioData.radioData.add(new VoiceManagerData.RadioData(PLZBroadcast.CHANNEL, 0.0F, me.getX(), me.getY()));
                 }
             }
 
