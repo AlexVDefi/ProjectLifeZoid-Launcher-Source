@@ -546,6 +546,25 @@ check("the real reason is what the launcher gets",
       string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 14), "PLZNotApproved")
 
 print("")
+print("--- 24. a refusal for another Java mod is shown whole and does not say to retry ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+TRANSLATIONS["UI_OnConnectFailed_PLZForeignJavaMod"] =
+    "You have another client side Java mod installed, which we do not accept due to security reasons. You need to uninstall it before joining. Found: %1"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectFailed(getText("UI_OnConnectFailed_PLZForeignJavaMod", "Storm.jar on the classpath"))
+check("the launcher gets the code and what was found", WRITTEN["PLZLauncher/result.txt"],
+      "PLZForeignJavaMod\nStorm.jar on the classpath\n")
+RENDER_ALL()
+check("  first line", DRAWN_HAS("You have another client side Java mod installed, which we do not accept due to security"), true)
+check("  second line", DRAWN_HAS("reasons. You need to uninstall it before joining. Found: Storm.jar on the classpath"), true)
+check("  no advice to press Play again", DRAWN_HAS("Wait a minute, then press Play in the launcher again."), false)
+TRANSLATIONS["UI_OnConnectFailed_PLZForeignJavaMod"] = nil
+
+print("")
 print("--- 14. a build without ISPanel still joins ---")
 FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
 CONNECT_ARGS = nil

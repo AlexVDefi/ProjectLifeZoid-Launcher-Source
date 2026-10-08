@@ -27,9 +27,33 @@ pub fn rgba_to_i420(src: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
     }
 }
 
+/// The same conversion with U and V interleaved, which is what hardware encoders take.
+pub fn rgba_to_nv12(src: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    let mut planar = Vec::new();
+    rgba_to_i420(src, w, h, &mut planar);
+    out.resize(w * h * 3 / 2, 0);
+    out[..w * h].copy_from_slice(&planar[..w * h]);
+    let quarter = w * h / 4;
+    let (u, v) = planar[w * h..].split_at(quarter);
+    for (i, pair) in out[w * h..].chunks_exact_mut(2).enumerate() {
+        pair[0] = u[i];
+        pair[1] = v[i];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nv12_interleaves_the_same_chroma() {
+        let src: Vec<u8> = (0..4 * 4 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let (mut planar, mut semi) = (Vec::new(), Vec::new());
+        rgba_to_i420(&src, 4, 4, &mut planar);
+        rgba_to_nv12(&src, 4, 4, &mut semi);
+        assert_eq!(planar[..16], semi[..16]);
+        assert_eq!(semi[16..], [planar[16], planar[20], planar[17], planar[21], planar[18], planar[22], planar[19], planar[23]]);
+    }
 
     #[test]
     fn primaries_land_on_their_bt601_values() {

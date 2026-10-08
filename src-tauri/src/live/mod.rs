@@ -1,5 +1,7 @@
 mod adpcm;
 mod cast;
+#[cfg(windows)]
+mod hwenc;
 mod link;
 mod outbox;
 pub mod proto;
@@ -18,7 +20,7 @@ use std::time::Duration;
 
 use crate::{config, session_log};
 
-pub use cast::{FALLBACK_SIZE, SEGMENT_MS};
+pub use cast::{LADDER, SEGMENT_MS};
 pub use link::serve;
 pub use watch::{START_SEGMENTS, VIDEO_LEAD_MS};
 

@@ -514,7 +514,28 @@ public class IsoHutch extends IsoObject {
         return true;
     }
 
+    // PLZ: no death event fires in here, so Lua is told before the corpse copies the bird's ModData.
+    private void plzReportDeath(IsoAnimal animal) {
+        if (GameClient.client || !PLZFixes.on(PLZFixes.HUTCH_DEATH_LOG)) {
+            return;
+        }
+
+        try {
+            Object log = LuaManager.env == null ? null : LuaManager.env.rawget("AnimalDeathLog");
+            Object function = log instanceof KahluaTableImpl table ? table.rawget("onHutchDeath") : null;
+            if (function == null) {
+                return;
+            }
+
+            LuaManager.caller.protectedCallVoid(LuaManager.thread, function, animal, this);
+            PLZFixes.hit(PLZFixes.HUTCH_DEATH_LOG);
+        } catch (Throwable failure) {
+            DebugType.Animal.warn("PLZ hutch death log failed: " + failure);
+        }
+    }
+
     public void killAnimal(IsoAnimal animal) {
+        this.plzReportDeath(animal);
         animal.setHealth(0.0F);
         int hutchPosition = animal.getData().getHutchPosition();
         IsoDeadBody deadAnimal = new IsoDeadBody(animal, false, false);

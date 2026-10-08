@@ -8,7 +8,9 @@ const MOD_INFO: &str = "name=PLZ Launcher Bootstrap\nid=PLZLauncher\ndescription
 const REASON_TRANSLATIONS: &str = r#"{
   "UI_OnConnectFailed_PLZNameTaken": "That username is already taken on this server. Pick a different one in the ProjectLifeZoid Launcher.",
   "UI_OnConnectFailed_PLZWrongCharacter": "This Steam account already plays on ProjectLifeZoid as %1. Ask staff about another character slot.",
-  "UI_OnConnectFailed_PLZNotApproved": "This Steam account has not been approved for ProjectLifeZoid yet. Ask an admin to add you."
+  "UI_OnConnectFailed_PLZNotApproved": "This Steam account has not been approved for ProjectLifeZoid yet. Ask an admin to add you.",
+  "UI_OnConnectFailed_PLZForeignJavaMod": "You have another client side Java mod installed, which we do not accept due to security reasons. You need to uninstall it before joining. Found: %1",
+  "UI_OnConnectFailed_PLZLauncherRequired": "ProjectLifeZoid can only be joined through the ProjectLifeZoid Launcher."
 }
 "#;
 
@@ -93,7 +95,9 @@ end
 
 local PLZ_REASONS = { "PLZWrongCharacter", "PLZNameTaken", "PLZNotApproved", "InvalidUsername",
                       "InvalidUsernamePassword", "InvalidServerPassword", "UnknownUsername",
-                      "DuplicateAccount", "MaxAccountsReached", "DebugNotAllowed" }
+                      "DuplicateAccount", "MaxAccountsReached", "DebugNotAllowed",
+                      "PLZForeignJavaMod", "PLZLauncherRequired" }
+local NO_RETRY = { PLZForeignJavaMod = true, PLZLauncherRequired = true }
 local SENTINEL = string.char(1)
 
 local function classify(message)
@@ -275,12 +279,37 @@ local function onConnected()
     writeRole()
 end
 
-local function showFailure(reason)
+local WRAP_AT = 88
+
+local function wrap(text)
+    local lines = {}
+    local line = ""
+    local pos = 1
+    while true do
+        local from, to = string.find(text, "%S+", pos)
+        if not from then break end
+        local word = string.sub(text, from, to)
+        pos = to + 1
+        if line ~= "" and #line + 1 + #word > WRAP_AT then
+            lines[#lines + 1] = line
+            line = word
+        elseif line == "" then
+            line = word
+        else
+            line = line .. " " .. word
+        end
+    end
+    if line ~= "" then lines[#lines + 1] = line end
+    return lines
+end
+
+local function showFailure(reason, noRetry)
     failureTicks = 0
-    setStatus("Could not connect to Project Life Zoid", {
-        reason,
-        "Wait a minute, then press Play in the launcher again.",
-    })
+    local notes = wrap(reason)
+    if not noRetry then
+        notes[#notes + 1] = "Wait a minute, then press Play in the launcher again."
+    end
+    setStatus("Could not connect to Project Life Zoid", notes)
     showStatus()
 end
 
@@ -288,7 +317,7 @@ local function onConnectFailed(message)
     if not armed then return end
     if not message then return end
     local key, detail = classify(message)
-    showFailure(message)
+    showFailure(message, key and NO_RETRY[key])
     writeResult(key or "Other", detail or message)
 end
 
@@ -617,6 +646,20 @@ pub fn explain(result: &JoinResult) -> Option<String> {
              Send your Steam ID to an admin, then try again."
                 .into(),
         ),
+        "PLZForeignJavaMod" => Some(format!(
+            "You have another client side Java mod installed, which we do not accept due to \
+             security reasons. You need to uninstall it before joining.{}",
+            if result.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" Found: {}", result.detail)
+            }
+        )),
+        "PLZLauncherRequired" => Some(
+            "The server did not get this launcher's Java check, so the patch did not load in \
+             the game. Close the game, restart the launcher so it can update, and press Play again."
+                .into(),
+        ),
         "NoResponse" => Some(
             "The server did not answer, so the connection never got as far as being accepted or              refused. That almost always means the server is busy rather than down: under load it              sheds new connections while everyone already on it keeps playing. Wait a minute and              press Play again."
                 .into(),
@@ -812,7 +855,7 @@ mod tests {
             .and_then(|s| s.split("\nlocal function ").next())
             .expect("onConnectFailed not found");
         assert!(
-            !failed.contains("removeStatus()") && failed.contains("showFailure(message)"),
+            !failed.contains("removeStatus()") && failed.contains("showFailure(message, "),
             "a classified refusal must be captioned, not blanked"
         );
         assert!(explain(&super::JoinResult {
@@ -845,7 +888,13 @@ mod tests {
 
     #[test]
     fn every_classified_reason_has_a_translation() {
-        for key in ["PLZWrongCharacter", "PLZNameTaken", "PLZNotApproved"] {
+        for key in [
+            "PLZWrongCharacter",
+            "PLZNameTaken",
+            "PLZNotApproved",
+            "PLZForeignJavaMod",
+            "PLZLauncherRequired",
+        ] {
             assert!(
                 REASON_TRANSLATIONS.contains(&format!("UI_OnConnectFailed_{key}")),
                 "no translation for {key}"

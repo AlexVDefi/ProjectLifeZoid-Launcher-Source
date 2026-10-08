@@ -271,7 +271,9 @@ end
 
 local PLZ_REASONS = { "PLZWrongCharacter", "PLZNameTaken", "PLZNotApproved", "InvalidUsername",
                       "InvalidUsernamePassword", "InvalidServerPassword", "UnknownUsername",
-                      "DuplicateAccount", "MaxAccountsReached", "DebugNotAllowed" }
+                      "DuplicateAccount", "MaxAccountsReached", "DebugNotAllowed",
+                      "PLZForeignJavaMod", "PLZLauncherRequired" }
+local NO_RETRY = { PLZForeignJavaMod = true, PLZLauncherRequired = true }
 local SENTINEL = string.char(1)
 
 local function classify(message)
@@ -453,12 +455,37 @@ local function onConnected()
     writeRole()
 end
 
-local function showFailure(reason)
+local WRAP_AT = 88
+
+local function wrap(text)
+    local lines = {}
+    local line = ""
+    local pos = 1
+    while true do
+        local from, to = string.find(text, "%S+", pos)
+        if not from then break end
+        local word = string.sub(text, from, to)
+        pos = to + 1
+        if line ~= "" and #line + 1 + #word > WRAP_AT then
+            lines[#lines + 1] = line
+            line = word
+        elseif line == "" then
+            line = word
+        else
+            line = line .. " " .. word
+        end
+    end
+    if line ~= "" then lines[#lines + 1] = line end
+    return lines
+end
+
+local function showFailure(reason, noRetry)
     failureTicks = 0
-    setStatus("Could not connect to Project Life Zoid", {
-        reason,
-        "Wait a minute, then press Play in the launcher again.",
-    })
+    local notes = wrap(reason)
+    if not noRetry then
+        notes[#notes + 1] = "Wait a minute, then press Play in the launcher again."
+    end
+    setStatus("Could not connect to Project Life Zoid", notes)
     showStatus()
 end
 
@@ -466,7 +493,7 @@ local function onConnectFailed(message)
     if not armed then return end
     if not message then return end
     local key, detail = classify(message)
-    showFailure(message)
+    showFailure(message, key and NO_RETRY[key])
     writeResult(key or "Other", detail or message)
 end
 
@@ -961,6 +988,25 @@ HANDLERS.OnConnectFailed("UI_OnConnectFailed_PLZNotApproved")
 for i = 1, 200 do HANDLERS.OnFETick() end
 check("the real reason is what the launcher gets",
       string.sub(WRITTEN["PLZLauncher/result.txt"] or "", 1, 14), "PLZNotApproved")
+
+print("")
+print("--- 24. a refusal for another Java mod is shown whole and does not say to retry ---")
+FILES["PLZLauncher/join.txt"] = "167.114.174.186\n26915\nDave\n\nPLZ\n"
+TRANSLATIONS["UI_OnConnectFailed_PLZForeignJavaMod"] =
+    "You have another client side Java mod installed, which we do not accept due to security reasons. You need to uninstall it before joining. Found: %1"
+WRITTEN = {}
+UI_ADDED = 0
+UI_PANELS = {}
+RELOAD()
+enterMenu()
+HANDLERS.OnConnectFailed(getText("UI_OnConnectFailed_PLZForeignJavaMod", "Storm.jar on the classpath"))
+check("the launcher gets the code and what was found", WRITTEN["PLZLauncher/result.txt"],
+      "PLZForeignJavaMod\nStorm.jar on the classpath\n")
+RENDER_ALL()
+check("  first line", DRAWN_HAS("You have another client side Java mod installed, which we do not accept due to security"), true)
+check("  second line", DRAWN_HAS("reasons. You need to uninstall it before joining. Found: Storm.jar on the classpath"), true)
+check("  no advice to press Play again", DRAWN_HAS("Wait a minute, then press Play in the launcher again."), false)
+TRANSLATIONS["UI_OnConnectFailed_PLZForeignJavaMod"] = nil
 
 print("")
 print("--- 14. a build without ISPanel still joins ---")

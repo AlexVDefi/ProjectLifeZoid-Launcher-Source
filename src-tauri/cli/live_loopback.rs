@@ -136,11 +136,21 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut cast = connect(cast_port, &cast_key)?;
     proto::write_message(&mut cast, proto::CAST_START, &Builder::default().u16(W as u16).u16(H as u16).u16(FPS as u16).text(&tok).0).map_err(other)?;
     let mut cast_status = cast.try_clone().map_err(other)?;
+    let resize_asks = Arc::new(Mutex::new(Vec::<String>::new()));
+    let asks = resize_asks.clone();
     std::thread::spawn(move || {
         while let Ok((kind, payload)) = proto::read_message(&mut cast_status) {
             if kind == proto::STATUS {
-                let text = String::from_utf8_lossy(&payload).replace('\n', "  ");
-                if text.contains("cast.state=live") || text.contains("error") || text.contains("size=960") || text.contains("ended") {
+                let raw = String::from_utf8_lossy(&payload).to_string();
+                for line in raw.lines() {
+                    if let Some(size) = line.strip_prefix("cast.size=") {
+                        if let Ok(mut a) = asks.lock() {
+                            a.push(size.to_string());
+                        }
+                    }
+                }
+                let text = raw.replace('\n', "  ");
+                if text.contains("cast.state=live") || text.contains("error") || text.contains("cast.encoder") || text.contains("ended") {
                     println!("  [cast] {text}");
                 }
             }
@@ -164,8 +174,11 @@ pub fn run(args: &[String]) -> Result<()> {
                 if audio_sent % RATE as u64 == 0 {
                     bursts.lock().map_err(other)?.push(Instant::now());
                 }
-                let pcm = tone(audio_sent, 480);
-                proto::write_message(&mut cast, proto::CAST_AUDIO, &Builder::default().u32(ts).u32(RATE).pcm(&pcm).0).map_err(other)?;
+                let talking = ts % 2000 < 1200;
+                if talking {
+                    let pcm = tone(audio_sent, 480);
+                    proto::write_message(&mut cast, proto::CAST_AUDIO, &Builder::default().u32(ts).u32(RATE).pcm(&pcm).0).map_err(other)?;
+                }
                 audio_sent += 480;
             }
             if idx * 1000 / FPS <= now_ms {
@@ -201,6 +214,9 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut burst_heard: Vec<Instant> = Vec::new();
     let mut in_burst = false;
     let mut frame_times: Vec<(u64, Instant)> = Vec::new();
+    let mut fmod_last: Option<Instant> = None;
+    let mut fmod_buffered = 0.0f64;
+    let mut starved_ms = 0.0f64;
     let deadline = Instant::now() + Duration::from_secs(seconds + 25);
     let mut ended = false;
     while Instant::now() < deadline && !ended {
@@ -232,6 +248,16 @@ pub fn run(args: &[String]) -> Result<()> {
                 let (Some(_), Some(_rate)) = (r.text(), r.u32()) else { continue };
                 let pcm = r.pcm();
                 samples += pcm.len() as u64;
+                let now = Instant::now();
+                if let Some(last) = fmod_last {
+                    fmod_buffered -= (now - last).as_secs_f64() * RATE as f64;
+                    if fmod_buffered < 0.0 {
+                        starved_ms += -fmod_buffered * 1000.0 / RATE as f64;
+                        fmod_buffered = 0.0;
+                    }
+                }
+                fmod_last = Some(now);
+                fmod_buffered += pcm.len() as f64;
                 let loud = pcm.iter().any(|s| s.unsigned_abs() > 20000);
                 if loud && !in_burst {
                     burst_heard.push(Instant::now());
@@ -270,6 +296,12 @@ pub fn run(args: &[String]) -> Result<()> {
         first_frame.map(|d| d.as_secs_f64()).unwrap_or(-1.0));
     println!("audio: {samples} samples ({:.1} s), bursts heard {} of {sent_bursts}",
         samples as f64 / RATE as f64, burst_heard.len());
-    println!("A/V: picture lands {:.0} ms after its sound (target {} ms, the game's audio buffer)", mean(&av), app_lib::live::VIDEO_LEAD_MS);
+    println!("A/V: picture lands {:.0} ms after its sound", mean(&av));
+    let mut gaps: Vec<f64> = frame_times.windows(2).map(|w| (w[1].1 - w[0].1).as_secs_f64() * 1000.0).collect();
+    gaps.sort_by(|a, b| a.total_cmp(b));
+    let pct = |p: f64| gaps.get(((gaps.len() as f64 - 1.0) * p) as usize).copied().unwrap_or(0.0);
+    println!("frame gaps: median {:.0} ms, p95 {:.0} ms, p99 {:.0} ms, worst {:.0} ms", pct(0.5), pct(0.95), pct(0.99), pct(1.0));
+    println!("audio starved (FMOD playing from the first sample): {starved_ms:.0} ms in total");
+    println!("resize asks: {:?}", resize_asks.lock().map_err(other)?);
     Ok(())
 }

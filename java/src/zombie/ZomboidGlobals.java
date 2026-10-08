@@ -7,6 +7,7 @@ import zombie.debug.DebugType;
 public final class ZomboidGlobals {
     static {
         zombie.plz.PLZPatchStamp.record("zombie.ZomboidGlobals");
+        zombie.plz.PLZJavaGuard.warm();
     }
 
     public static double runningEnduranceReduce;

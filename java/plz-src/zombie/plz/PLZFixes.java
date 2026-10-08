@@ -41,6 +41,7 @@ public final class PLZFixes {
     public static final String ANIMAL_SYNC_SERVER = "animalSyncServer";
     public static final String ANIMAL_TROUGH_EXPIRY = "animalTroughExpiry";
     public static final String ANIMAL_UPDATE_GUARD = "animalUpdateGuard";
+    public static final String ANIMAL_VEHICLE_PROTECT = "animalVehicleProtect";
     public static final String ANIMAL_ZONE_CONTAINMENT = "animalZoneContainment";
     public static final String ANIMAL_ZONE_GATE = "animalZoneGate";
     public static final String ANIM_SET_LOCK = "animSetLock";
@@ -59,6 +60,7 @@ public final class PLZFixes {
     public static final String FITNESS_CURRENT_EXERCISE = "fitnessCurrentExercise";
     public static final String GENERAL_ACTION_REJECT = "generalActionReject";
     public static final String GRID_SQUARE_ROOM_GUARD = "gridSquareRoomGuard";
+    public static final String HUTCH_DEATH_LOG = "hutchDeathLog";
     public static final String HUTCH_GAME_TIME = "hutchGameTime";
     public static final String HUTCH_META_RESIDENTS = "hutchMetaResidents";
     public static final String NET_TIMED_ACTION = "netTimedAction";

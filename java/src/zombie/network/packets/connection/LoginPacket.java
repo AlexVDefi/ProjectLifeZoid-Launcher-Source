@@ -20,6 +20,7 @@ import zombie.network.GameServer;
 import zombie.network.IConnection;
 import zombie.network.JSONField;
 import zombie.network.PLZAccounts;
+import zombie.network.PLZJavaGate;
 import zombie.network.PLZQueue;
 import zombie.network.PLZSlots;
 import zombie.network.PacketSetting;
@@ -30,6 +31,7 @@ import zombie.network.ServerWorldDatabase.LogonResult;
 import zombie.network.anticheats.AntiCheat;
 import zombie.network.packets.INetworkPacket;
 import zombie.network.statistics.PingManager;
+import zombie.plz.PLZJavaGuard;
 
 @PacketSetting(ordering = 0, priority = 1, reliability = 3, requiredCapability = Capability.None, handlingType = 1)
 public class LoginPacket implements INetworkPacket {
@@ -41,6 +43,7 @@ public class LoginPacket implements INetworkPacket {
     String clientVersion;
     @JSONField
     int authType;
+    java.util.List<String> plzJavaReport;
 
     private String applyPlzBinding(UdpConnection connection) {
         if (!SteamUtils.isSteamModeEnabled() || CoopSlave.instance != null || connection.getSteamId() <= 0L) {
@@ -190,6 +193,13 @@ public class LoginPacket implements INetworkPacket {
                 connection.setLastConnection(UdpConnection.lastConnections.getOrDefault(this.username, 0L));
                 UdpConnection.lastConnections.put(this.username, System.currentTimeMillis() / 1000L);
                 if (r.authorized) {
+                    String plzJava = PLZJavaGate.check(this.plzJavaReport, r.role, this.username);
+                    if (plzJava != null) {
+                        INetworkPacket.send(connection, PacketType.AccessDenied, plzJava);
+                        connection.forceDisconnect("access-denied-plz-java");
+                        return;
+                    }
+
                     for (int n = 0; n < GameServer.udpEngine.connections.size(); n++) {
                         UdpConnection c = GameServer.udpEngine.connections.get(n);
 
@@ -294,6 +304,7 @@ public class LoginPacket implements INetworkPacket {
         this.password = b.getUTF().trim();
         this.clientVersion = b.getUTF().trim();
         this.authType = b.getInt();
+        this.plzJavaReport = PLZJavaGuard.read(b);
     }
 
     @Override
@@ -302,5 +313,6 @@ public class LoginPacket implements INetworkPacket {
         b.putUTF(GameClient.password);
         b.putUTF(Core.getInstance().getGameAndBuildVersion());
         b.putInt(GameClient.authType);
+        PLZJavaGuard.write(b);
     }
 }

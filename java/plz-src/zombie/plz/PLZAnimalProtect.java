@@ -126,6 +126,16 @@ public final class PLZAnimalProtect {
         return null;
     }
 
+    /** A car answers to the same rule as a swing: vanilla kills a standing animal on any contact. */
+    public static boolean mayRunOver(IsoGameCharacter driver, IsoAnimal animal) {
+        if (!PLZFixes.on(PLZFixes.ANIMAL_VEHICLE_PROTECT) || mayHarm(driver, animal)) {
+            return true;
+        }
+
+        PLZFixes.hit(PLZFixes.ANIMAL_VEHICLE_PROTECT);
+        return false;
+    }
+
     /**
      * The rule. Reads the owner straight off the animal, then asks the pushed answer whether
      * this player may act for that owner, then the animal's own allow list.

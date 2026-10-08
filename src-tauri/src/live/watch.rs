@@ -16,8 +16,11 @@ use super::segment::Segment;
 
 pub const START_SEGMENTS: usize = 2;
 const BEHIND_JUMP: i64 = 5;
+pub const AUDIO_CUSHION_MS: u64 = 200;
+const FILL_STEP_MS: i64 = 20;
 pub const VIDEO_LEAD_MS: u64 = 150;
 const LATE_REBASE_MS: u64 = 1000;
+const SCHEDULE_AHEAD_MS: i64 = 1000;
 
 pub struct Watch {
     stop: Arc<AtomicBool>,
@@ -135,9 +138,84 @@ async fn fetch(relay: &Relay, stream: &str, tx: mpsc::Sender<Fetched>, stop: &At
     }
 }
 
-enum Event<'a> {
-    Video(&'a [u8]),
-    Audio(u32, &'a [u8]),
+enum Event {
+    Video(Vec<u8>),
+    Audio { ts_ms: u32, samples: u32, rate: u32, data: Vec<u8> },
+    Fill(i64),
+}
+
+/// Chunks are merged onto one timeline a second before they are due: video runs VIDEO_LEAD_MS past a
+/// chunk's end, and the next chunk's voice must not wait for it.
+fn schedule(seg: Segment, queue: &mut VecDeque<(i64, Event)>) {
+    let cushion = AUDIO_CUSHION_MS as i64;
+    let mut all: Vec<(i64, Event)> = queue.drain(..).collect();
+    for v in seg.video {
+        all.push((v.ts_ms as i64 + VIDEO_LEAD_MS as i64, Event::Video(v.data)));
+    }
+    for a in seg.audio {
+        all.push((a.ts_ms as i64 - cushion, Event::Audio { ts_ms: a.ts_ms, samples: a.samples, rate: seg.audio_rate, data: a.data }));
+    }
+    let seg_end = (seg.start_ms + seg.dur_ms) as i64;
+    let mut tick = seg.start_ms as i64;
+    while tick < seg_end {
+        // never fill into the next chunk's time: its first words would be trimmed as overlap
+        all.push((tick, Event::Fill((tick + cushion - FILL_STEP_MS).min(seg_end - FILL_STEP_MS))));
+        tick += FILL_STEP_MS;
+    }
+    all.sort_by_key(|e| e.0);
+    queue.extend(all);
+}
+
+/// One gapless PCM line per stream, sent AUDIO_CUSHION_MS ahead, so FMOD's raw buffer never runs dry
+/// between words or when a send is a few milliseconds late.
+#[derive(Default)]
+pub struct AudioLine {
+    until: Option<i64>,
+    rate: u32,
+}
+
+impl AudioLine {
+    fn samples(&self, ms: i64) -> i64 {
+        ms * self.rate as i64 / 1000
+    }
+
+    pub fn reset(&mut self) {
+        self.until = None;
+    }
+
+    pub fn block(&mut self, ts_ms: u32, rate: u32, pcm: &[i16]) -> Vec<i16> {
+        if rate != self.rate {
+            self.rate = rate;
+            self.until = None;
+        }
+        let start = self.samples(ts_ms as i64);
+        let until = self.until.unwrap_or(start);
+        let mut out = Vec::with_capacity(pcm.len());
+        if start > until {
+            let gap = (start - until).min(self.samples(1000)) as usize;
+            out.resize(gap, 0);
+            out.extend_from_slice(pcm);
+        } else {
+            let skip = (until - start) as usize;
+            if skip < pcm.len() {
+                out.extend_from_slice(&pcm[skip..]);
+            }
+        }
+        self.until = Some(until.max(start) + pcm.len() as i64);
+        out
+    }
+
+    pub fn fill(&mut self, upto_ms: i64) -> Vec<i16> {
+        let Some(until) = self.until else {
+            return Vec::new();
+        };
+        let upto = self.samples(upto_ms);
+        if upto <= until {
+            return Vec::new();
+        }
+        self.until = Some(upto);
+        vec![0; (upto - until).min(self.samples(1000)) as usize]
+    }
 }
 
 async fn play(stream: &str, mut rx: mpsc::Receiver<Fetched>, stop: &AtomicBool, out: &Outbox) {
@@ -145,7 +223,7 @@ async fn play(stream: &str, mut rx: mpsc::Receiver<Fetched>, stop: &AtomicBool, 
     let mut buffer: VecDeque<Segment> = VecDeque::new();
     let mut clock: Option<(Instant, u32)> = None;
     let mut ended = false;
-    let mut primed = false;
+    let mut line = AudioLine::default();
     let mut rgba = Vec::new();
     let mut state = "";
     let say = |s: &'static str, state: &mut &'static str| {
@@ -154,101 +232,145 @@ async fn play(stream: &str, mut rx: mpsc::Receiver<Fetched>, stop: &AtomicBool, 
             out.status(&format!("watch.{stream}={s}"));
         }
     };
+    let mut queue: VecDeque<(i64, Event)> = VecDeque::new();
     loop {
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        let want = if primed { 1 } else { START_SEGMENTS };
-        while !ended && buffer.len() < want {
+        let mut incoming = Vec::new();
+        while let Ok(more) = rx.try_recv() {
+            incoming.push(more);
+        }
+        let waiting = clock.is_none() && !ended && buffer.len() < START_SEGMENTS;
+        let starved = clock.is_some() && queue.is_empty() && buffer.is_empty() && !ended;
+        if incoming.is_empty() && (waiting || starved) {
             say("buffering", &mut state);
             match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-                Ok(Some(Fetched::Segment(seg))) => buffer.push_back(seg),
-                Ok(Some(Fetched::Jump)) => {
-                    buffer.clear();
-                    clock = None;
-                    primed = false;
-                    decoder = Decoder::new().ok();
-                }
-                Ok(Some(Fetched::Ended)) | Ok(None) => ended = true,
-                Err(_) => {
-                    if stop.load(Ordering::Relaxed) {
-                        return;
-                    }
-                }
+                Ok(Some(f)) => incoming.push(f),
+                Ok(None) => ended = true,
+                Err(_) => {}
             }
         }
-        while let Ok(more) = rx.try_recv() {
-            match more {
+        for f in incoming {
+            match f {
                 Fetched::Segment(seg) => buffer.push_back(seg),
                 Fetched::Jump => {
                     buffer.clear();
+                    queue.clear();
                     clock = None;
-                    primed = false;
                     decoder = Decoder::new().ok();
                 }
                 Fetched::Ended => ended = true,
             }
         }
-        let Some(seg) = buffer.pop_front() else {
-            if ended {
+        if clock.is_none() {
+            if !ended && buffer.len() < START_SEGMENTS {
+                continue;
+            }
+            let Some(first) = buffer.front() else {
+                say("ended", &mut state);
+                return;
+            };
+            clock = Some((Instant::now(), first.start_ms));
+            line.reset();
+        }
+        let Some(mut base) = clock else {
+            continue;
+        };
+        let now_key = base.1 as i64 + base.0.elapsed().as_millis() as i64;
+        while queue.back().is_none_or(|(k, _)| *k < now_key + SCHEDULE_AHEAD_MS) {
+            match buffer.pop_front() {
+                Some(seg) => schedule(seg, &mut queue),
+                None => break,
+            }
+        }
+        let Some(&(key, _)) = queue.front() else {
+            if ended && buffer.is_empty() {
                 say("ended", &mut state);
                 return;
             }
             continue;
         };
-        let base = *clock.get_or_insert((Instant::now(), seg.start_ms));
         say("playing", &mut state);
-        let mut events: Vec<(u64, Event)> = Vec::with_capacity(seg.video.len() + seg.audio.len());
-        for v in &seg.video {
-            events.push((v.ts_ms as u64 + VIDEO_LEAD_MS, Event::Video(&v.data)));
+        let offset = (key - base.1 as i64).max(0) as u64;
+        let due = base.0 + Duration::from_millis(offset);
+        let now = Instant::now();
+        if now > due + Duration::from_millis(LATE_REBASE_MS) {
+            base = (now - Duration::from_millis(offset), base.1);
+            clock = Some(base);
+            line.reset();
+        } else if due > now {
+            sleep_until(due.min(now + Duration::from_millis(50))).await;
+            continue;
         }
-        for a in &seg.audio {
-            events.push((a.ts_ms as u64, Event::Audio(a.samples, &a.data)));
-        }
-        events.sort_by_key(|e| e.0);
-        let mut base = base;
-        for (ts, event) in events {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            let offset = ts.saturating_sub(base.1 as u64);
-            let due = base.0 + Duration::from_millis(offset);
-            let now = Instant::now();
-            if now > due + Duration::from_millis(LATE_REBASE_MS) {
-                base = (now - Duration::from_millis(offset), base.1);
-            } else {
-                sleep_until(due).await;
-            }
-            match event {
-                Event::Video(data) => {
-                    let Some(dec) = decoder.as_mut() else { continue };
-                    if let Ok(Some(img)) = dec.decode(data) {
-                        let (w, h) = img.dimensions();
-                        rgba.resize(w * h * 4, 0);
-                        img.write_rgba8(&mut rgba);
-                        out.frame(stream, w as u16, h as u16, &rgba);
-                    }
+        let Some((_, event)) = queue.pop_front() else {
+            continue;
+        };
+        match event {
+            Event::Video(data) => {
+                let Some(dec) = decoder.as_mut() else { continue };
+                if let Ok(Some(img)) = dec.decode(&data) {
+                    let (w, h) = img.dimensions();
+                    rgba.resize(w * h * 4, 0);
+                    img.write_rgba8(&mut rgba);
+                    out.frame(stream, w as u16, h as u16, &rgba);
                 }
-                Event::Audio(samples, data) => {
-                    if let Some(pcm) = adpcm::decode(data, samples as usize) {
-                        out.audio(stream, seg.audio_rate, &pcm);
+            }
+            Event::Audio { ts_ms, samples, rate, data } => {
+                if let Some(pcm) = adpcm::decode(&data, samples as usize) {
+                    let pcm = line.block(ts_ms, rate, &pcm);
+                    if !pcm.is_empty() {
+                        out.audio(stream, rate, &pcm);
                     }
                 }
             }
-        }
-        clock = Some(base);
-        primed = true;
-        if buffer.is_empty() && !ended {
-            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-                Ok(Some(Fetched::Segment(next))) => buffer.push_back(next),
-                Ok(Some(Fetched::Jump)) => {
-                    clock = None;
-                    primed = false;
-                    decoder = Decoder::new().ok();
+            Event::Fill(upto) => {
+                let silence = line.fill(upto);
+                if !silence.is_empty() {
+                    out.audio(stream, line.rate, &silence);
                 }
-                Ok(Some(Fetched::Ended)) | Ok(None) => ended = true,
-                Err(_) => clock = None,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consecutive_blocks_pass_through_untouched() {
+        let mut line = AudioLine::default();
+        assert_eq!(line.block(1000, 24000, &[1; 480]), vec![1; 480]);
+        assert_eq!(line.block(1020, 24000, &[2; 480]), vec![2; 480]);
+    }
+
+    #[test]
+    fn a_pause_between_words_becomes_silence_not_a_gap() {
+        let mut line = AudioLine::default();
+        line.block(1000, 24000, &[1; 480]);
+        let next = line.block(1100, 24000, &[2; 480]);
+        assert_eq!(next.len(), 80 * 24 + 480);
+        assert!(next[..80 * 24].iter().all(|&s| s == 0));
+        assert!(next[80 * 24..].iter().all(|&s| s == 2));
+    }
+
+    #[test]
+    fn the_fill_keeps_the_line_going_and_a_late_block_is_trimmed_not_doubled() {
+        let mut line = AudioLine::default();
+        assert!(line.fill(5000).is_empty(), "no line before the first word");
+        line.block(1000, 24000, &[1; 480]);
+        assert_eq!(line.fill(1100).len(), 80 * 24);
+        assert!(line.fill(1100).is_empty());
+        let late = line.block(1090, 24000, &[3; 480]);
+        assert_eq!(late, vec![3; 240]);
+    }
+
+    #[test]
+    fn a_long_silence_is_capped_and_a_rate_change_restarts_the_line() {
+        let mut line = AudioLine::default();
+        line.block(0, 24000, &[1; 480]);
+        assert_eq!(line.fill(60_000).len(), 24000);
+        assert_eq!(line.block(70_000, 16000, &[1; 320]).len(), 320);
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode, UsageType};
+use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, RateControlMode, UsageType};
 use openh264::formats::YUVSlices;
 use openh264::{OpenH264API, Timestamp};
 
@@ -19,7 +19,6 @@ pub const SEGMENT_MS: u32 = 2000;
 const AUDIO_BLOCK: usize = 480;
 const MAX_BACKLOG: usize = 5;
 const SLOW_ENCODE_MS: f64 = 25.0;
-pub const FALLBACK_SIZE: (u16, u16) = (960, 540);
 
 pub enum CastMsg {
     Video { ts: u32, w: u16, h: u16, rgba: Vec<u8> },
@@ -71,7 +70,7 @@ fn bitrate_for(w: u16, h: u16) -> u32 {
     (pixels * 3_000_000 / (1280 * 720)).clamp(500_000, 4_000_000) as u32
 }
 
-fn new_encoder(w: u16, h: u16, fps: u16) -> Option<Encoder> {
+fn software_encoder(w: u16, h: u16, fps: u16) -> Option<Encoder> {
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate_for(w, h)))
         .max_frame_rate(FrameRate::from_hz(fps as f32))
@@ -84,9 +83,65 @@ fn new_encoder(w: u16, h: u16, fps: u16) -> Option<Encoder> {
     Encoder::with_api_config(OpenH264API::from_source(), config).ok()
 }
 
+pub struct Encoded {
+    pub ts_ms: u32,
+    pub key: bool,
+    pub data: Vec<u8>,
+}
+
+enum VideoEncoder {
+    #[cfg(windows)]
+    Hardware(super::hwenc::HwEncoder),
+    Software(Encoder, Vec<u8>),
+}
+
+impl VideoEncoder {
+    fn open(w: u16, h: u16, fps: u16, hardware: bool) -> Option<VideoEncoder> {
+        #[cfg(windows)]
+        if hardware {
+            if let Some(hw) = super::hwenc::HwEncoder::new(w, h, fps, bitrate_for(w, h)) {
+                return Some(VideoEncoder::Hardware(hw));
+            }
+        }
+        let _ = hardware;
+        software_encoder(w, h, fps).map(|e| VideoEncoder::Software(e, Vec::new()))
+    }
+
+    fn name(&self) -> String {
+        match self {
+            #[cfg(windows)]
+            VideoEncoder::Hardware(hw) => hw.name.clone(),
+            VideoEncoder::Software(..) => "openh264 (software)".into(),
+        }
+    }
+
+    fn encode(&mut self, rgba: &[u8], w: u16, h: u16, ts: u32, key: bool) -> Result<Vec<Encoded>, String> {
+        match self {
+            #[cfg(windows)]
+            VideoEncoder::Hardware(hw) => hw.encode(rgba, ts, key).map_err(|e| e.to_string()),
+            VideoEncoder::Software(encoder, scratch) => {
+                if key {
+                    encoder.force_intra_frame();
+                }
+                let (wu, hu) = (w as usize, h as usize);
+                yuv::rgba_to_i420(rgba, wu, hu, scratch);
+                let (yp, rest) = scratch.split_at(wu * hu);
+                let (up, vp) = rest.split_at(wu * hu / 4);
+                let source = YUVSlices::new((yp, up, vp), (wu, hu), (wu, wu / 2, wu / 2));
+                let bits = encoder.encode_at(&source, Timestamp::from_millis(ts as u64)).map_err(|e| e.to_string())?;
+                let is_key = matches!(bits.frame_type(), FrameType::IDR | FrameType::I);
+                let data = bits.to_vec();
+                Ok(if data.is_empty() { Vec::new() } else { vec![Encoded { ts_ms: ts, key: is_key, data }] })
+            }
+        }
+    }
+}
+
 struct Building {
     seg: Segment,
 }
+
+pub const LADDER: [(u16, u16); 3] = [(1280, 720), (960, 540), (640, 360)];
 
 struct Caster {
     stream: String,
@@ -94,12 +149,13 @@ struct Caster {
     out: Outbox,
     upload: SyncSender<Upload>,
     uploader: Option<JoinHandle<()>>,
-    encoder: Option<(u16, u16, Encoder)>,
+    encoder: Option<(u16, u16, VideoEncoder)>,
+    hardware: bool,
+    next_key_at: Option<u32>,
     building: Option<Building>,
     audio: VecDeque<AudioBlock>,
     adpcm: adpcm::Encoder,
     audio_rate: u32,
-    yuv: Vec<u8>,
     seq: u32,
     clock: Option<(u32, Instant)>,
     encode_ms: f64,
@@ -107,7 +163,8 @@ struct Caster {
     skipped_by_rc: u64,
     dropped_busy: u64,
     bytes_this_seg: usize,
-    fallback_sent: bool,
+    ladder_step: usize,
+    frames_at_step: u64,
     busy: Arc<AtomicU64>,
 }
 
@@ -127,11 +184,12 @@ impl Caster {
             upload,
             uploader,
             encoder: None,
+            hardware: true,
+            next_key_at: None,
             building: None,
             audio: VecDeque::new(),
             adpcm: adpcm::Encoder::default(),
             audio_rate: 24000,
-            yuv: Vec::new(),
             seq: 0,
             clock: None,
             encode_ms: 0.0,
@@ -140,7 +198,8 @@ impl Caster {
             dropped_busy: 0,
             bytes_this_seg: 0,
             busy,
-            fallback_sent: false,
+            ladder_step: 0,
+            frames_at_step: 0,
         }
     }
 
@@ -149,6 +208,8 @@ impl Caster {
     }
 
     fn run(mut self, rx: Receiver<CastMsg>) {
+        #[cfg(windows)]
+        super::hwenc::init_thread();
         self.out.status(&format!("cast.state=starting\ncast.stream={}", self.stream));
         loop {
             match rx.recv_timeout(Duration::from_millis(250)) {
@@ -184,25 +245,72 @@ impl Caster {
         self.clock = Some((ts, Instant::now()));
         let resized = !matches!(&self.encoder, Some((ew, eh, _)) if *ew == w && *eh == h);
         if resized {
-            self.close(ts);
-            match new_encoder(w, h, self.fps) {
-                Some(e) => self.encoder = Some((w, h, e)),
+            match VideoEncoder::open(w, h, self.fps, self.hardware) {
+                Some(e) => {
+                    let name = e.name();
+                    self.out.status(&format!("cast.encoder={name}"));
+                    session_log::log("live", &format!("encoding {w}x{h} with {name}"));
+                    self.encoder = Some((w, h, e));
+                    self.next_key_at = None;
+                }
                 None => {
                     self.out.status("cast.error=encoder");
                     return;
                 }
             }
         }
-        let boundary = match &self.building {
-            Some(b) => ts >= b.seg.start_ms + SEGMENT_MS,
-            None => true,
+        let key = self.next_key_at.is_none_or(|at| ts >= at);
+        if key {
+            self.next_key_at = Some(ts + SEGMENT_MS);
+        }
+        let Some((_, _, encoder)) = self.encoder.as_mut() else {
+            return;
         };
-        if boundary {
-            self.close(ts);
+        let t0 = Instant::now();
+        let outputs = match encoder.encode(rgba, w, h, ts, key) {
+            Ok(o) => o,
+            Err(e) => {
+                session_log::log("live", &format!("{} failed ({e}); falling back to software", encoder.name()));
+                self.hardware = false;
+                self.encoder = None;
+                return;
+            }
+        };
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        self.encode_ms = if self.encoded == 0 { ms } else { self.encode_ms * 0.95 + ms * 0.05 };
+        self.encoded += 1;
+        self.frames_at_step += 1;
+        if outputs.is_empty() {
+            self.skipped_by_rc += 1;
+        }
+        for e in outputs {
+            self.place(e, w, h);
+        }
+        let next = LADDER.iter().position(|&s| s == (w, h)).map_or(self.ladder_step, |i| i + 1);
+        if self.frames_at_step > 90 && self.encode_ms > SLOW_ENCODE_MS && next < LADDER.len() && next > self.ladder_step {
+            self.ladder_step = next;
+            self.frames_at_step = 0;
+            let (lw, lh) = LADDER[next];
+            self.out.status(&format!("cast.size={lw}x{lh}"));
+            session_log::log("live", &format!("encode {:.1} ms at {w}x{h}, asking for {lw}x{lh}", self.encode_ms));
+        }
+    }
+
+    /// Chunks start on the encoder's keyframes, so a viewer joining at any chunk can decode it.
+    fn place(&mut self, e: Encoded, w: u16, h: u16) {
+        let start_new = match &self.building {
+            None => true,
+            Some(b) => {
+                let due = e.ts_ms >= b.seg.start_ms + SEGMENT_MS - 100;
+                (b.seg.width, b.seg.height) != (w, h) || (e.key && due) || e.ts_ms >= b.seg.start_ms + SEGMENT_MS * 3
+            }
+        };
+        if start_new {
+            self.close(e.ts_ms);
             self.building = Some(Building {
                 seg: Segment {
                     seq: self.seq,
-                    start_ms: ts,
+                    start_ms: e.ts_ms,
                     width: w,
                     height: h,
                     fps: self.fps,
@@ -211,38 +319,9 @@ impl Caster {
                 },
             });
         }
-        let Some((_, _, encoder)) = self.encoder.as_mut() else {
-            return;
-        };
-        if boundary {
-            encoder.force_intra_frame();
-        }
-        let t0 = Instant::now();
-        let (wu, hu) = (w as usize, h as usize);
-        yuv::rgba_to_i420(rgba, wu, hu, &mut self.yuv);
-        let (yp, rest) = self.yuv.split_at(wu * hu);
-        let (up, vp) = rest.split_at(wu * hu / 4);
-        let source = YUVSlices::new((yp, up, vp), (wu, hu), (wu, wu / 2, wu / 2));
-        let data = match encoder.encode_at(&source, Timestamp::from_millis(ts as u64)) {
-            Ok(bits) => bits.to_vec(),
-            Err(e) => {
-                self.out.status(&format!("cast.error=encode {e}"));
-                return;
-            }
-        };
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        self.encode_ms = if self.encoded == 0 { ms } else { self.encode_ms * 0.95 + ms * 0.05 };
-        self.encoded += 1;
-        if data.is_empty() {
-            self.skipped_by_rc += 1;
-        } else if let Some(b) = self.building.as_mut() {
-            self.bytes_this_seg += data.len();
-            b.seg.video.push(VideoUnit { ts_ms: ts, data });
-        }
-        if !self.fallback_sent && self.encoded > 90 && self.encode_ms > SLOW_ENCODE_MS && (w, h) != FALLBACK_SIZE {
-            self.fallback_sent = true;
-            self.out.status(&format!("cast.size={}x{}", FALLBACK_SIZE.0, FALLBACK_SIZE.1));
-            session_log::log("live", &format!("encode {:.1} ms at {w}x{h}, asking for {:?}", self.encode_ms, FALLBACK_SIZE));
+        if let Some(b) = self.building.as_mut() {
+            self.bytes_this_seg += e.data.len();
+            b.seg.video.push(VideoUnit { ts_ms: e.ts_ms, data: e.data });
         }
     }
 
@@ -291,7 +370,7 @@ impl Caster {
             self.dropped_busy += 1;
         }
         self.out.status(&format!(
-            "cast.state=live\ncast.seq={seq}\ncast.frames={frames}\ncast.encodeMs={:.1}\ncast.kbps={kbps}\ncast.size={}x{}\ncast.rcSkipped={}\ncast.busy={}\ncast.dropped={}",
+            "cast.state=live\ncast.seq={seq}\ncast.frames={frames}\ncast.encodeMs={:.1}\ncast.kbps={kbps}\ncast.res={}x{}\ncast.rcSkipped={}\ncast.busy={}\ncast.dropped={}",
             self.encode_ms, b.seg.width, b.seg.height, self.skipped_by_rc, self.busy.load(Ordering::Relaxed), self.dropped_busy
         ));
     }
